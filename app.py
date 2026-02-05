@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
+from data.helpers import on_primary_change
+
 from data.loader import load_ohlc, load_drm, parse_drm_periods
 
 from indicators.calculate_indicators import calculate_indicators, slice_for_graph
@@ -26,8 +28,107 @@ st.set_page_config(
 # Sidebar
 # -------------------------------------------------
 
-st.sidebar.header("Global Overlays")
+PRIMARY_SECONDARY_MAP = {
+    "W.(1)": [
+        "W.1 Impulse",
+        "W.3 Impulse",
+        "W.5 Impulse",
+    ],
+
+    "W.(2)": [
+        "W.A Impulse",
+        "W.C Impulse",
+        "W.A/W Zigzag",
+        "W.Y Zigzag",
+    ],
+
+    "W.(3)": [
+        "W.1 Impulse",
+        "W.3 Impulse",
+        "W.5 Impulse",
+    ],
+
+    "W.(4)": [
+        "W.A Impulse",
+        "W.C Impulse",
+        "W.A/W Zigzag",
+        "W.Y Zigzag",
+    ],
+
+    "W.(5)": [
+        "W.1 Impulse",
+        "W.3 Impulse",
+        "W.5 Impulse",
+    ],
+
+    "W.(A)": [
+        "W.1 Impulse",
+        "W.3 Impulse",
+        "W.5 Impulse",
+        "W.A Impulse",
+        "W.C Impulse",
+        "W.A/W Zigzag",
+        "W.Y Zigzag",
+    ],
+
+    "W.(B)": [
+        "W.A Impulse",
+        "W.C Impulse",
+        "W.A/W Zigzag",
+        "W.Y Zigzag",
+    ],
+
+    "W.(C)": [
+        "W.1 Impulse",
+        "W.3 Impulse",
+        "W.5 Impulse",
+    ],
+
+    "W.(W)": [
+        "W.A Impulse",
+        "W.C Impulse",
+        "W.A/W Zigzag",
+        "W.Y Zigzag",
+    ],
+
+    "W.(X)": [
+        "W.A Impulse",
+        "W.C Impulse",
+        "W.A/W Zigzag",
+        "W.Y Zigzag",
+    ],
+
+    "W.(Y)": [
+        "W.A Impulse",
+        "W.C Impulse",
+        "W.A/W Zigzag",
+        "W.Y Zigzag",
+    ],
+}
+
+
+st.sidebar.header("Pattern Parameters")
 pattern = st.sidebar.selectbox("Pattern", ['Bullish', 'Bearish'], index = 0)
+
+primary_choice = st.sidebar.selectbox(
+    "Primary wave",
+    options=[None] + list(PRIMARY_SECONDARY_MAP.keys()),
+    format_func=lambda x: "Select..." if x is None else x,
+    key="primary_choice",
+    on_change=on_primary_change,   # 👈 THIS
+)
+
+secondary_choice = None
+
+if primary_choice is not None:
+    secondary_choice = st.sidebar.selectbox(
+        "Secondary wave",
+        options=[None] + PRIMARY_SECONDARY_MAP[primary_choice],
+        format_func=lambda x: "Select..." if x is None else x,
+        key="secondary_choice",
+    )
+
+st.sidebar.header("Global Overlays")
 show_ichimoku = st.sidebar.checkbox("Show Ichimoku Cloud", value=False)
 show_bb = st.sidebar.checkbox("Show Bollinger Bands", value=False)
 show_kc = st.sidebar.checkbox("Show Keltner Channel", value=False)
@@ -100,7 +201,11 @@ if uploaded_drm is not None:
 # Main logic
 # -------------------------------------------------
 if "df_1h" not in st.session_state or "df_15m" not in st.session_state or "drm" not in st.session_state:
-    st.info("Please upload both 1H and 15m data files.")
+    st.info("Please upload both 1H and 15m data files. Pls upload DRM file.")
+    st.stop()
+
+if st.session_state.get("primary_choice") is None or st.session_state.get("secondary_choice") is None:
+    st.info("Please select Pattern, Primary setup, and Secondary setup to display charts.")
     st.stop()
 
 # Calculate features
@@ -125,7 +230,7 @@ df_features_15m = calculate_indicators(
 )
 
 # Date selection (from existing data only)
-drm_periods = parse_drm_periods(st.session_state["drm"])
+drm_periods = parse_drm_periods(st.session_state["drm"], pattern, primary_choice, secondary_choice)
 
 if not drm_periods:
     st.warning("No valid date ranges found in DRM.")
@@ -188,7 +293,12 @@ for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
 
 
 #%% Testing code
-# df = pd.read_excel(rf'C:\Users\MI\Downloads\DateRangeManager.xlsx', usecols="C:V", skiprows=0, nrows=41)
+# import pandas as pd
+# df = pd.read_excel(rf'C:\Users\MI\Downloads\DateRangeManager.xlsx')
+# sheet_name = 'Bullish'
+# df[sheet_name] = df[sheet_name].ffill().copy()
 #
-# df.values[~df.isna()]
-
+# primary_choice = "W.(1)"
+# secondary_choice = "W.1 Impulse"
+#
+# df[(df[sheet_name] == primary_choice) & (df.iloc[:,1] == secondary_choice)].iloc[:,2:]

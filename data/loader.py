@@ -18,18 +18,21 @@ def load_drm(file, sheet_name):
     if not file.name.lower().endswith(".xlsx"):
         raise ValueError("Invalid file format. Please upload a XLSX file.")
 
-    df = pd.read_excel(file, usecols="C:V", skiprows=0, nrows=41, sheet_name=sheet_name)
+    df = pd.read_excel(file, sheet_name=sheet_name)
+    df[sheet_name] = df[sheet_name].ffill().copy()
 
-    return df.values[~df.isna()]
+    return df
 
 
-def parse_drm_periods(drm_df):
+def parse_drm_periods(drm_df_input, sheet_name, primary_choice, secondary_choice):
     """
     Converts DRM rows like:
     '28.09.2025_17:00, 30.09.2025_19:00'
     into a list of (start_ts, end_ts) tuples.
     """
     periods = []
+
+    drm_df = drm_df_input[(drm_df_input[sheet_name] == primary_choice) & (drm_df_input.iloc[:,1] == secondary_choice)].iloc[:,2:].values
 
     for row in drm_df.flatten():
         if not isinstance(row, str):
