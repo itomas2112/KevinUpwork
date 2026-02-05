@@ -4,12 +4,13 @@ import pandas as pd
 import numpy as np
 
 from data.helpers import on_primary_change
-
 from data.loader import load_ohlc, load_drm, parse_drm_periods
 
 from indicators.calculate_indicators import calculate_indicators, slice_for_graph
 
-from graphs.graph import build_main_chart
+from graphs.graph import build_main_chart, render_charts
+
+from strategies.first_strategy import ichimoku_tenkan_kijun_strategy
 
 #%% Code
 
@@ -132,6 +133,9 @@ st.sidebar.header("Global Overlays")
 show_ichimoku = st.sidebar.checkbox("Show Ichimoku Cloud", value=False)
 show_bb = st.sidebar.checkbox("Show Bollinger Bands", value=False)
 show_kc = st.sidebar.checkbox("Show Keltner Channel", value=False)
+
+st.sidebar.header("Strategy Overlays")
+show_tenkan_kijun = st.sidebar.checkbox("Show Tenkan Kijun Strategy", value = False)
 
 st.sidebar.header("1H Parameters")
 rsi_window_1h = st.sidebar.slider("RSI window (1H)", 5, 50, 14, key="rsi_1h")
@@ -262,31 +266,68 @@ for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
         st.info("No data for this period.")
         continue
 
-    col_left, col_right = st.columns([1, 1], gap="small")
+    if show_tenkan_kijun:
+        df_slice_1h, stats_1h = ichimoku_tenkan_kijun_strategy(df_slice_1h)
+        df_slice_15m, stats_15m = ichimoku_tenkan_kijun_strategy(df_slice_15m)
 
-    with col_left:
-        st.subheader("1H Chart")
-        fig_1h = build_main_chart(
-            df_slice=df_slice_1h,
-            period_start=period_start_1h,
-            period_end=period_end_1h,
-            show_ichimoku=show_ichimoku,
-            show_bb=show_bb,
-            show_kc=show_kc,
-        )
-        st.plotly_chart(fig_1h, use_container_width=True, key = f"chart_1h_{i}")
+    if show_tenkan_kijun:
 
-    with col_right:
-        st.subheader("15m Chart")
-        fig_15m = build_main_chart(
-            df_slice=df_slice_15m,
-            period_start=period_start_15m,
-            period_end=period_end_15m,
-            show_ichimoku=show_ichimoku,
-            show_bb=show_bb,
-            show_kc=show_kc,
+        col_charts, col_stats = st.columns([3, 1], gap="medium")
+
+        with col_charts:
+            render_charts(
+                df_slice_1h,
+                df_slice_15m,
+                period_start_1h,
+                period_end_1h,
+                period_start_15m,
+                period_end_15m,
+                show_ichimoku,
+                show_bb,
+                show_kc,
+                show_tenkan_kijun
+            )
+
+        with col_stats:
+            st.subheader("Strategy Statistics")
+            stats_table = pd.DataFrame(
+                {
+                    "1H": [
+                        f"{int(stats_1h.loc['Number of trades', 'value'])}",
+                        f"{round(stats_1h.loc['Win rate (%)', 'value']):.0f}%",
+                        f"{round(stats_1h.loc['Loss rate (%)', 'value']):.0f}%",
+                        f"{stats_1h.loc['Total return (%)', 'value']:.2f}%",
+                    ],
+                    "15m": [
+                        f"{int(stats_15m.loc['Number of trades', 'value'])}",
+                        f"{round(stats_15m.loc['Win rate (%)', 'value']):.0f}%",
+                        f"{round(stats_15m.loc['Loss rate (%)', 'value']):.0f}%",
+                        f"{stats_15m.loc['Total return (%)', 'value']:.2f}%",
+                    ],
+                },
+                index=[
+                    "Number of trades",
+                    "Win rate (%)",
+                    "Loss rate (%)",
+                    "Total return (%)",
+                ],
+            )
+            st.table(stats_table)
+
+    else:
+
+        render_charts(
+            df_slice_1h,
+            df_slice_15m,
+            period_start_1h,
+            period_end_1h,
+            period_start_15m,
+            period_end_15m,
+            show_ichimoku,
+            show_bb,
+            show_kc,
+            show_tenkan_kijun
         )
-        st.plotly_chart(fig_15m, use_container_width=True, key = f"chart_15m_{i}")
 
     st.divider()
 

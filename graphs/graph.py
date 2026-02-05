@@ -1,5 +1,6 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import streamlit as st
 
 
 def build_main_chart(
@@ -9,6 +10,7 @@ def build_main_chart(
     show_ichimoku: bool,
     show_bb: bool,
     show_kc: bool,
+    show_tenkan_kijun: bool,
 ):
     """
     Build main chart:
@@ -72,6 +74,53 @@ def build_main_chart(
         row=1,
         col=1,
     )
+
+    # -------------------------------------------------
+    # Strategy markers: Ichimoku Tenkan–Kijun cross
+    # -------------------------------------------------
+    if show_tenkan_kijun:
+
+        # ---- Entry markers (green triangle up)
+        entries = df_slice[df_slice["entry_signal"]]
+
+        if not entries.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=entries["x"],
+                    y=entries["low"],
+                    mode="markers",
+                    marker=dict(
+                        symbol="triangle-up",
+                        size=12,
+                        color="lime",
+                        line=dict(color="black", width=1),
+                    ),
+                    name="Entry",
+                ),
+                row=1,
+                col=1,
+            )
+
+        # ---- Exit markers (red triangle down)
+        exits = df_slice[df_slice["exit_signal"]]
+
+        if not exits.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=exits["x"],
+                    y=exits["high"],
+                    mode="markers",
+                    marker=dict(
+                        symbol="triangle-down",
+                        size=12,
+                        color="red",
+                        line=dict(color="black", width=1),
+                    ),
+                    name="Exit",
+                ),
+                row=1,
+                col=1,
+            )
 
     # -------------------------------------------------
     # Ichimoku Cloud
@@ -287,3 +336,48 @@ def build_main_chart(
         )
 
     return fig
+
+
+def render_charts(
+    df_slice_1h,
+    df_slice_15m,
+    start_1h,
+    end_1h,
+    start_15m,
+    end_15m,
+    show_ichimoku,
+    show_bb,
+    show_kc,
+    show_tenkan_kijun,
+):
+    """
+    Renders the 1H and 15m charts side by side.
+    """
+
+    col_left, col_right = st.columns([1, 1], gap="small")
+
+    with col_left:
+        st.subheader("1H Chart")
+        fig_1h = build_main_chart(
+            df_slice=df_slice_1h,
+            period_start=start_1h,
+            period_end=end_1h,
+            show_ichimoku=show_ichimoku,
+            show_bb=show_bb,
+            show_kc=show_kc,
+            show_tenkan_kijun = show_tenkan_kijun,
+        )
+        st.plotly_chart(fig_1h, use_container_width=True)
+
+    with col_right:
+        st.subheader("15m Chart")
+        fig_15m = build_main_chart(
+            df_slice=df_slice_15m,
+            period_start=start_15m,
+            period_end=end_15m,
+            show_ichimoku=show_ichimoku,
+            show_bb=show_bb,
+            show_kc=show_kc,
+            show_tenkan_kijun = show_tenkan_kijun,
+        )
+        st.plotly_chart(fig_15m, use_container_width=True)
