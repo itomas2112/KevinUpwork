@@ -2,7 +2,7 @@
 Strategy Builder tab (Tab 2) UI and logic
 """
 import streamlit as st
-from config.constants import PRICE_AND_INDICATORS, RSI_GROUP, CMB_GROUP, EVENT_TYPES
+from config.constants import PRICE_AND_INDICATORS, RSI_GROUP, CMB_GROUP, EVENT_TYPES, CONDITION_OPERATORS
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies
 
 
@@ -155,7 +155,8 @@ def render_entry_box():
 
         # CONDITIONS (Optional, 0-10)
         st.markdown("#### ⚙️ Conditions (Optional, 0-10)")
-        st.caption("All conditions must be met for the trigger to activate. If any condition fails, entry will not occur.")
+        st.caption(
+            "All conditions must be met for the trigger to activate. If any condition fails, entry will not occur.")
 
         # Add/Remove condition buttons
         col1, col2, col3 = st.columns([1, 1, 3])
@@ -175,7 +176,7 @@ def render_entry_box():
             st.markdown(f"**Active Conditions: {st.session_state['entry_conditions_count']}**")
 
             for i in range(st.session_state['entry_conditions_count']):
-                with st.expander(f"Condition {i+1}", expanded=True):
+                with st.expander(f"Condition {i + 1}", expanded=True):
                     col1, col2, col3 = st.columns([2, 1, 2])
 
                     with col1:
@@ -200,31 +201,22 @@ def render_entry_box():
                         )
 
                     with col2:
-                        cond_event = st.selectbox(
-                            "Event",
-                            EVENT_TYPES,
-                            key=f"entry_cond_{i}_event"
+                        cond_operator = st.selectbox(
+                            "Operator",
+                            CONDITION_OPERATORS,
+                            key=f"entry_cond_{i}_operator"
                         )
 
                     with col3:
                         # Element 2 must be from same group as Element 1
                         cond_compatible_elements = get_compatible_elements(cond_element1)
 
-                        # For "At Level", show amplitude input instead
-                        if cond_event == "At Level":
-                            cond_amplitude = st.number_input(
-                                "Amplitude/Level",
-                                value=50.0,
-                                key=f"entry_cond_{i}_amplitude"
-                            )
-                            st.caption(f"{cond_element1} at {cond_amplitude}")
-                        else:
-                            cond_element2 = st.selectbox(
-                                "Element 2",
-                                [e for e in cond_compatible_elements if e != cond_element1],
-                                key=f"entry_cond_{i}_element2"
-                            )
-                            st.caption(f"{cond_element1} {cond_event} {cond_element2}")
+                        cond_element2 = st.selectbox(
+                            "Element 2",
+                            [e for e in cond_compatible_elements if e != cond_element1],
+                            key=f"entry_cond_{i}_element2"
+                        )
+                        st.caption(f"{cond_element1} {cond_operator} {cond_element2}")
         else:
             st.info("No conditions added. Trigger will activate without additional requirements.")
 
@@ -307,7 +299,8 @@ def render_exit_box():
 
         # CONDITIONS (Optional, 0-10)
         st.markdown("#### ⚙️ Conditions (Optional, 0-10)")
-        st.caption("All conditions must be met for the trigger to activate. If any condition fails, exit will not occur.")
+        st.caption(
+            "All conditions must be met for the trigger to activate. If any condition fails, exit will not occur.")
 
         # Add/Remove condition buttons
         col1, col2, col3 = st.columns([1, 1, 3])
@@ -327,7 +320,7 @@ def render_exit_box():
             st.markdown(f"**Active Conditions: {st.session_state['exit_conditions_count']}**")
 
             for i in range(st.session_state['exit_conditions_count']):
-                with st.expander(f"Condition {i+1}", expanded=True):
+                with st.expander(f"Condition {i + 1}", expanded=True):
                     col1, col2, col3 = st.columns([2, 1, 2])
 
                     with col1:
@@ -352,31 +345,22 @@ def render_exit_box():
                         )
 
                     with col2:
-                        cond_event = st.selectbox(
-                            "Event",
-                            EVENT_TYPES,
-                            key=f"exit_cond_{i}_event"
+                        cond_operator = st.selectbox(
+                            "Operator",
+                            CONDITION_OPERATORS,
+                            key=f"exit_cond_{i}_operator"
                         )
 
                     with col3:
                         # Element 2 must be from same group as Element 1
                         cond_compatible_elements = get_compatible_elements(cond_element1)
 
-                        # For "At Level", show amplitude input instead
-                        if cond_event == "At Level":
-                            cond_amplitude = st.number_input(
-                                "Amplitude/Level",
-                                value=50.0,
-                                key=f"exit_cond_{i}_amplitude"
-                            )
-                            st.caption(f"{cond_element1} at {cond_amplitude}")
-                        else:
-                            cond_element2 = st.selectbox(
-                                "Element 2",
-                                [e for e in cond_compatible_elements if e != cond_element1],
-                                key=f"exit_cond_{i}_element2"
-                            )
-                            st.caption(f"{cond_element1} {cond_event} {cond_element2}")
+                        cond_element2 = st.selectbox(
+                            "Element 2",
+                            [e for e in cond_compatible_elements if e != cond_element1],
+                            key=f"exit_cond_{i}_element2"
+                        )
+                        st.caption(f"{cond_element1} {cond_operator} {cond_element2}")
         else:
             st.info("No conditions added. Trigger will activate without additional requirements.")
 

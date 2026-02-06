@@ -51,29 +51,25 @@ def save_strategy_to_session(strategy_name):
         }
     }
 
-    # Collect entry conditions
+    # Collect entry conditions - UPDATED TO USE 'operator' instead of 'event'
     for i in range(st.session_state['entry_conditions_count']):
         condition = {
             "group": st.session_state.get(f'entry_cond_{i}_group1'),
             "element1": st.session_state.get(f'entry_cond_{i}_element1'),
-            "event": st.session_state.get(f'entry_cond_{i}_event'),
-            "element2": st.session_state.get(f'entry_cond_{i}_element2') if st.session_state.get(
-                f'entry_cond_{i}_event') != "At Level" else None,
-            "amplitude": st.session_state.get(f'entry_cond_{i}_amplitude') if st.session_state.get(
-                f'entry_cond_{i}_event') == "At Level" else None
+            "operator": st.session_state.get(f'entry_cond_{i}_operator'),  # Changed from 'event'
+            "element2": st.session_state.get(f'entry_cond_{i}_element2'),
+            "amplitude": None  # Conditions don't use amplitude
         }
         strategy_data["entry"]["conditions"].append(condition)
 
-    # Collect exit conditions
+    # Collect exit conditions - UPDATED TO USE 'operator' instead of 'event'
     for i in range(st.session_state['exit_conditions_count']):
         condition = {
             "group": st.session_state.get(f'exit_cond_{i}_group1'),
             "element1": st.session_state.get(f'exit_cond_{i}_element1'),
-            "event": st.session_state.get(f'exit_cond_{i}_event'),
-            "element2": st.session_state.get(f'exit_cond_{i}_element2') if st.session_state.get(
-                f'exit_cond_{i}_event') != "At Level" else None,
-            "amplitude": st.session_state.get(f'exit_cond_{i}_amplitude') if st.session_state.get(
-                f'exit_cond_{i}_event') == "At Level" else None
+            "operator": st.session_state.get(f'exit_cond_{i}_operator'),  # Changed from 'event'
+            "element2": st.session_state.get(f'exit_cond_{i}_element2'),
+            "amplitude": None  # Conditions don't use amplitude
         }
         strategy_data["exit"]["conditions"].append(condition)
 

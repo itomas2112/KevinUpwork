@@ -175,9 +175,42 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     def check_condition(condition_config, current_idx):
         """Check if a single condition is met at given index"""
         element1_name = condition_config.get('element1')
-        event = condition_config.get('event')
+        operator = condition_config.get('operator')  # Changed from 'event'
         element2_name = condition_config.get('element2')
-        amplitude = condition_config.get('amplitude')
+
+        # Get the series for element1
+        col1 = indicator_map.get(element1_name)
+        if col1 is None or col1 not in df.columns:
+            return False
+
+        series1 = df[col1]
+        value1 = series1.iloc[current_idx]
+
+        # Get element2
+        col2 = indicator_map.get(element2_name)
+        if col2 is None or col2 not in df.columns:
+            return False
+
+        series2 = df[col2]
+        value2 = series2.iloc[current_idx]
+
+        # Check the operator
+        if operator == "Above":
+            return value1 > value2
+        elif operator == "Below":
+            return value1 < value2
+
+        return False
+
+    # -------------------------------------------------
+    # Helper function to check trigger events
+    # -------------------------------------------------
+    def check_trigger(trigger_config, current_idx):
+        """Check if a trigger event occurred at given index"""
+        element1_name = trigger_config.get('element1')
+        event = trigger_config.get('event')
+        element2_name = trigger_config.get('element2')
+        amplitude = trigger_config.get('amplitude')
 
         # Get the series for element1
         col1 = indicator_map.get(element1_name)
@@ -227,21 +260,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         """Check if trigger is activated AND all conditions are met"""
 
         # First check the trigger
-        trigger_element1 = trigger_config.get('element1')
-        trigger_event = trigger_config.get('event')
-        trigger_element2 = trigger_config.get('element2')
-        trigger_amplitude = trigger_config.get('amplitude')
-
-        # Build trigger config in same format as conditions
-        trigger_check = {
-            'element1': trigger_element1,
-            'event': trigger_event,
-            'element2': trigger_element2,
-            'amplitude': trigger_amplitude
-        }
-
-        # Check if trigger is activated
-        if not check_condition(trigger_check, current_idx):
+        if not check_trigger(trigger_config, current_idx):
             return False
 
         # If trigger is activated, check all conditions

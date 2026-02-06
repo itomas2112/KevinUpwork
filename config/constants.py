@@ -38,6 +38,11 @@ EVENT_TYPES = [
     "At Level"
 ]
 
+CONDITION_OPERATORS = [
+    "Above",
+    "Below"
+]
+
 # Indicator mapping for strategy execution
 INDICATOR_MAP = {
     "Price": "latest",
