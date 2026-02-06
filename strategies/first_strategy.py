@@ -116,3 +116,249 @@ def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
     )
 
     return df, stats_df
+
+
+def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
+    """
+    Execute a custom strategy based on the saved strategy configuration.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with OHLC data and all calculated indicators
+    strategy_config : dict
+        The strategy configuration from saved_strategies
+
+    Returns:
+    --------
+    df : pd.DataFrame
+        DataFrame with entry_signal and exit_signal columns added
+    stats_df : pd.DataFrame
+        Statistics DataFrame with win rate, loss rate, number of trades, total return
+    """
+
+    df = df.copy()
+
+    # -------------------------------------------------
+    # Clean existing signals
+    # -------------------------------------------------
+    for col in ["entry_signal", "exit_signal"]:
+        if col in df.columns:
+            df.drop(columns=col, inplace=True)
+
+    # -------------------------------------------------
+    # Map indicator names to DataFrame columns
+    # -------------------------------------------------
+    indicator_map = {
+        "Price": "latest",
+        "BB Upper Band": "bb_upper",
+        "BB Middle Band": "bb_middle",
+        "BB Lower Band": "bb_lower",
+        "KC Upper Band": "kc_upper",
+        "KC Middle Band": "kc_middle",
+        "KC Lower Band": "kc_lower",
+        "Tenkan": "tenkan",
+        "Kijun": "kijun",
+        "Senkou A": "senkou_a",
+        "Senkou B": "senkou_b",
+        "RSI": "rsi",
+        "RSI 13 SMA": "rsi_13_sma",
+        "RSI 33 SMA": "rsi_33_sma",
+        "CMB": "cmb",
+        "CMB 13 SMA": "cmb_13_sma",
+        "CMB 33 SMA": "cmb_33_sma",
+    }
+
+    # -------------------------------------------------
+    # Helper function to check if condition is met
+    # -------------------------------------------------
+    def check_condition(condition_config, current_idx):
+        """Check if a single condition is met at given index"""
+        element1_name = condition_config.get('element1')
+        event = condition_config.get('event')
+        element2_name = condition_config.get('element2')
+        amplitude = condition_config.get('amplitude')
+
+        # Get the series for element1
+        col1 = indicator_map.get(element1_name)
+        if col1 is None or col1 not in df.columns:
+            return False
+
+        series1 = df[col1]
+        value1 = series1.iloc[current_idx]
+
+        # Handle "At Level" event
+        if event == "At Level":
+            if amplitude is None:
+                return False
+            return abs(value1 - amplitude) < 0.01  # Small tolerance for floating point
+
+        # For other events, we need element2
+        col2 = indicator_map.get(element2_name)
+        if col2 is None or col2 not in df.columns:
+            return False
+
+        series2 = df[col2]
+        value2 = series2.iloc[current_idx]
+
+        # Check the event type
+        if event == "Cross Above":
+            if current_idx == 0:
+                return False
+            return (value1 > value2) and (series1.iloc[current_idx - 1] <= series2.iloc[current_idx - 1])
+        elif event == "Cross Below":
+            if current_idx == 0:
+                return False
+            return (value1 < value2) and (series1.iloc[current_idx - 1] >= series2.iloc[current_idx - 1])
+        elif event == "Cross":
+            if current_idx == 0:
+                return False
+            # Cross means either cross above or cross below
+            cross_above = (value1 > value2) and (series1.iloc[current_idx - 1] <= series2.iloc[current_idx - 1])
+            cross_below = (value1 < value2) and (series1.iloc[current_idx - 1] >= series2.iloc[current_idx - 1])
+            return cross_above or cross_below
+
+        return False
+
+    # -------------------------------------------------
+    # Helper function to check trigger with conditions
+    # -------------------------------------------------
+    def check_trigger_and_conditions(trigger_config, conditions, current_idx):
+        """Check if trigger is activated AND all conditions are met"""
+
+        # First check the trigger
+        trigger_element1 = trigger_config.get('element1')
+        trigger_event = trigger_config.get('event')
+        trigger_element2 = trigger_config.get('element2')
+        trigger_amplitude = trigger_config.get('amplitude')
+
+        # Build trigger config in same format as conditions
+        trigger_check = {
+            'element1': trigger_element1,
+            'event': trigger_event,
+            'element2': trigger_element2,
+            'amplitude': trigger_amplitude
+        }
+
+        # Check if trigger is activated
+        if not check_condition(trigger_check, current_idx):
+            return False
+
+        # If trigger is activated, check all conditions
+        for condition in conditions:
+            if not check_condition(condition, current_idx):
+                return False  # If any condition fails, return False
+
+        # All conditions met
+        return True
+
+    # -------------------------------------------------
+    # Extract entry and exit configurations
+    # -------------------------------------------------
+    entry_config = strategy_config.get('entry', {})
+    exit_config = strategy_config.get('exit', {})
+
+    entry_trigger = entry_config.get('trigger', {})
+    entry_conditions = entry_config.get('conditions', [])
+
+    exit_trigger = exit_config.get('trigger', {})
+    exit_conditions = exit_config.get('conditions', [])
+
+    # -------------------------------------------------
+    # Signal generation (entry first, exit after)
+    # -------------------------------------------------
+    in_trade = False
+    entry_signal = []
+    exit_signal = []
+
+    entry_prices = []
+    trade_returns = []
+
+    current_entry_price = None
+
+    for i in range(len(df)):
+        price = df["latest"].iloc[i]
+
+        # Check entry conditions (only if not in trade)
+        if not in_trade:
+            if check_trigger_and_conditions(entry_trigger, entry_conditions, i):
+                # ---- Entry
+                entry_signal.append(True)
+                exit_signal.append(False)
+
+                in_trade = True
+                current_entry_price = price
+                entry_prices.append(price)
+            else:
+                entry_signal.append(False)
+                exit_signal.append(False)
+
+        # Check exit conditions (only if in trade)
+        else:  # in_trade
+            if check_trigger_and_conditions(exit_trigger, exit_conditions, i):
+                # ---- Exit
+                entry_signal.append(False)
+                exit_signal.append(True)
+
+                trade_return = price / current_entry_price
+                trade_returns.append(trade_return)
+
+                in_trade = False
+                current_entry_price = None
+            else:
+                entry_signal.append(False)
+                exit_signal.append(False)
+
+    # -------------------------------------------------
+    # Handle open trade at the end
+    # -------------------------------------------------
+    if in_trade and current_entry_price is not None:
+        last_price = df["latest"].iloc[-1]
+        trade_return = last_price / current_entry_price
+        trade_returns.append(trade_return)
+
+    # -------------------------------------------------
+    # Attach signals
+    # -------------------------------------------------
+    df["entry_signal"] = entry_signal
+    df["exit_signal"] = exit_signal
+
+    # -------------------------------------------------
+    # Statistics
+    # -------------------------------------------------
+    num_trades = len(trade_returns)
+
+    if num_trades > 0:
+        wins = sum(r > 1 for r in trade_returns)
+        losses = num_trades - wins
+
+        win_rate = wins / num_trades * 100
+        loss_rate = losses / num_trades * 100
+
+        total_return = 1.0
+        for r in trade_returns:
+            total_return *= r
+    else:
+        win_rate = 0.0
+        loss_rate = 0.0
+        total_return = 1.0
+
+    stats_df = pd.DataFrame(
+        {
+            "value": [
+                num_trades,
+                win_rate,
+                loss_rate,
+                (total_return - 1) * 100,
+            ]
+        },
+        index=[
+            "Number of trades",
+            "Win rate (%)",
+            "Loss rate (%)",
+            "Total return (%)",
+        ],
+    )
+
+    return df, stats_df
+

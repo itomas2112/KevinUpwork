@@ -10,7 +10,7 @@ def build_main_chart(
     show_ichimoku: bool,
     show_bb: bool,
     show_kc: bool,
-    show_tenkan_kijun: bool,
+    show_strategy: bool,
 ):
     """
     Build main chart:
@@ -78,7 +78,7 @@ def build_main_chart(
     # -------------------------------------------------
     # Strategy markers: Ichimoku Tenkan–Kijun cross
     # -------------------------------------------------
-    if show_tenkan_kijun:
+    if show_strategy:
 
         # ---- Entry markers (green triangle up)
         entries = df_slice[df_slice["entry_signal"]]
@@ -348,7 +348,7 @@ def render_charts(
     show_ichimoku,
     show_bb,
     show_kc,
-    show_tenkan_kijun,
+    show_strategy,
 ):
     """
     Renders the 1H and 15m charts side by side.
@@ -365,7 +365,7 @@ def render_charts(
             show_ichimoku=show_ichimoku,
             show_bb=show_bb,
             show_kc=show_kc,
-            show_tenkan_kijun = show_tenkan_kijun,
+            show_strategy = show_strategy,
         )
         st.plotly_chart(fig_1h, use_container_width=True)
 
@@ -378,6 +378,6 @@ def render_charts(
             show_ichimoku=show_ichimoku,
             show_bb=show_bb,
             show_kc=show_kc,
-            show_tenkan_kijun = show_tenkan_kijun,
+            show_strategy = show_strategy,
         )
         st.plotly_chart(fig_15m, use_container_width=True)
