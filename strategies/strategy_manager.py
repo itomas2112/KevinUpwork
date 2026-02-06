@@ -26,10 +26,11 @@ def save_strategy_to_session(strategy_name):
                 "group": st.session_state.get('entry_trigger_group1'),
                 "element1": st.session_state.get('entry_trigger_element1'),
                 "event": st.session_state.get('entry_trigger_event'),
+                "compare_type": st.session_state.get('entry_trigger_compare_type', 'Indicator'),
                 "element2": st.session_state.get('entry_trigger_element2') if st.session_state.get(
-                    'entry_trigger_event') != "At Level" else None,
-                "amplitude": st.session_state.get('entry_trigger_amplitude') if st.session_state.get(
-                    'entry_trigger_event') == "At Level" else None
+                    'entry_trigger_compare_type', 'Indicator') == "Indicator" else None,
+                "value": st.session_state.get('entry_trigger_value') if st.session_state.get(
+                    'entry_trigger_compare_type', 'Indicator') == "Fixed Value" else None
             },
             "position_size": st.session_state.get('entry_position_size'),
             "conditions_count": st.session_state['entry_conditions_count'],
@@ -40,10 +41,11 @@ def save_strategy_to_session(strategy_name):
                 "group": st.session_state.get('exit_trigger_group1'),
                 "element1": st.session_state.get('exit_trigger_element1'),
                 "event": st.session_state.get('exit_trigger_event'),
+                "compare_type": st.session_state.get('exit_trigger_compare_type', 'Indicator'),
                 "element2": st.session_state.get('exit_trigger_element2') if st.session_state.get(
-                    'exit_trigger_event') != "At Level" else None,
-                "amplitude": st.session_state.get('exit_trigger_amplitude') if st.session_state.get(
-                    'exit_trigger_event') == "At Level" else None
+                    'exit_trigger_compare_type', 'Indicator') == "Indicator" else None,
+                "value": st.session_state.get('exit_trigger_value') if st.session_state.get('exit_trigger_compare_type',
+                                                                                            'Indicator') == "Fixed Value" else None
             },
             "position_size": st.session_state.get('exit_position_size'),
             "conditions_count": st.session_state['exit_conditions_count'],
@@ -51,25 +53,31 @@ def save_strategy_to_session(strategy_name):
         }
     }
 
-    # Collect entry conditions - UPDATED TO USE 'operator' instead of 'event'
+    # Collect entry conditions with compare type support
     for i in range(st.session_state['entry_conditions_count']):
+        compare_type = st.session_state.get(f'entry_cond_{i}_compare_type', 'Indicator')
+
         condition = {
             "group": st.session_state.get(f'entry_cond_{i}_group1'),
             "element1": st.session_state.get(f'entry_cond_{i}_element1'),
-            "operator": st.session_state.get(f'entry_cond_{i}_operator'),  # Changed from 'event'
-            "element2": st.session_state.get(f'entry_cond_{i}_element2'),
-            "amplitude": None  # Conditions don't use amplitude
+            "operator": st.session_state.get(f'entry_cond_{i}_operator'),
+            "compare_type": compare_type,
+            "element2": st.session_state.get(f'entry_cond_{i}_element2') if compare_type == "Indicator" else None,
+            "value": st.session_state.get(f'entry_cond_{i}_value') if compare_type == "Fixed Value" else None
         }
         strategy_data["entry"]["conditions"].append(condition)
 
-    # Collect exit conditions - UPDATED TO USE 'operator' instead of 'event'
+    # Collect exit conditions with compare type support
     for i in range(st.session_state['exit_conditions_count']):
+        compare_type = st.session_state.get(f'exit_cond_{i}_compare_type', 'Indicator')
+
         condition = {
             "group": st.session_state.get(f'exit_cond_{i}_group1'),
             "element1": st.session_state.get(f'exit_cond_{i}_element1'),
-            "operator": st.session_state.get(f'exit_cond_{i}_operator'),  # Changed from 'event'
-            "element2": st.session_state.get(f'exit_cond_{i}_element2'),
-            "amplitude": None  # Conditions don't use amplitude
+            "operator": st.session_state.get(f'exit_cond_{i}_operator'),
+            "compare_type": compare_type,
+            "element2": st.session_state.get(f'exit_cond_{i}_element2') if compare_type == "Indicator" else None,
+            "value": st.session_state.get(f'exit_cond_{i}_value') if compare_type == "Fixed Value" else None
         }
         strategy_data["exit"]["conditions"].append(condition)
 
@@ -80,7 +88,6 @@ def save_strategy_to_session(strategy_name):
     save_strategies_to_file()
 
     return len(st.session_state['saved_strategies'])
-
 
 def save_strategies_to_file():
     """Save all strategies to JSON file"""

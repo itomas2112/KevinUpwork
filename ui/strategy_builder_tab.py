@@ -2,7 +2,14 @@
 Strategy Builder tab (Tab 2) UI and logic
 """
 import streamlit as st
-from config.constants import PRICE_AND_INDICATORS, RSI_GROUP, CMB_GROUP, EVENT_TYPES, CONDITION_OPERATORS
+from config.constants import (
+    PRICE_AND_INDICATORS,
+    RSI_GROUP,
+    CMB_GROUP,
+    EVENT_TYPES,
+    CONDITION_OPERATORS,
+    CONDITION_COMPARE_TYPES
+)
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies
 
 
@@ -79,11 +86,11 @@ def render_strategy_form():
 
 def render_entry_box():
     """Render entry strategy configuration box"""
-    st.subheader("📥 Entry Strategy")
+    st.subheader("Entry Strategy")
 
     with st.container(border=True):
         # TRIGGER (Required) - Event between indicators/price
-        st.markdown("#### 🎯 Trigger (Required)")
+        st.markdown("#### Trigger (Required)")
         st.caption("Define an event between compatible elements")
 
         col1, col2, col3 = st.columns([2, 1, 2])
@@ -117,30 +124,37 @@ def render_entry_box():
             )
 
         with col3:
-            # Element 2 must be from same group as Element 1
-            compatible_elements = get_compatible_elements(entry_trigger_element1)
+            # Choose between indicator or fixed value
+            entry_trigger_compare_type = st.radio(
+                "Compare to",
+                CONDITION_COMPARE_TYPES,
+                key="entry_trigger_compare_type",
+                horizontal=True
+            )
 
-            # For "At Level", show amplitude input instead
-            if entry_trigger_event == "At Level":
-                entry_trigger_amplitude = st.number_input(
-                    "Amplitude/Level",
-                    value=50.0,
-                    key="entry_trigger_amplitude",
-                    help="e.g., RSI at 50, CMB at -100"
-                )
-                st.caption(f"Example: {entry_trigger_element1} at {entry_trigger_amplitude}")
-            else:
+            if entry_trigger_compare_type == "Indicator":
+                # Element 2 must be from same group as Element 1
+                compatible_elements = get_compatible_elements(entry_trigger_element1)
+
                 entry_trigger_element2 = st.selectbox(
                     "Element 2",
                     [e for e in compatible_elements if e != entry_trigger_element1],
                     key="entry_trigger_element2"
                 )
                 st.caption(f"Example: {entry_trigger_element1} {entry_trigger_event} {entry_trigger_element2}")
+            else:  # Fixed Value
+                entry_trigger_value = st.number_input(
+                    "Value/Level",
+                    value=50.0,
+                    key="entry_trigger_value",
+                    help="e.g., RSI crosses above 50, Price crosses below 4000"
+                )
+                st.caption(f"Example: {entry_trigger_element1} {entry_trigger_event} {entry_trigger_value}")
 
         st.divider()
 
         # POSITION SIZE (Required) - Units of position
-        st.markdown("#### 💰 Position Size (Required)")
+        st.markdown("#### Position Size (Required)")
         st.caption("Specify the units/size of the position to enter")
 
         entry_position_size = st.number_input(
@@ -154,7 +168,7 @@ def render_entry_box():
         st.divider()
 
         # CONDITIONS (Optional, 0-10)
-        st.markdown("#### ⚙️ Conditions (Optional, 0-10)")
+        st.markdown("#### Conditions")
         st.caption(
             "All conditions must be met for the trigger to activate. If any condition fails, entry will not occur.")
 
@@ -208,26 +222,42 @@ def render_entry_box():
                         )
 
                     with col3:
-                        # Element 2 must be from same group as Element 1
-                        cond_compatible_elements = get_compatible_elements(cond_element1)
-
-                        cond_element2 = st.selectbox(
-                            "Element 2",
-                            [e for e in cond_compatible_elements if e != cond_element1],
-                            key=f"entry_cond_{i}_element2"
+                        # Choose between indicator or fixed value
+                        cond_compare_type = st.radio(
+                            "Compare to",
+                            CONDITION_COMPARE_TYPES,
+                            key=f"entry_cond_{i}_compare_type",
+                            horizontal=True
                         )
-                        st.caption(f"{cond_element1} {cond_operator} {cond_element2}")
+
+                        if cond_compare_type == "Indicator":
+                            # Element 2 must be from same group as Element 1
+                            cond_compatible_elements = get_compatible_elements(cond_element1)
+
+                            cond_element2 = st.selectbox(
+                                "Element 2",
+                                [e for e in cond_compatible_elements if e != cond_element1],
+                                key=f"entry_cond_{i}_element2"
+                            )
+                            st.caption(f"{cond_element1} {cond_operator} {cond_element2}")
+                        else:  # Fixed Value
+                            cond_value = st.number_input(
+                                "Value",
+                                value=50.0,
+                                key=f"entry_cond_{i}_value"
+                            )
+                            st.caption(f"{cond_element1} {cond_operator} {cond_value}")
         else:
             st.info("No conditions added. Trigger will activate without additional requirements.")
 
 
 def render_exit_box():
     """Render exit strategy configuration box"""
-    st.subheader("📤 Exit Strategy")
+    st.subheader("Exit Strategy")
 
     with st.container(border=True):
         # TRIGGER (Required) - Event between indicators/price
-        st.markdown("#### 🎯 Trigger (Required)")
+        st.markdown("#### Trigger (Required)")
         st.caption("Define an event between compatible elements")
 
         col1, col2, col3 = st.columns([2, 1, 2])
@@ -261,30 +291,37 @@ def render_exit_box():
             )
 
         with col3:
-            # Element 2 must be from same group as Element 1
-            compatible_elements = get_compatible_elements(exit_trigger_element1)
+            # Choose between indicator or fixed value
+            exit_trigger_compare_type = st.radio(
+                "Compare to",
+                CONDITION_COMPARE_TYPES,
+                key="exit_trigger_compare_type",
+                horizontal=True
+            )
 
-            # For "At Level", show amplitude input instead
-            if exit_trigger_event == "At Level":
-                exit_trigger_amplitude = st.number_input(
-                    "Amplitude/Level",
-                    value=50.0,
-                    key="exit_trigger_amplitude",
-                    help="e.g., RSI at 50, CMB at -100"
-                )
-                st.caption(f"Example: {exit_trigger_element1} at {exit_trigger_amplitude}")
-            else:
+            if exit_trigger_compare_type == "Indicator":
+                # Element 2 must be from same group as Element 1
+                compatible_elements = get_compatible_elements(exit_trigger_element1)
+
                 exit_trigger_element2 = st.selectbox(
                     "Element 2",
                     [e for e in compatible_elements if e != exit_trigger_element1],
                     key="exit_trigger_element2"
                 )
                 st.caption(f"Example: {exit_trigger_element1} {exit_trigger_event} {exit_trigger_element2}")
+            else:  # Fixed Value
+                exit_trigger_value = st.number_input(
+                    "Value/Level",
+                    value=50.0,
+                    key="exit_trigger_value",
+                    help="e.g., RSI crosses above 50, Price crosses below 4000"
+                )
+                st.caption(f"Example: {exit_trigger_element1} {exit_trigger_event} {exit_trigger_value}")
 
         st.divider()
 
         # POSITION SIZE (Required) - Units of position
-        st.markdown("#### 💰 Position Size (Required)")
+        st.markdown("#### Position Size (Required)")
         st.caption("Specify the units/size of the position to exit")
 
         exit_position_size = st.number_input(
@@ -298,7 +335,7 @@ def render_exit_box():
         st.divider()
 
         # CONDITIONS (Optional, 0-10)
-        st.markdown("#### ⚙️ Conditions (Optional, 0-10)")
+        st.markdown("#### Conditions")
         st.caption(
             "All conditions must be met for the trigger to activate. If any condition fails, exit will not occur.")
 
@@ -352,15 +389,31 @@ def render_exit_box():
                         )
 
                     with col3:
-                        # Element 2 must be from same group as Element 1
-                        cond_compatible_elements = get_compatible_elements(cond_element1)
-
-                        cond_element2 = st.selectbox(
-                            "Element 2",
-                            [e for e in cond_compatible_elements if e != cond_element1],
-                            key=f"exit_cond_{i}_element2"
+                        # Choose between indicator or fixed value
+                        cond_compare_type = st.radio(
+                            "Compare to",
+                            CONDITION_COMPARE_TYPES,
+                            key=f"exit_cond_{i}_compare_type",
+                            horizontal=True
                         )
-                        st.caption(f"{cond_element1} {cond_operator} {cond_element2}")
+
+                        if cond_compare_type == "Indicator":
+                            # Element 2 must be from same group as Element 1
+                            cond_compatible_elements = get_compatible_elements(cond_element1)
+
+                            cond_element2 = st.selectbox(
+                                "Element 2",
+                                [e for e in cond_compatible_elements if e != cond_element1],
+                                key=f"exit_cond_{i}_element2"
+                            )
+                            st.caption(f"{cond_element1} {cond_operator} {cond_element2}")
+                        else:  # Fixed Value
+                            cond_value = st.number_input(
+                                "Value",
+                                value=50.0,
+                                key=f"exit_cond_{i}_value"
+                            )
+                            st.caption(f"{cond_element1} {cond_operator} {cond_value}")
         else:
             st.info("No conditions added. Trigger will activate without additional requirements.")
 
@@ -371,13 +424,21 @@ def render_save_button(strategy_name_input):
     with col2:
         if st.button("💾 Save Strategy", type="primary", use_container_width=True):
             count = save_strategy_to_session(strategy_name_input)
+
+            # Reset the strategy builder to show "Create New Strategy" button again
+            st.session_state['strategy_started'] = False
+            st.session_state['strategy_direction'] = None
+            st.session_state['entry_conditions_count'] = 0
+            st.session_state['exit_conditions_count'] = 0
+            st.session_state['strategy_name_input'] = ""
+
             st.success(f"✅ Strategy saved! Total: {count}")
             st.rerun()
 
 
 def render_strategy_management():
     """Render strategy management section"""
-    st.subheader("📋 Strategy Management")
+    st.subheader("Strategy Management")
 
     if st.session_state['saved_strategies']:
         st.caption(f"Total strategies saved: {len(st.session_state['saved_strategies'])}")
@@ -404,55 +465,103 @@ def render_strategy_management():
                         st.rerun()
 
                 # Expandable details view
-                with st.expander("View Details", expanded=False):
-                    col_entry, col_exit = st.columns(2)
+                with st.expander("View Strategy Details", expanded=False):
 
-                    with col_entry:
-                        st.markdown("**Entry Configuration:**")
+                    # Entry Strategy Section
+                    st.markdown("### Entry Strategy")
+
+                    with st.container(border=True):
                         entry = strategy.get('entry', {})
                         trigger = entry.get('trigger', {})
 
-                        st.markdown(
-                            f"- **Trigger:** {trigger.get('element1', 'N/A')} "
-                            f"{trigger.get('event', 'N/A')} "
-                            f"{trigger.get('element2', trigger.get('amplitude', 'N/A'))}"
-                        )
-                        st.markdown(f"- **Position Size:** {entry.get('position_size', 'N/A')} units")
-                        st.markdown(f"- **Conditions:** {entry.get('conditions_count', 0)}")
+                        # Trigger
+                        st.markdown("#### Trigger")
+                        trigger_element1 = trigger.get('element1', 'N/A')
+                        trigger_event = trigger.get('event', 'N/A')
+                        trigger_compare_type = trigger.get('compare_type', 'Indicator')
 
-                        if entry.get('conditions'):
-                            for i, cond in enumerate(entry.get('conditions', [])):
-                                st.caption(
-                                    f"  {i + 1}. {cond.get('element1', 'N/A')} "
-                                    f"{cond.get('event', 'N/A')} "
-                                    f"{cond.get('element2', cond.get('amplitude', 'N/A'))}"
-                                )
+                        if trigger_compare_type == "Fixed Value":
+                            trigger_value = trigger.get('value', 'N/A')
+                            st.info(f"**{trigger_element1}** {trigger_event} **{trigger_value}**")
+                        else:
+                            trigger_element2 = trigger.get('element2', 'N/A')
+                            st.info(f"**{trigger_element1}** {trigger_event} **{trigger_element2}**")
 
-                    with col_exit:
-                        st.markdown("**Exit Configuration:**")
+                        # Position Size
+                        st.markdown("#### Position Size")
+                        position_size = entry.get('position_size', 'N/A')
+                        st.info(f"**{position_size}** units")
+
+                        # Conditions
+                        st.markdown("#### Conditions")
+                        conditions_count = entry.get('conditions_count', 0)
+
+                        if conditions_count > 0:
+                            st.markdown(f"**{conditions_count} condition(s) must be met:**")
+                            for i, cond in enumerate(entry.get('conditions', []), 1):
+                                cond_element1 = cond.get('element1', 'N/A')
+                                cond_operator = cond.get('operator', 'N/A')
+                                cond_compare_type = cond.get('compare_type', 'Indicator')
+
+                                if cond_compare_type == "Fixed Value":
+                                    cond_value = cond.get('value', 'N/A')
+                                    st.markdown(f"{i}. {cond_element1} **{cond_operator}** {cond_value}")
+                                else:
+                                    cond_element2 = cond.get('element2', 'N/A')
+                                    st.markdown(f"{i}. {cond_element1} **{cond_operator}** {cond_element2}")
+                        else:
+                            st.markdown("*No conditions - trigger activates immediately*")
+
+                    st.divider()
+
+                    # Exit Strategy Section
+                    st.markdown("### Exit Strategy")
+
+                    with st.container(border=True):
                         exit_cfg = strategy.get('exit', {})
                         exit_trigger = exit_cfg.get('trigger', {})
 
-                        st.markdown(
-                            f"- **Trigger:** {exit_trigger.get('element1', 'N/A')} "
-                            f"{exit_trigger.get('event', 'N/A')} "
-                            f"{exit_trigger.get('element2', exit_trigger.get('amplitude', 'N/A'))}"
-                        )
-                        st.markdown(f"- **Position Size:** {exit_cfg.get('position_size', 'N/A')} units")
-                        st.markdown(f"- **Conditions:** {exit_cfg.get('conditions_count', 0)}")
+                        # Trigger
+                        st.markdown("#### Trigger")
+                        exit_trigger_element1 = exit_trigger.get('element1', 'N/A')
+                        exit_trigger_event = exit_trigger.get('event', 'N/A')
+                        exit_trigger_compare_type = exit_trigger.get('compare_type', 'Indicator')
 
-                        if exit_cfg.get('conditions'):
-                            for i, cond in enumerate(exit_cfg.get('conditions', [])):
-                                st.caption(
-                                    f"  {i + 1}. {cond.get('element1', 'N/A')} "
-                                    f"{cond.get('event', 'N/A')} "
-                                    f"{cond.get('element2', cond.get('amplitude', 'N/A'))}"
-                                )
+                        if exit_trigger_compare_type == "Fixed Value":
+                            exit_trigger_value = exit_trigger.get('value', 'N/A')
+                            st.info(f"**{exit_trigger_element1}** {exit_trigger_event} **{exit_trigger_value}**")
+                        else:
+                            exit_trigger_element2 = exit_trigger.get('element2', 'N/A')
+                            st.info(f"**{exit_trigger_element1}** {exit_trigger_event} **{exit_trigger_element2}**")
 
-                    # Full JSON view
-                    st.divider()
-                    st.markdown("**Full Configuration (JSON):**")
-                    st.json(strategy)
+                        # Position Size
+                        st.markdown("#### Position Size")
+                        exit_position_size = exit_cfg.get('position_size', 'N/A')
+                        st.info(f"**{exit_position_size}** units")
+
+                        # Conditions
+                        st.markdown("#### ⚙️ Conditions")
+                        exit_conditions_count = exit_cfg.get('conditions_count', 0)
+
+                        if exit_conditions_count > 0:
+                            st.markdown(f"**{exit_conditions_count} condition(s) must be met:**")
+                            for i, cond in enumerate(exit_cfg.get('conditions', []), 1):
+                                cond_element1 = cond.get('element1', 'N/A')
+                                cond_operator = cond.get('operator', 'N/A')
+                                cond_compare_type = cond.get('compare_type', 'Indicator')
+
+                                if cond_compare_type == "Fixed Value":
+                                    cond_value = cond.get('value', 'N/A')
+                                    st.markdown(f"{i}. {cond_element1} **{cond_operator}** {cond_value}")
+                                else:
+                                    cond_element2 = cond.get('element2', 'N/A')
+                                    st.markdown(f"{i}. {cond_element1} **{cond_operator}** {cond_element2}")
+                        else:
+                            st.markdown("*No conditions - trigger activates immediately*")
+
+                    # Advanced: Show JSON for debugging
+                    with st.expander("🔧 Advanced: View Raw JSON", expanded=False):
+                        st.json(strategy)
 
         # Bulk delete option
         st.divider()

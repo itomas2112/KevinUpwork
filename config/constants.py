@@ -43,6 +43,12 @@ CONDITION_OPERATORS = [
     "Below"
 ]
 
+# Condition comparison types
+CONDITION_COMPARE_TYPES = [
+    "Indicator",
+    "Fixed Value"
+]
+
 # Indicator mapping for strategy execution
 INDICATOR_MAP = {
     "Price": "latest",

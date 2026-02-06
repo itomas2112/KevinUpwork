@@ -152,21 +152,21 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     indicator_map = {
         "Price": "latest",
         "BB Upper Band": "bb_upper",
-        "BB Middle Band": "bb_middle",
+        "BB Middle Band": "bb_mid",  # Changed from "bb_middle"
         "BB Lower Band": "bb_lower",
         "KC Upper Band": "kc_upper",
-        "KC Middle Band": "kc_middle",
+        "KC Middle Band": "kc_mid",  # Changed from "kc_middle"
         "KC Lower Band": "kc_lower",
         "Tenkan": "tenkan",
         "Kijun": "kijun",
         "Senkou A": "senkou_a",
         "Senkou B": "senkou_b",
         "RSI": "rsi",
-        "RSI 13 SMA": "rsi_13_sma",
-        "RSI 33 SMA": "rsi_33_sma",
-        "CMB": "cmb",
-        "CMB 13 SMA": "cmb_13_sma",
-        "CMB 33 SMA": "cmb_33_sma",
+        "RSI 13 SMA": "ci_13",  # Based on your columns, this maps to ci_13
+        "RSI 33 SMA": "ci_33",  # Based on your columns, this maps to ci_33
+        "CMB": "cmb",  # You'll need to add this column if you want to use CMB
+        "CMB 13 SMA": "cmb_13_sma",  # You'll need to add this column if you want to use CMB
+        "CMB 33 SMA": "cmb_33_sma",  # You'll need to add this column if you want to use CMB
     }
 
     # -------------------------------------------------
@@ -175,24 +175,34 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     def check_condition(condition_config, current_idx):
         """Check if a single condition is met at given index"""
         element1_name = condition_config.get('element1')
-        operator = condition_config.get('operator')  # Changed from 'event'
+        operator = condition_config.get('operator')
+        compare_type = condition_config.get('compare_type', 'Indicator')
         element2_name = condition_config.get('element2')
+        fixed_value = condition_config.get('value')
 
         # Get the series for element1
         col1 = indicator_map.get(element1_name)
+
         if col1 is None or col1 not in df.columns:
             return False
 
         series1 = df[col1]
         value1 = series1.iloc[current_idx]
 
-        # Get element2
-        col2 = indicator_map.get(element2_name)
-        if col2 is None or col2 not in df.columns:
-            return False
+        # Determine what to compare against
+        if compare_type == "Fixed Value":
+            if fixed_value is None:
+                return False
+            value2 = fixed_value
+        else:
+            # Compare against another indicator
+            col2 = indicator_map.get(element2_name)
 
-        series2 = df[col2]
-        value2 = series2.iloc[current_idx]
+            if col2 is None or col2 not in df.columns:
+                return False
+
+            series2 = df[col2]
+            value2 = series2.iloc[current_idx]
 
         # Check the operator
         if operator == "Above":
@@ -202,54 +212,67 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
 
         return False
 
-    # -------------------------------------------------
-    # Helper function to check trigger events
-    # -------------------------------------------------
     def check_trigger(trigger_config, current_idx):
         """Check if a trigger event occurred at given index"""
         element1_name = trigger_config.get('element1')
         event = trigger_config.get('event')
+        compare_type = trigger_config.get('compare_type', 'Indicator')
         element2_name = trigger_config.get('element2')
-        amplitude = trigger_config.get('amplitude')
+        fixed_value = trigger_config.get('value')
 
         # Get the series for element1
         col1 = indicator_map.get(element1_name)
+
         if col1 is None or col1 not in df.columns:
             return False
 
         series1 = df[col1]
         value1 = series1.iloc[current_idx]
 
-        # Handle "At Level" event
-        if event == "At Level":
-            if amplitude is None:
+        # Determine what to compare against
+        if compare_type == "Fixed Value":
+            if fixed_value is None:
                 return False
-            return abs(value1 - amplitude) < 0.01  # Small tolerance for floating point
 
-        # For other events, we need element2
-        col2 = indicator_map.get(element2_name)
-        if col2 is None or col2 not in df.columns:
-            return False
+            value2 = fixed_value
 
-        series2 = df[col2]
-        value2 = series2.iloc[current_idx]
+            if current_idx > 0:
+                value1_prev = series1.iloc[current_idx - 1]
+                value2_prev = fixed_value
+        else:
+            # Compare against another indicator
+            col2 = indicator_map.get(element2_name)
+
+            if col2 is None or col2 not in df.columns:
+                return False
+
+            series2 = df[col2]
+            value2 = series2.iloc[current_idx]
+
+            if current_idx > 0:
+                value1_prev = series1.iloc[current_idx - 1]
+                value2_prev = series2.iloc[current_idx - 1]
 
         # Check the event type
         if event == "Cross Above":
             if current_idx == 0:
                 return False
-            return (value1 > value2) and (series1.iloc[current_idx - 1] <= series2.iloc[current_idx - 1])
+            return (value1 > value2) and (value1_prev <= value2_prev)
+
         elif event == "Cross Below":
             if current_idx == 0:
                 return False
-            return (value1 < value2) and (series1.iloc[current_idx - 1] >= series2.iloc[current_idx - 1])
+            return (value1 < value2) and (value1_prev >= value2_prev)
+
         elif event == "Cross":
             if current_idx == 0:
                 return False
-            # Cross means either cross above or cross below
-            cross_above = (value1 > value2) and (series1.iloc[current_idx - 1] <= series2.iloc[current_idx - 1])
-            cross_below = (value1 < value2) and (series1.iloc[current_idx - 1] >= series2.iloc[current_idx - 1])
+            cross_above = (value1 > value2) and (value1_prev <= value2_prev)
+            cross_below = (value1 < value2) and (value1_prev >= value2_prev)
             return cross_above or cross_below
+
+        elif event == "At Level":
+            return abs(value1 - value2) < 0.01
 
         return False
 
