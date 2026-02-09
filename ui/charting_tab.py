@@ -38,10 +38,12 @@ def render_charting_tab(sidebar_config):
     show_custom_strategy = False
     selected_custom_strategy = None
 
+    # Use the actual strategy index stored in session state
     if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
-        show_custom_strategy = True
-        strategy_idx = st.session_state['selected_custom_strategy_idx'] - 1
-        selected_custom_strategy = st.session_state['saved_strategies'][strategy_idx]
+        actual_idx = st.session_state.get('selected_custom_strategy_actual_idx')
+        if actual_idx is not None and actual_idx < len(st.session_state['saved_strategies']):
+            show_custom_strategy = True
+            selected_custom_strategy = st.session_state['saved_strategies'][actual_idx]
 
     # Parse DRM periods
     drm_periods = parse_drm_periods(

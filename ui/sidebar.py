@@ -10,7 +10,7 @@ def render_sidebar():
 
     # Pattern Parameters
     st.sidebar.header("Pattern Parameters")
-    pattern = st.sidebar.selectbox("Pattern", ['Bullish', 'Bearish'], index=0)
+    pattern = st.sidebar.selectbox("Pattern", ['Bullish', 'Bearish'], index=0, key="pattern_select")
 
     # Store pattern in session state so other functions can access it
     st.session_state['pattern'] = pattern
@@ -39,34 +39,53 @@ def render_sidebar():
     show_kc = st.sidebar.checkbox("Show Keltner Channel", value=False)
 
     # Strategy Overlays
-    st.sidebar.header("Strategy Overlays")
-    show_tenkan_kijun = st.sidebar.checkbox("Show Tenkan Kijun Strategy", value=False)
+    # st.sidebar.header("Strategy Overlays")
+    # show_tenkan_kijun = st.sidebar.checkbox("Show Tenkan Kijun Strategy", value=False)
+    show_tenkan_kijun = False
 
-    # Custom Strategies (single selection)
-    if st.session_state['saved_strategies']:
-        st.sidebar.markdown("**Custom Strategies:**")
+    # Custom Strategies (single selection) - FILTERED BY PATTERN
+    if st.session_state['saved_strategies'] and primary_choice and secondary_choice:
+        # Create current pattern combination string
+        current_pattern = f"{primary_choice} → {secondary_choice}"
 
-        strategy_options = ["None"] + [
-            strategy.get('strategy_name', f'Strategy_{idx + 1}')
+        # Filter strategies that apply to current pattern
+        filtered_strategies = [
+            (idx, strategy)
             for idx, strategy in enumerate(st.session_state['saved_strategies'])
+            if current_pattern in strategy.get('patterns', [])
         ]
 
-        if 'selected_custom_strategy_idx' not in st.session_state:
-            st.session_state['selected_custom_strategy_idx'] = 0
+        if filtered_strategies:
+            st.sidebar.header("Custom Strategies:")
 
-        # Radio button for single selection
-        selected_option = st.sidebar.radio(
-            "Select one strategy:",
-            options=range(len(strategy_options)),
-            format_func=lambda x: strategy_options[x],
-            index=st.session_state['selected_custom_strategy_idx'],
-            key="custom_strategy_radio"
-        )
+            strategy_options = ["None"] + [
+                strategy.get('strategy_name', f'Strategy_{idx + 1}')
+                for idx, strategy in filtered_strategies
+            ]
 
-        # Check if selection changed and update
-        if selected_option != st.session_state['selected_custom_strategy_idx']:
-            st.session_state['selected_custom_strategy_idx'] = selected_option
-            st.rerun()
+            # Map display indices to actual strategy indices
+            strategy_index_map = {i: idx for i, (idx, _) in enumerate(filtered_strategies, 1)}
+
+            if 'selected_custom_strategy_idx' not in st.session_state:
+                st.session_state['selected_custom_strategy_idx'] = 0
+
+            selected_option = st.sidebar.radio(
+                "Select one strategy:",
+                options=range(len(strategy_options)),
+                format_func=lambda x: strategy_options[x],
+                index=st.session_state['selected_custom_strategy_idx'],
+                key="custom_strategy_radio"
+            )
+
+            # Check if selection changed and update
+            if selected_option != st.session_state['selected_custom_strategy_idx']:
+                st.session_state['selected_custom_strategy_idx'] = selected_option
+                # Store the actual strategy index
+                if selected_option > 0:
+                    st.session_state['selected_custom_strategy_actual_idx'] = strategy_index_map[selected_option]
+                else:
+                    st.session_state['selected_custom_strategy_actual_idx'] = None
+                st.rerun()
 
     # Indicator Parameters
     params_1h = render_timeframe_parameters("1H")
@@ -83,7 +102,6 @@ def render_sidebar():
         'params_1h': params_1h,
         'params_15m': params_15m
     }
-
 
 def render_timeframe_parameters(timeframe):
     """Render indicator parameters for a specific timeframe"""

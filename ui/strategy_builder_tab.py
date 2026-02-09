@@ -68,6 +68,31 @@ def render_strategy_form():
         key="strategy_name_field"
     )
 
+    # Pattern selection for strategy
+    st.markdown("#### Apply to Patterns")
+    st.caption("Select which pattern combinations this strategy should apply to")
+
+    # Get available patterns from PRIMARY_SECONDARY_MAP
+    from data.helpers import PRIMARY_SECONDARY_MAP
+
+    # Create pattern combination options
+    pattern_options = []
+    for primary, secondaries in PRIMARY_SECONDARY_MAP.items():
+        for secondary in secondaries:
+            pattern_options.append(f"{primary} → {secondary}")
+
+    # Multi-select for patterns
+    selected_patterns = st.multiselect(
+        "Pattern Combinations",
+        options=pattern_options,
+        default=st.session_state.get('strategy_patterns', []),
+        key="strategy_patterns_select",
+        help="This strategy will only appear when these pattern combinations are selected"
+    )
+
+    # Store in session state
+    st.session_state['strategy_patterns'] = selected_patterns
+
     # Reset button
     if st.button("🔄 Reset Strategy", type="secondary"):
         reset_strategy_builder()
@@ -456,7 +481,11 @@ def render_strategy_management():
                     st.markdown(f"{direction_emoji} {strategy.get('direction', 'N/A')}")
 
                 with col3:
-                    st.caption(f"Created: {strategy.get('created_at', 'N/A')}")
+                    patterns = strategy.get('patterns', [])
+                    if patterns:
+                        st.caption(f"Patterns: {len(patterns)}")
+                    else:
+                        st.caption("Patterns: All")
 
                 with col4:
                     if st.button("🗑️", key=f"delete_strategy_{idx}", help="Delete this strategy"):
@@ -466,6 +495,17 @@ def render_strategy_management():
 
                 # Expandable details view
                 with st.expander("View Strategy Details", expanded=False):
+
+                    # Show patterns - ADD THIS SECTION HERE
+                    st.markdown("### Applied to Patterns")
+                    patterns = strategy.get('patterns', [])
+                    if patterns:
+                        for pattern in patterns:
+                            st.markdown(f"- {pattern}")
+                    else:
+                        st.info("This strategy applies to all patterns")
+
+                    st.divider()
 
                     # Entry Strategy Section
                     st.markdown("### Entry Strategy")

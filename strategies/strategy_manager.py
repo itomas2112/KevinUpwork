@@ -16,10 +16,14 @@ def save_strategy_to_session(strategy_name):
     else:
         final_strategy_name = f"Strategy_{len(st.session_state['saved_strategies']) + 1}"
 
+    # Get selected patterns
+    selected_patterns = st.session_state.get('strategy_patterns', [])
+
     # Collect all strategy data
     strategy_data = {
         "strategy_name": final_strategy_name,
         "direction": st.session_state['strategy_direction'],
+        "patterns": selected_patterns,
         "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
         "entry": {
             "trigger": {
