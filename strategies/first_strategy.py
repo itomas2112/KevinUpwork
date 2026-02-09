@@ -152,21 +152,21 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     indicator_map = {
         "Price": "latest",
         "BB Upper Band": "bb_upper",
-        "BB Middle Band": "bb_mid",  # Changed from "bb_middle"
+        "BB Middle Band": "bb_mid",
         "BB Lower Band": "bb_lower",
         "KC Upper Band": "kc_upper",
-        "KC Middle Band": "kc_mid",  # Changed from "kc_middle"
+        "KC Middle Band": "kc_mid",
         "KC Lower Band": "kc_lower",
         "Tenkan": "tenkan",
         "Kijun": "kijun",
         "Senkou A": "senkou_a",
         "Senkou B": "senkou_b",
         "RSI": "rsi",
-        "RSI 13 SMA": "ci_13",  # Based on your columns, this maps to ci_13
-        "RSI 33 SMA": "ci_33",  # Based on your columns, this maps to ci_33
-        "CMB": "cmb",  # You'll need to add this column if you want to use CMB
-        "CMB 13 SMA": "cmb_13_sma",  # You'll need to add this column if you want to use CMB
-        "CMB 33 SMA": "cmb_33_sma",  # You'll need to add this column if you want to use CMB
+        "RSI 13 SMA": "ci_13",
+        "RSI 33 SMA": "ci_33",
+        "CMB": "cmb",
+        "CMB 13 SMA": "cmb_13_sma",
+        "CMB 33 SMA": "cmb_33_sma",
     }
 
     # -------------------------------------------------
@@ -212,6 +212,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
 
         return False
 
+    # -------------------------------------------------
+    # Helper function to check trigger events
+    # -------------------------------------------------
     def check_trigger(trigger_config, current_idx):
         """Check if a trigger event occurred at given index"""
         element1_name = trigger_config.get('element1')
@@ -306,6 +309,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     exit_trigger = exit_config.get('trigger', {})
     exit_conditions = exit_config.get('conditions', [])
 
+    # Get strategy direction
+    strategy_direction = strategy_config.get('direction', 'Long')
+
     # -------------------------------------------------
     # Signal generation (entry first, exit after)
     # -------------------------------------------------
@@ -342,7 +348,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                 entry_signal.append(False)
                 exit_signal.append(True)
 
-                trade_return = price / current_entry_price
+                # Calculate return based on strategy direction
+                if strategy_direction == 'Long':
+                    trade_return = price / current_entry_price  # Long: profit when price goes up
+                else:  # Short
+                    trade_return = current_entry_price / price  # Short: profit when price goes down
+
                 trade_returns.append(trade_return)
 
                 in_trade = False
@@ -356,7 +367,13 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     # -------------------------------------------------
     if in_trade and current_entry_price is not None:
         last_price = df["latest"].iloc[-1]
-        trade_return = last_price / current_entry_price
+
+        # Calculate return based on strategy direction
+        if strategy_direction == 'Long':
+            trade_return = last_price / current_entry_price
+        else:  # Short
+            trade_return = current_entry_price / last_price
+
         trade_returns.append(trade_return)
 
     # -------------------------------------------------
