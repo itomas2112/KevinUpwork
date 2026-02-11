@@ -147,22 +147,18 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
     stats_1h, stats_15m = None, None
     strategy_label = None
 
-    if sidebar_config['show_tenkan_kijun']:
-        df_slice_1h, stats_1h = ichimoku_tenkan_kijun_strategy(df_slice_1h)
-        df_slice_15m, stats_15m = ichimoku_tenkan_kijun_strategy(df_slice_15m)
-        strategy_label = "Tenkan Kijun Strategy"
-
     if show_custom_strategy and selected_custom_strategy is not None:
-        df_slice_1h, custom_stats_1h = execute_custom_strategy(df_slice_1h, selected_custom_strategy)
-        df_slice_15m, custom_stats_15m = execute_custom_strategy(df_slice_15m, selected_custom_strategy)
+        # Add market parameters to strategy config
+        strategy_with_params = selected_custom_strategy.copy()
+        strategy_with_params['tick_size'] = sidebar_config['tick_size']
+        strategy_with_params['minimal_change'] = sidebar_config['minimal_change']
 
-        if not sidebar_config['show_tenkan_kijun']:
-            stats_1h = custom_stats_1h
-            stats_15m = custom_stats_15m
-            strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
+        df_slice_1h, stats_1h = execute_custom_strategy(df_slice_1h, strategy_with_params)
+        df_slice_15m, stats_15m = execute_custom_strategy(df_slice_15m, strategy_with_params)
+        strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
 
     # Render charts
-    if sidebar_config['show_tenkan_kijun'] or show_custom_strategy:
+    if show_custom_strategy and stats_1h is not None:
         col_charts, col_stats = st.columns([3, 1], gap="medium")
 
         with col_charts:
@@ -205,15 +201,26 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label):
                 f"{int(stats_1h.loc['Number of trades', 'value'])}",
                 f"{round(stats_1h.loc['Win rate (%)', 'value']):.0f}%",
                 f"{round(stats_1h.loc['Loss rate (%)', 'value']):.0f}%",
-                f"{stats_1h.loc['Total return (%)', 'value']:.2f}%",
+                f"${stats_1h.loc['Winning trades P&L ($)', 'value']:.2f}",
+                f"${stats_1h.loc['Losing trades P&L ($)', 'value']:.2f}",
+                f"${stats_1h.loc['Total P&L ($)', 'value']:.2f}",
             ],
             "15m": [
                 f"{int(stats_15m.loc['Number of trades', 'value'])}",
                 f"{round(stats_15m.loc['Win rate (%)', 'value']):.0f}%",
                 f"{round(stats_15m.loc['Loss rate (%)', 'value']):.0f}%",
-                f"{stats_15m.loc['Total return (%)', 'value']:.2f}%",
+                f"${stats_15m.loc['Winning trades P&L ($)', 'value']:.2f}",
+                f"${stats_15m.loc['Losing trades P&L ($)', 'value']:.2f}",
+                f"${stats_15m.loc['Total P&L ($)', 'value']:.2f}",
             ],
         },
-        index=["Number of trades", "Win rate (%)", "Loss rate (%)", "Total return (%)"],
+        index=[
+            "Number of trades",
+            "Win %",
+            "Lose %",
+            "Win $",
+            "Lose $",
+            "Total P&L",
+        ],
     )
     st.table(stats_table)

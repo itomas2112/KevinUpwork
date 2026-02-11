@@ -49,22 +49,28 @@ CONDITION_COMPARE_TYPES = [
     "Fixed Value"
 ]
 
+# Exit types - NEW
+EXIT_TYPES = [
+    "Target",
+    "Stop"
+]
+
 # Indicator mapping for strategy execution
 INDICATOR_MAP = {
     "Price": "latest",
     "BB Upper Band": "bb_upper",
-    "BB Middle Band": "bb_middle",
+    "BB Middle Band": "bb_mid",  # NOT bb_middle
     "BB Lower Band": "bb_lower",
     "KC Upper Band": "kc_upper",
-    "KC Middle Band": "kc_middle",
+    "KC Middle Band": "kc_mid",  # NOT kc_middle
     "KC Lower Band": "kc_lower",
     "Tenkan": "tenkan",
     "Kijun": "kijun",
     "Senkou A": "senkou_a",
     "Senkou B": "senkou_b",
     "RSI": "rsi",
-    "RSI 13 SMA": "rsi_13_sma",
-    "RSI 33 SMA": "rsi_33_sma",
+    "RSI 13 SMA": "ci_13",  # NOT rsi_13_sma
+    "RSI 33 SMA": "ci_33",  # NOT rsi_33_sma
     "CMB": "cmb",
     "CMB 13 SMA": "cmb_13_sma",
     "CMB 33 SMA": "cmb_33_sma",
