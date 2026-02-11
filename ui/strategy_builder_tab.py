@@ -546,7 +546,15 @@ def render_save_button(strategy_name_input):
     is_valid = validate_exit_groups()
 
     if not is_valid:
-        st.error("⚠️ Total exit size must equal entry size!")
+        exit_groups = st.session_state.get('exit_groups', [])
+        has_empty_targets = any(len(g.get('targets', [])) == 0 for g in exit_groups)
+
+        if not exit_groups:
+            st.error("⚠️ You must add at least one exit group!")
+        elif has_empty_targets:
+            st.error("⚠️ Every exit group must have at least one target!")
+        else:
+            st.error("⚠️ Total exit size must equal entry size!")
 
     col1, col2 = st.columns([3, 1])
     with col2:
@@ -801,14 +809,24 @@ def load_strategy_for_editing(strategy, strategy_idx):
 
 
 def validate_exit_groups():
-    """Validate that total exit size equals entry size"""
+    """Validate that total exit size equals entry size and every group has at least one target"""
+    exit_groups = st.session_state.get('exit_groups', [])
     entry_size = st.session_state.get('entry_position_size', 0)
 
+    # Must have at least one exit group
+    if not exit_groups:
+        return False
+
     total_exit_size = 0
-    for exit_group in st.session_state.get('exit_groups', []):
+    for exit_group in exit_groups:
         total_exit_size += exit_group.get('position_size', 0)
 
+        # Every group must have at least one target
+        if len(exit_group.get('targets', [])) == 0:
+            return False
+
     return abs(total_exit_size - entry_size) < 0.001  # Small tolerance for float comparison
+
 
 
 def add_exit_group():

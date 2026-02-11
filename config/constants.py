@@ -35,7 +35,7 @@ EVENT_TYPES = [
     "Cross",
     "Cross Above",
     "Cross Below",
-    "At Level"
+    # "At Level"  # Disabled — triggers every bar when values are close, not a one-time event
 ]
 
 CONDITION_OPERATORS = [
