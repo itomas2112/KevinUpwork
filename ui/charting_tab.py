@@ -57,15 +57,32 @@ def render_charting_tab(sidebar_config):
         st.warning("No valid date ranges found in DRM.")
         return
 
+    # Collect stats from all periods for global aggregation
+    all_stats_1h = []
+    all_stats_15m = []
+    strategy_label = None
+
     # Render each period
     for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
-        render_period(
+        stats_1h, stats_15m = render_period(
             i, start_dt, end_dt,
             df_features_1h, df_features_15m,
             sidebar_config,
             show_custom_strategy,
             selected_custom_strategy
         )
+
+        if stats_1h is not None:
+            all_stats_1h.append(stats_1h)
+        if stats_15m is not None:
+            all_stats_15m.append(stats_15m)
+
+    if show_custom_strategy and selected_custom_strategy is not None:
+        strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
+
+    # Render global performance summary
+    if all_stats_1h and all_stats_15m:
+        render_global_performance(all_stats_1h, all_stats_15m, strategy_label, len(drm_periods))
 
 
 def render_file_uploaders():
@@ -120,7 +137,7 @@ def check_data_loaded():
 
 def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                   sidebar_config, show_custom_strategy, selected_custom_strategy):
-    """Render a single period with charts and stats"""
+    """Render a single period with charts and stats. Returns (stats_1h, stats_15m) or (None, None)."""
 
     st.markdown(f"### Period {period_num}: {start_dt} → {end_dt}")
 
@@ -141,7 +158,7 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
 
     if df_slice_1h.empty or df_slice_15m.empty:
         st.info("No data for this period.")
-        return
+        return None, None
 
     # Execute strategies
     stats_1h, stats_15m = None, None
@@ -187,6 +204,8 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
 
     st.divider()
 
+    return stats_1h, stats_15m
+
 
 def render_strategy_stats(stats_1h, stats_15m, strategy_label):
     """Render strategy statistics table"""
@@ -224,3 +243,108 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label):
         ],
     )
     st.table(stats_table)
+
+
+def _aggregate_stats(all_stats):
+    """
+    Aggregate stats across multiple periods.
+
+    Each stats_df has these rows:
+        Number of trades, Win rate (%), Loss rate (%),
+        Total return (%), Total P&L ($), Avg P&L per trade ($),
+        Winning trades P&L ($), Losing trades P&L ($)
+
+    We sum the raw counts and dollars, then recompute rates.
+    """
+    total_trades = 0
+    total_wins = 0
+    total_win_pnl = 0.0
+    total_lose_pnl = 0.0
+
+    for stats_df in all_stats:
+        n = int(stats_df.loc['Number of trades', 'value'])
+        win_rate = stats_df.loc['Win rate (%)', 'value'] / 100.0
+
+        wins = round(n * win_rate)
+
+        total_trades += n
+        total_wins += wins
+        total_win_pnl += stats_df.loc['Winning trades P&L ($)', 'value']
+        total_lose_pnl += stats_df.loc['Losing trades P&L ($)', 'value']
+
+    total_losses = total_trades - total_wins
+    total_pnl = total_win_pnl + total_lose_pnl
+
+    if total_trades > 0:
+        win_pct = (total_wins / total_trades) * 100
+        lose_pct = (total_losses / total_trades) * 100
+
+        # Average win $ and average lose $ per trade
+        avg_win = total_win_pnl / total_wins if total_wins > 0 else 0.0
+        avg_lose = abs(total_lose_pnl) / total_losses if total_losses > 0 else 0.0
+
+        # Expected Value = (Win% x Avg Win $) - (Lose% x Avg Lose $)
+        expected_value = (win_pct / 100 * avg_win) - (lose_pct / 100 * avg_lose)
+    else:
+        win_pct = 0.0
+        lose_pct = 0.0
+        total_pnl = 0.0
+        expected_value = 0.0
+
+    return {
+        'num_trades': total_trades,
+        'win_pct': win_pct,
+        'lose_pct': lose_pct,
+        'win_pnl': total_win_pnl,
+        'lose_pnl': total_lose_pnl,
+        'total_pnl': total_pnl,
+        'expected_value': expected_value,
+    }
+
+
+def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_periods):
+    """Render the global performance summary across all date ranges"""
+
+    st.markdown("---")
+    st.header("Global Performance Metric of Group of Date Ranges")
+    st.caption(f"Performance metrics across **{num_periods}** date range(s)")
+
+    if strategy_label:
+        st.caption(f"Strategy: **{strategy_label}**")
+
+    agg_1h = _aggregate_stats(all_stats_1h)
+    agg_15m = _aggregate_stats(all_stats_15m)
+
+    global_table = pd.DataFrame(
+        {
+            "1H": [
+                f"{agg_1h['num_trades']}",
+                f"{agg_1h['win_pct']:.0f}%",
+                f"{agg_1h['lose_pct']:.0f}%",
+                f"${agg_1h['win_pnl']:.2f}",
+                f"${agg_1h['lose_pnl']:.2f}",
+                f"${agg_1h['total_pnl']:.2f}",
+                f"${agg_1h['expected_value']:.2f}",
+            ],
+            "15m": [
+                f"{agg_15m['num_trades']}",
+                f"{agg_15m['win_pct']:.0f}%",
+                f"{agg_15m['lose_pct']:.0f}%",
+                f"${agg_15m['win_pnl']:.2f}",
+                f"${agg_15m['lose_pnl']:.2f}",
+                f"${agg_15m['total_pnl']:.2f}",
+                f"${agg_15m['expected_value']:.2f}",
+            ],
+        },
+        index=[
+            "Number of Trades",
+            "Win %",
+            "Lose %",
+            "Win $",
+            "Lose $",
+            "Total P&L",
+            "Expected Value",
+        ],
+    )
+
+    st.table(global_table)
