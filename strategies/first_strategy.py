@@ -332,6 +332,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     current_position_size = 0
     entry_signal = []
     exit_signal = []
+    exit_type_series = []  # Track exit type per bar: None, "Target", "Stop", "Initial Stop"
 
     # Track which exit groups are still active (not yet closed)
     active_exit_groups = set()
@@ -349,6 +350,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                 # ---- Entry
                 entry_signal.append(True)
                 exit_signal.append(False)
+                exit_type_series.append(None)
 
                 current_position_size = entry_position_size
                 current_entry_price = price
@@ -358,18 +360,19 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
             else:
                 entry_signal.append(False)
                 exit_signal.append(False)
+                exit_type_series.append(None)
 
         # Check exit conditions (only if in position)
         elif current_position_size > 0:
             exit_triggered = False
             exit_size = 0
-            exit_type_label = None
+            bar_exit_type = None  # Track the exit type for THIS bar
 
             # First, check initial stop (applies to ALL active groups)
             if initial_stop_config and check_trigger(initial_stop_config, i):
                 # Initial stop closes ALL remaining position
                 exit_size = current_position_size
-                exit_type_label = "Initial Stop"
+                bar_exit_type = "Stop"
                 exit_triggered = True
 
                 # Record trade for all active groups
@@ -398,7 +401,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                         if check_exit_signal(target, i):
                             exit_size += group_size
                             exit_triggered = True
-                            exit_type_label = "Target"
+
+                            # Mark bar exit type — Target, unless a stop also triggers
+                            if bar_exit_type is None:
+                                bar_exit_type = "Target"
 
                             # Record trade
                             all_trades.append({
@@ -418,7 +424,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                             if check_exit_signal(stop, i):
                                 exit_size += group_size
                                 exit_triggered = True
-                                exit_type_label = "Stop"
+
+                                # Stop takes priority over target for bar marker
+                                bar_exit_type = "Stop"
 
                                 # Record trade
                                 all_trades.append({
@@ -440,6 +448,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
             if exit_triggered:
                 entry_signal.append(False)
                 exit_signal.append(True)
+                exit_type_series.append(bar_exit_type)
                 current_position_size -= exit_size
 
                 # Ensure we don't go negative due to floating point errors
@@ -449,10 +458,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
             else:
                 entry_signal.append(False)
                 exit_signal.append(False)
+                exit_type_series.append(None)
 
         else:
             entry_signal.append(False)
             exit_signal.append(False)
+            exit_type_series.append(None)
 
     # -------------------------------------------------
     # Handle open position at the end (close remaining groups)
@@ -475,6 +486,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     # -------------------------------------------------
     df["entry_signal"] = entry_signal
     df["exit_signal"] = exit_signal
+    df["exit_type"] = exit_type_series
 
     # -------------------------------------------------
     # Statistics with P&L calculation

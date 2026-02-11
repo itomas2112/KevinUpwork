@@ -17,6 +17,9 @@ from strategies.strategy_manager import save_strategy_to_session, delete_strateg
 def render_strategy_builder_tab():
     """Render the strategy builder tab content"""
 
+    # Apply any pending edit BEFORE widgets are created
+    _apply_pending_edit()
+
     col_left, col_center, col_right = st.columns([1, 1, 1])
 
     with col_center:
@@ -31,6 +34,88 @@ def render_strategy_builder_tab():
 
         st.divider()
         render_strategy_management()
+
+
+def _apply_pending_edit():
+    """
+    Called at the top of render_strategy_builder_tab(), BEFORE any widgets.
+    Reads the pending strategy and populates all session state keys.
+    """
+    if '_pending_edit_strategy' not in st.session_state:
+        return
+
+    strategy = st.session_state.pop('_pending_edit_strategy')
+    strategy_idx = st.session_state.pop('_pending_edit_strategy_idx')
+
+    # Mark that we're editing an existing strategy
+    st.session_state['editing_strategy'] = True
+    st.session_state['editing_strategy_idx'] = strategy_idx
+
+    # Load basic info
+    st.session_state['strategy_started'] = True
+    st.session_state['strategy_direction'] = strategy.get('direction', 'Long')
+    st.session_state['strategy_name_input'] = strategy.get('strategy_name', '')
+    st.session_state['strategy_patterns'] = strategy.get('patterns', [])
+
+    # Load entry config
+    entry = strategy.get('entry', {})
+    entry_trigger = entry.get('trigger', {})
+
+    st.session_state['entry_trigger_group1'] = entry_trigger.get('group', 'Price & Indicators')
+    st.session_state['entry_trigger_element1'] = entry_trigger.get('element1')
+    st.session_state['entry_trigger_event'] = entry_trigger.get('event')
+    st.session_state['entry_trigger_compare_type'] = entry_trigger.get('compare_type', 'Indicator')
+
+    if entry_trigger.get('compare_type') == 'Indicator':
+        st.session_state['entry_trigger_element2'] = entry_trigger.get('element2')
+    else:
+        st.session_state['entry_trigger_value'] = entry_trigger.get('value', 50.0)
+
+    st.session_state['entry_position_size'] = entry.get('position_size', 1.0)
+
+    # Load entry conditions
+    entry_conditions = entry.get('conditions', [])
+    st.session_state['entry_conditions_count'] = len(entry_conditions)
+
+    for i, cond in enumerate(entry_conditions):
+        st.session_state[f'entry_cond_{i}_group1'] = cond.get('group', 'Price & Indicators')
+        st.session_state[f'entry_cond_{i}_element1'] = cond.get('element1')
+        st.session_state[f'entry_cond_{i}_operator'] = cond.get('operator')
+        st.session_state[f'entry_cond_{i}_compare_type'] = cond.get('compare_type', 'Indicator')
+
+        if cond.get('compare_type') == 'Indicator':
+            st.session_state[f'entry_cond_{i}_element2'] = cond.get('element2')
+        else:
+            st.session_state[f'entry_cond_{i}_value'] = cond.get('value', 50.0)
+
+    # Load initial stop
+    st.session_state['initial_stop'] = strategy.get('initial_stop', None)
+
+    if st.session_state['initial_stop']:
+        initial = st.session_state['initial_stop']
+        st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
+        st.session_state['initial_stop_element2'] = initial.get('element2')
+
+    # Load exit groups
+    saved_groups = strategy.get('exit_groups', [])
+    st.session_state['exit_groups'] = []
+
+    for group_idx, group in enumerate(saved_groups):
+        group_data = {
+            'group_id': group.get('group_id', group_idx + 1),
+            'position_size': group.get('position_size', 1.0),
+            'targets': group.get('targets', []),
+            'stops': group.get('stops', []),
+        }
+        st.session_state['exit_groups'].append(group_data)
+
+        st.session_state[f'exit_group_{group_idx}_size'] = group.get('position_size', 1.0)
+
+        for target_idx, target in enumerate(group.get('targets', [])):
+            _load_exit_widget_keys(group_idx, 'Target', target_idx, target)
+
+        for stop_idx, stop in enumerate(group.get('stops', [])):
+            _load_exit_widget_keys(group_idx, 'Stop', stop_idx, stop)
 
 
 def render_create_button():
@@ -709,81 +794,10 @@ def get_compatible_elements(selected_element):
 
 
 def load_strategy_for_editing(strategy, strategy_idx):
-    """Load a strategy into the builder for editing"""
-
-    # Mark that we're editing an existing strategy
-    st.session_state['editing_strategy'] = True
-    st.session_state['editing_strategy_idx'] = strategy_idx
-
-    # Load basic info
-    st.session_state['strategy_started'] = True
-    st.session_state['strategy_direction'] = strategy.get('direction', 'Long')
-    st.session_state['strategy_name_input'] = strategy.get('strategy_name', '')
-    st.session_state['strategy_patterns'] = strategy.get('patterns', [])
-
-    # Load entry config
-    entry = strategy.get('entry', {})
-    entry_trigger = entry.get('trigger', {})
-
-    st.session_state['entry_trigger_group1'] = entry_trigger.get('group', 'Price & Indicators')
-    st.session_state['entry_trigger_element1'] = entry_trigger.get('element1')
-    st.session_state['entry_trigger_event'] = entry_trigger.get('event')
-    st.session_state['entry_trigger_compare_type'] = entry_trigger.get('compare_type', 'Indicator')
-
-    if entry_trigger.get('compare_type') == 'Indicator':
-        st.session_state['entry_trigger_element2'] = entry_trigger.get('element2')
-    else:
-        st.session_state['entry_trigger_value'] = entry_trigger.get('value', 50.0)
-
-    st.session_state['entry_position_size'] = entry.get('position_size', 1.0)
-
-    # Load entry conditions
-    entry_conditions = entry.get('conditions', [])
-    st.session_state['entry_conditions_count'] = len(entry_conditions)
-
-    for i, cond in enumerate(entry_conditions):
-        st.session_state[f'entry_cond_{i}_group1'] = cond.get('group', 'Price & Indicators')
-        st.session_state[f'entry_cond_{i}_element1'] = cond.get('element1')
-        st.session_state[f'entry_cond_{i}_operator'] = cond.get('operator')
-        st.session_state[f'entry_cond_{i}_compare_type'] = cond.get('compare_type', 'Indicator')
-
-        if cond.get('compare_type') == 'Indicator':
-            st.session_state[f'entry_cond_{i}_element2'] = cond.get('element2')
-        else:
-            st.session_state[f'entry_cond_{i}_value'] = cond.get('value', 50.0)
-
-    # Load initial stop
-    st.session_state['initial_stop'] = strategy.get('initial_stop', None)
-
-    if st.session_state['initial_stop']:
-        initial = st.session_state['initial_stop']
-        st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
-        st.session_state['initial_stop_element2'] = initial.get('element2')
-
-    # Load exit groups
-    saved_groups = strategy.get('exit_groups', [])
-    st.session_state['exit_groups'] = []
-
-    for group_idx, group in enumerate(saved_groups):
-        # Rebuild group structure for session state
-        group_data = {
-            'group_id': group.get('group_id', group_idx + 1),
-            'position_size': group.get('position_size', 1.0),
-            'targets': group.get('targets', []),
-            'stops': group.get('stops', []),
-        }
-        st.session_state['exit_groups'].append(group_data)
-
-        # Set the size widget key
-        st.session_state[f'exit_group_{group_idx}_size'] = group.get('position_size', 1.0)
-
-        # Load each target's widget keys
-        for target_idx, target in enumerate(group.get('targets', [])):
-            _load_exit_widget_keys(group_idx, 'Target', target_idx, target)
-
-        # Load each stop's widget keys
-        for stop_idx, stop in enumerate(group.get('stops', [])):
-            _load_exit_widget_keys(group_idx, 'Stop', stop_idx, stop)
+    """
+    """
+    st.session_state['_pending_edit_strategy'] = strategy
+    st.session_state['_pending_edit_strategy_idx'] = strategy_idx
 
 
 def validate_exit_groups():
@@ -855,7 +869,7 @@ def render_initial_stop_box():
     st.caption("This stop is shared across ALL exit groups and used for risk calculation")
 
     with st.container(border=True):
-        st.markdown("#### 🎯 Initial Stop Trigger")
+        st.markdown("#### Initial Stop Trigger")
         st.warning("⚠️ Must be a Price × Indicator event for proper 1R calculation")
 
         col1, col2, col3 = st.columns([2, 1, 2])
@@ -899,7 +913,7 @@ def render_initial_stop_box():
 
 def render_exit_groups():
     """Render all exit groups with targets and stops"""
-    st.subheader("📤 Exit Strategy Groups")
+    st.subheader("Exit Strategy Groups")
     st.caption(
         "Each group handles a portion of your position. Targets and Stops within a group are OCO (One-Cancels-Other)")
 
@@ -945,7 +959,7 @@ def render_exit_groups():
             st.divider()
 
             # Targets section
-            st.markdown("#### 🎯 Targets")
+            st.markdown("#### Targets")
             targets = exit_group.get('targets', [])
 
             if len(targets) == 0:
@@ -961,7 +975,7 @@ def render_exit_groups():
             st.divider()
 
             # Stops section
-            st.markdown("#### 🛑 Stops")
+            st.markdown("#### Stops")
             st.caption("Initial Stop is automatically included in all groups")
 
             stops = exit_group.get('stops', [])
@@ -991,7 +1005,7 @@ def render_exit_groups():
 
 def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
     """Render a single exit (target or stop) configuration"""
-    icon = "🎯" if exit_type == "Target" else "🛑"
+    icon = "" if exit_type == "Target" else ""
 
     with st.expander(f"{icon} {exit_type} {exit_idx + 1}", expanded=True):
         col_delete = st.columns([10, 1])
@@ -1077,6 +1091,37 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
         # Render conditions
         for cond_idx in range(st.session_state.get(conditions_key, 0)):
             render_exit_condition(group_idx, exit_type, exit_idx, cond_idx)
+
+def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
+    """Helper: populate session state widget keys for a single target or stop"""
+    prefix = f"{exit_type}_{group_idx}_{exit_idx}"
+
+    trigger = exit_config.get('trigger', {})
+    st.session_state[f'{prefix}_trigger_group1'] = trigger.get('group', 'Price & Indicators')
+    st.session_state[f'{prefix}_trigger_element1'] = trigger.get('element1')
+    st.session_state[f'{prefix}_trigger_event'] = trigger.get('event')
+    st.session_state[f'{prefix}_trigger_compare_type'] = trigger.get('compare_type', 'Indicator')
+
+    if trigger.get('compare_type') == 'Indicator':
+        st.session_state[f'{prefix}_trigger_element2'] = trigger.get('element2')
+    else:
+        st.session_state[f'{prefix}_trigger_value'] = trigger.get('value', 50.0)
+
+    # Load conditions
+    conditions = exit_config.get('conditions', [])
+    st.session_state[f'{prefix}_conditions_count'] = len(conditions)
+
+    for cond_idx, cond in enumerate(conditions):
+        cond_prefix = f"{prefix}_cond_{cond_idx}"
+        st.session_state[f'{cond_prefix}_group'] = cond.get('group', 'Price & Indicators')
+        st.session_state[f'{cond_prefix}_element1'] = cond.get('element1')
+        st.session_state[f'{cond_prefix}_operator'] = cond.get('operator')
+        st.session_state[f'{cond_prefix}_compare_type'] = cond.get('compare_type', 'Indicator')
+
+        if cond.get('compare_type') == 'Indicator':
+            st.session_state[f'{cond_prefix}_element2'] = cond.get('element2')
+        else:
+            st.session_state[f'{cond_prefix}_value'] = cond.get('value', 50.0)
 
 
 def render_exit_condition(group_idx, exit_type, exit_idx, cond_idx):

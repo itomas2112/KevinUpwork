@@ -101,26 +101,73 @@ def build_main_chart(
                 col=1,
             )
 
-        # ---- Exit markers (red triangle down)
-        exits = df_slice[df_slice["exit_signal"]]
+        # ---- Exit markers: Target (orange triangle down)
+        if "exit_type" in df_slice.columns:
+            target_exits = df_slice[
+                (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Target")
+            ]
 
-        if not exits.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=exits["x"],
-                    y=exits["high"],
-                    mode="markers",
-                    marker=dict(
-                        symbol="triangle-down",
-                        size=12,
-                        color="red",
-                        line=dict(color="black", width=1),
+            if not target_exits.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=target_exits["x"],
+                        y=target_exits["high"],
+                        mode="markers",
+                        marker=dict(
+                            symbol="triangle-down",
+                            size=12,
+                            color="orange",
+                            line=dict(color="black", width=1),
+                        ),
+                        name="Target Exit",
                     ),
-                    name="Exit",
-                ),
-                row=1,
-                col=1,
-            )
+                    row=1,
+                    col=1,
+                )
+
+            # ---- Exit markers: Stop / Initial Stop (red triangle down)
+            stop_exits = df_slice[
+                (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Stop")
+            ]
+
+            if not stop_exits.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=stop_exits["x"],
+                        y=stop_exits["high"],
+                        mode="markers",
+                        marker=dict(
+                            symbol="triangle-down",
+                            size=12,
+                            color="red",
+                            line=dict(color="black", width=1),
+                        ),
+                        name="Stop Exit",
+                    ),
+                    row=1,
+                    col=1,
+                )
+        else:
+            # Fallback for old strategies without exit_type column
+            exits = df_slice[df_slice["exit_signal"]]
+
+            if not exits.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=exits["x"],
+                        y=exits["high"],
+                        mode="markers",
+                        marker=dict(
+                            symbol="triangle-down",
+                            size=12,
+                            color="red",
+                            line=dict(color="black", width=1),
+                        ),
+                        name="Exit",
+                    ),
+                    row=1,
+                    col=1,
+                )
 
     # -------------------------------------------------
     # Ichimoku Cloud
