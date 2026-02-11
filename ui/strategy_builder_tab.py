@@ -596,47 +596,83 @@ def render_strategy_management():
                     # Exit Strategy Section
                     st.markdown("### Exit Strategy")
 
-                    with st.container(border=True):
-                        exit_cfg = strategy.get('exit', {})
-                        exit_trigger = exit_cfg.get('trigger', {})
+                    # Initial Stop
+                    initial_stop = strategy.get('initial_stop')
+                    if initial_stop and initial_stop.get('element1'):
+                        with st.container(border=True):
+                            st.markdown("#### 🛑 Initial Stop (closes all remaining position)")
+                            stop_el1 = initial_stop.get('element1', 'N/A')
+                            stop_event = initial_stop.get('event', 'N/A')
+                            stop_el2 = initial_stop.get('element2', 'N/A')
+                            st.info(f"**{stop_el1}** {stop_event} **{stop_el2}**")
 
-                        # Trigger
-                        st.markdown("#### Trigger")
-                        exit_trigger_element1 = exit_trigger.get('element1', 'N/A')
-                        exit_trigger_event = exit_trigger.get('event', 'N/A')
-                        exit_trigger_compare_type = exit_trigger.get('compare_type', 'Indicator')
+                    # Exit Groups
+                    exit_groups = strategy.get('exit_groups', [])
 
-                        if exit_trigger_compare_type == "Fixed Value":
-                            exit_trigger_value = exit_trigger.get('value', 'N/A')
-                            st.info(f"**{exit_trigger_element1}** {exit_trigger_event} **{exit_trigger_value}**")
-                        else:
-                            exit_trigger_element2 = exit_trigger.get('element2', 'N/A')
-                            st.info(f"**{exit_trigger_element1}** {exit_trigger_event} **{exit_trigger_element2}**")
+                    if exit_groups:
+                        for g_idx, group in enumerate(exit_groups):
+                            with st.container(border=True):
+                                g_size = group.get('position_size', 'N/A')
+                                st.markdown(f"#### Exit Group {g_idx + 1}  —  {g_size} units")
 
-                        # Position Size
-                        st.markdown("#### Position Size")
-                        exit_position_size = exit_cfg.get('position_size', 'N/A')
-                        st.info(f"**{exit_position_size}** units")
+                                # Targets
+                                targets = group.get('targets', [])
+                                if targets:
+                                    for t_idx, target in enumerate(targets):
+                                        t_trigger = target.get('trigger', {})
+                                        t_el1 = t_trigger.get('element1', 'N/A')
+                                        t_event = t_trigger.get('event', 'N/A')
+                                        t_ctype = t_trigger.get('compare_type', 'Indicator')
 
-                        # Conditions
-                        st.markdown("#### Conditions")
-                        exit_conditions_count = exit_cfg.get('conditions_count', 0)
+                                        if t_ctype == "Fixed Value":
+                                            t_el2 = t_trigger.get('value', 'N/A')
+                                        else:
+                                            t_el2 = t_trigger.get('element2', 'N/A')
 
-                        if exit_conditions_count > 0:
-                            st.markdown(f"**{exit_conditions_count} condition(s) must be met:**")
-                            for i, cond in enumerate(exit_cfg.get('conditions', []), 1):
-                                cond_element1 = cond.get('element1', 'N/A')
-                                cond_operator = cond.get('operator', 'N/A')
-                                cond_compare_type = cond.get('compare_type', 'Indicator')
+                                        st.markdown(f"🎯 **Target {t_idx + 1}:** {t_el1} {t_event} {t_el2}")
 
-                                if cond_compare_type == "Fixed Value":
-                                    cond_value = cond.get('value', 'N/A')
-                                    st.markdown(f"{i}. {cond_element1} **{cond_operator}** {cond_value}")
-                                else:
-                                    cond_element2 = cond.get('element2', 'N/A')
-                                    st.markdown(f"{i}. {cond_element1} **{cond_operator}** {cond_element2}")
-                        else:
-                            st.markdown("*No conditions - trigger activates immediately*")
+                                        # Target conditions
+                                        for c_idx, cond in enumerate(target.get('conditions', []), 1):
+                                            c_el1 = cond.get('element1', 'N/A')
+                                            c_op = cond.get('operator', 'N/A')
+                                            c_ctype = cond.get('compare_type', 'Indicator')
+                                            if c_ctype == "Fixed Value":
+                                                c_el2 = cond.get('value', 'N/A')
+                                            else:
+                                                c_el2 = cond.get('element2', 'N/A')
+                                            st.caption(f"   Condition {c_idx}: {c_el1} {c_op} {c_el2}")
+
+                                # Stops
+                                stops = group.get('stops', [])
+                                if stops:
+                                    for s_idx, stop in enumerate(stops):
+                                        s_trigger = stop.get('trigger', {})
+                                        s_el1 = s_trigger.get('element1', 'N/A')
+                                        s_event = s_trigger.get('event', 'N/A')
+                                        s_ctype = s_trigger.get('compare_type', 'Indicator')
+
+                                        if s_ctype == "Fixed Value":
+                                            s_el2 = s_trigger.get('value', 'N/A')
+                                        else:
+                                            s_el2 = s_trigger.get('element2', 'N/A')
+
+                                        st.markdown(f"🛑 **Stop {s_idx + 1}:** {s_el1} {s_event} {s_el2}")
+
+                                        # Stop conditions
+                                        for c_idx, cond in enumerate(stop.get('conditions', []), 1):
+                                            c_el1 = cond.get('element1', 'N/A')
+                                            c_op = cond.get('operator', 'N/A')
+                                            c_ctype = cond.get('compare_type', 'Indicator')
+                                            if c_ctype == "Fixed Value":
+                                                c_el2 = cond.get('value', 'N/A')
+                                            else:
+                                                c_el2 = cond.get('element2', 'N/A')
+                                            st.caption(f"   Condition {c_idx}: {c_el1} {c_op} {c_el2}")
+
+                                if not targets and not stops:
+                                    st.info("No targets or stops configured in this group")
+                    else:
+                        st.info("No exit groups configured")
 
                     # Advanced: Show JSON for debugging
                     with st.expander("🔧 Advanced: View Raw JSON", expanded=False):
@@ -660,14 +696,6 @@ def render_strategy_management():
         st.info("No strategies saved yet. Create and save a strategy to see it here.")
 
 
-def reset_strategy_builder():
-    """Reset all strategy builder state"""
-    st.session_state['strategy_started'] = False
-    st.session_state['strategy_direction'] = None
-    st.session_state['entry_conditions_count'] = 0
-    st.session_state['exit_conditions_count'] = 0
-    st.session_state['strategy_name_input'] = ""
-    st.rerun()
 
 
 def get_compatible_elements(selected_element):
@@ -724,36 +752,38 @@ def load_strategy_for_editing(strategy, strategy_idx):
         else:
             st.session_state[f'entry_cond_{i}_value'] = cond.get('value', 50.0)
 
-    # Load exit config
-    exit_cfg = strategy.get('exit', {})
-    exit_trigger = exit_cfg.get('trigger', {})
+    # Load initial stop
+    st.session_state['initial_stop'] = strategy.get('initial_stop', None)
 
-    st.session_state['exit_trigger_group1'] = exit_trigger.get('group', 'Price & Indicators')
-    st.session_state['exit_trigger_element1'] = exit_trigger.get('element1')
-    st.session_state['exit_trigger_event'] = exit_trigger.get('event')
-    st.session_state['exit_trigger_compare_type'] = exit_trigger.get('compare_type', 'Indicator')
+    if st.session_state['initial_stop']:
+        initial = st.session_state['initial_stop']
+        st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
+        st.session_state['initial_stop_element2'] = initial.get('element2')
 
-    if exit_trigger.get('compare_type') == 'Indicator':
-        st.session_state['exit_trigger_element2'] = exit_trigger.get('element2')
-    else:
-        st.session_state['exit_trigger_value'] = exit_trigger.get('value', 50.0)
+    # Load exit groups
+    saved_groups = strategy.get('exit_groups', [])
+    st.session_state['exit_groups'] = []
 
-    st.session_state['exit_position_size'] = exit_cfg.get('position_size', 1.0)
+    for group_idx, group in enumerate(saved_groups):
+        # Rebuild group structure for session state
+        group_data = {
+            'group_id': group.get('group_id', group_idx + 1),
+            'position_size': group.get('position_size', 1.0),
+            'targets': group.get('targets', []),
+            'stops': group.get('stops', []),
+        }
+        st.session_state['exit_groups'].append(group_data)
 
-    # Load exit conditions
-    exit_conditions = exit_cfg.get('conditions', [])
-    st.session_state['exit_conditions_count'] = len(exit_conditions)
+        # Set the size widget key
+        st.session_state[f'exit_group_{group_idx}_size'] = group.get('position_size', 1.0)
 
-    for i, cond in enumerate(exit_conditions):
-        st.session_state[f'exit_cond_{i}_group1'] = cond.get('group', 'Price & Indicators')
-        st.session_state[f'exit_cond_{i}_element1'] = cond.get('element1')
-        st.session_state[f'exit_cond_{i}_operator'] = cond.get('operator')
-        st.session_state[f'exit_cond_{i}_compare_type'] = cond.get('compare_type', 'Indicator')
+        # Load each target's widget keys
+        for target_idx, target in enumerate(group.get('targets', [])):
+            _load_exit_widget_keys(group_idx, 'Target', target_idx, target)
 
-        if cond.get('compare_type') == 'Indicator':
-            st.session_state[f'exit_cond_{i}_element2'] = cond.get('element2')
-        else:
-            st.session_state[f'exit_cond_{i}_value'] = cond.get('value', 50.0)
+        # Load each stop's widget keys
+        for stop_idx, stop in enumerate(group.get('stops', [])):
+            _load_exit_widget_keys(group_idx, 'Stop', stop_idx, stop)
 
 
 def validate_exit_groups():
