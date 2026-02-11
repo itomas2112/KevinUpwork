@@ -20,7 +20,7 @@ def render_strategy_builder_tab():
     # Apply any pending edit BEFORE widgets are created
     _apply_pending_edit()
 
-    col_left, col_center, col_right = st.columns([1, 1, 1])
+    col_left, col_center, col_right = st.columns([1, 3, 1])
 
     with col_center:
         st.header("Strategy Builder")
