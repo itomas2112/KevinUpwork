@@ -11,7 +11,8 @@ from config.constants import (
     EVENT_TYPES,
     CONDITION_OPERATORS,
     CONDITION_COMPARE_TYPES,
-    EXIT_TYPES
+    EXIT_TYPES,
+    STOP_EVENT_TYPES,
 )
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
 
@@ -1044,7 +1045,7 @@ def render_initial_stop_box():
         with col2:
             initial_stop_event = st.selectbox(
                 "Event",
-                EVENT_TYPES,
+                STOP_EVENT_TYPES,
                 key="initial_stop_event"
             )
 
@@ -1203,9 +1204,10 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
             )
 
         with col2:
+            event_options = STOP_EVENT_TYPES if exit_type == "Stop" else EVENT_TYPES
             trigger_event = st.selectbox(
                 "Event",
-                EVENT_TYPES,
+                event_options,
                 key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_event"
             )
 
