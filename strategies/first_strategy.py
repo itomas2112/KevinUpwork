@@ -6,7 +6,6 @@ from config.constants import INDICATOR_MAP
 
 
 def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
-
     df = df.copy()
 
     # -------------------------------------------------
@@ -105,7 +104,7 @@ def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
                 num_trades,
                 win_rate,
                 loss_rate,
-                (total_return - 1)*100,
+                (total_return - 1) * 100,
             ]
         },
         index=[
@@ -291,6 +290,94 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         return check_trigger_and_conditions(trigger, conditions, current_idx)
 
     # -------------------------------------------------
+    # NEW: Helper function to check if stop is already violated
+    # -------------------------------------------------
+    def is_stop_already_violated(trigger_config, current_idx, strategy_direction):
+        """
+        Check if a stop condition is already in a violated state at entry time.
+
+        For Long trades:
+        - "Cross Below" stop: check if element1 is ALREADY below element2
+        - "Cross Above" stop: check if element1 is ALREADY above element2
+
+        For Short trades:
+        - "Cross Above" stop: check if element1 is ALREADY above element2
+        - "Cross Below" stop: check if element1 is ALREADY below element2
+
+        This prevents entries when the stop would be immediately triggered.
+        """
+        element1_name = trigger_config.get('element1')
+        event = trigger_config.get('event')
+        compare_type = trigger_config.get('compare_type', 'Indicator')
+        element2_name = trigger_config.get('element2')
+        fixed_value = trigger_config.get('value')
+
+        # Get the series for element1
+        col1 = indicator_map.get(element1_name)
+
+        if col1 is None or col1 not in df.columns:
+            return False
+
+        series1 = df[col1]
+        value1 = series1.iloc[current_idx]
+
+        # Determine what to compare against
+        if compare_type == "Fixed Value":
+            if fixed_value is None:
+                return False
+            value2 = fixed_value
+        else:
+            # Compare against another indicator
+            col2 = indicator_map.get(element2_name)
+
+            if col2 is None or col2 not in df.columns:
+                return False
+
+            series2 = df[col2]
+            value2 = series2.iloc[current_idx]
+
+        # Check if the stop condition is already violated
+        # A "Cross Below" stop means we exit when element1 goes below element2
+        # So if element1 is ALREADY below element2, we should NOT enter
+        if event == "Cross Below":
+            # Already below = stop already violated
+            return value1 < value2
+        elif event == "Cross Above":
+            # Already above = stop already violated
+            return value1 > value2
+        elif event == "Cross":
+            # For generic "Cross", we need to determine which direction matters
+            # based on strategy direction
+            if strategy_direction == 'Long':
+                # For long, typically "Cross" on a stop means crossing below
+                return value1 < value2
+            else:
+                # For short, typically "Cross" on a stop means crossing above
+                return value1 > value2
+
+        return False
+
+    def are_any_stops_already_violated(initial_stop_config, exit_groups, current_idx, strategy_direction):
+        """
+        Check if ANY stop condition (initial stop or group stops) is already violated.
+        Returns True if entry should be blocked.
+        """
+        # Check initial stop
+        if initial_stop_config:
+            if is_stop_already_violated(initial_stop_config, current_idx, strategy_direction):
+                return True
+
+        # Check all stop triggers in all exit groups
+        for group in exit_groups:
+            for stop in group.get('stops', []):
+                stop_trigger = stop.get('trigger', {})
+                if stop_trigger:
+                    if is_stop_already_violated(stop_trigger, current_idx, strategy_direction):
+                        return True
+
+        return False
+
+    # -------------------------------------------------
     # Extract entry configuration
     # -------------------------------------------------
     entry_config = strategy_config.get('entry', {})
@@ -346,7 +433,19 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
 
         # Check entry conditions (only if no position)
         if current_position_size == 0:
-            if check_trigger_and_conditions(entry_trigger, entry_conditions, i):
+            # First check if entry trigger and conditions are met
+            entry_triggered = check_trigger_and_conditions(entry_trigger, entry_conditions, i)
+
+            # NEW: If entry would trigger, also check that stops are not already violated
+            if entry_triggered:
+                stops_violated = are_any_stops_already_violated(
+                    initial_stop_config, exit_groups, i, strategy_direction
+                )
+                if stops_violated:
+                    # Block entry - stop condition already violated
+                    entry_triggered = False
+
+            if entry_triggered:
                 # ---- Entry
                 entry_signal.append(True)
                 exit_signal.append(False)
@@ -571,4 +670,3 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     )
 
     return df, stats_df
-

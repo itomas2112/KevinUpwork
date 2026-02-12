@@ -279,12 +279,8 @@ def _aggregate_stats(all_stats):
         win_pct = (total_wins / total_trades) * 100
         lose_pct = (total_losses / total_trades) * 100
 
-        # Average win $ and average lose $ per trade
-        avg_win = total_win_pnl / total_wins if total_wins > 0 else 0.0
-        avg_lose = abs(total_lose_pnl) / total_losses if total_losses > 0 else 0.0
-
         # Expected Value = (Win% x Avg Win $) - (Lose% x Avg Lose $)
-        expected_value = (win_pct / 100 * avg_win) - (lose_pct / 100 * avg_lose)
+        expected_value = (win_pct/100 * total_win_pnl) + (lose_pct / 100 * total_lose_pnl)
     else:
         win_pct = 0.0
         lose_pct = 0.0

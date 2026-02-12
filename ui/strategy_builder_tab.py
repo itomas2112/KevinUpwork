@@ -2,6 +2,8 @@
 Strategy Builder tab (Tab 2) UI and logic
 """
 import streamlit as st
+import json
+from datetime import datetime
 from config.constants import (
     PRICE_AND_INDICATORS,
     RSI_GROUP,
@@ -11,7 +13,7 @@ from config.constants import (
     CONDITION_COMPARE_TYPES,
     EXIT_TYPES
 )
-from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies
+from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
 
 
 def render_strategy_builder_tab():
@@ -535,8 +537,8 @@ def render_exit_box():
             st.info("No conditions added. Trigger will activate without additional requirements.")
 
 
-def render_save_button(strategy_name_input):
-    """Render save strategy button with validation"""
+def render_save_button(strategy_name_input: str):
+    """Render save/update button with validation"""
 
     # Check if we're editing
     is_editing = st.session_state.get('editing_strategy', False)
@@ -586,6 +588,144 @@ def render_save_button(strategy_name_input):
             st.session_state['strategy_name_input'] = ""
 
             st.rerun()
+
+
+# =============================================================================
+# NEW: Export/Import Functions
+# =============================================================================
+
+def render_export_import_section():
+    """Render the export/import section for strategies"""
+    st.subheader("Export / Import Strategies")
+    st.caption("Save your strategies to a file or load them back after app restart")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### ⬇️ Export Strategies")
+
+        if st.session_state.get('saved_strategies'):
+            # Prepare export data
+            export_data = {
+                'export_date': datetime.now().isoformat(),
+                'version': '1.0',
+                'strategies': st.session_state['saved_strategies']
+            }
+
+            # Convert to JSON string
+            json_string = json.dumps(export_data, indent=2)
+
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"strategies_backup_{timestamp}.json"
+
+            st.download_button(
+                label="Download All Strategies",
+                data=json_string,
+                file_name=filename,
+                mime="application/json",
+                type="primary",
+                use_container_width=True
+            )
+            st.caption(f"Will export {len(st.session_state['saved_strategies'])} strategy(ies)")
+        else:
+            st.info("No strategies to export. Create and save some strategies first.")
+
+    with col2:
+        st.markdown("#### ⬆️ Import Strategies")
+
+        uploaded_file = st.file_uploader(
+            "Upload strategies JSON file",
+            type=['json'],
+            key="strategy_import_uploader",
+            help="Select a previously exported strategies file"
+        )
+
+        if uploaded_file is not None:
+            try:
+                # Read and parse the JSON file
+                content = uploaded_file.read().decode('utf-8')
+                import_data = json.loads(content)
+
+                # Support both new format (with metadata) and old format (plain list)
+                if isinstance(import_data, list):
+                    # Old format: plain list of strategies (e.g., from saved_strategies.json)
+                    strategies_to_import = import_data
+                    export_date = None
+                elif 'strategies' in import_data:
+                    # New format: with metadata wrapper
+                    strategies_to_import = import_data['strategies']
+                    export_date = import_data.get('export_date')
+                else:
+                    st.error("❌ Invalid file format: expected a list of strategies or an object with 'strategies' key")
+                    return
+
+                if not isinstance(strategies_to_import, list):
+                    st.error("❌ Invalid file format: strategies must be a list")
+                    return
+
+                # Show import preview
+                st.success(f"✅ Found {len(strategies_to_import)} strategy(ies) in file")
+
+                if export_date:
+                    export_date_str = export_date[:19].replace('T', ' ')
+                    st.caption(f"Exported on: {export_date_str}")
+
+                # Import mode selection
+                import_mode = st.radio(
+                    "Import mode",
+                    ["Merge (add to existing)", "Replace (clear existing first)"],
+                    key="import_mode_radio",
+                    horizontal=True
+                )
+
+                # Show preview of strategies to import
+                with st.expander("Preview strategies to import", expanded=False):
+                    for idx, strategy in enumerate(strategies_to_import):
+                        name = strategy.get('strategy_name', f'Strategy_{idx+1}')
+                        direction = strategy.get('direction', 'N/A')
+                        patterns = strategy.get('patterns', [])
+                        pattern_info = f"{len(patterns)} patterns" if patterns else "All patterns"
+                        st.markdown(f"- **{name}** ({direction}) - {pattern_info}")
+
+                # Import button
+                if st.button("Import Strategies", type="primary", use_container_width=True):
+                    if import_mode == "Replace (clear existing first)":
+                        st.session_state['saved_strategies'] = []
+
+                    # Add imported strategies
+                    existing_names = {s.get('strategy_name') for s in st.session_state.get('saved_strategies', [])}
+                    imported_count = 0
+                    skipped_count = 0
+
+                    for strategy in strategies_to_import:
+                        strategy_name = strategy.get('strategy_name', '')
+
+                        # Check for duplicates in merge mode
+                        if import_mode == "Merge (add to existing)" and strategy_name in existing_names:
+                            # Rename to avoid conflict
+                            new_name = f"{strategy_name}_imported"
+                            counter = 1
+                            while new_name in existing_names:
+                                new_name = f"{strategy_name}_imported_{counter}"
+                                counter += 1
+                            strategy['strategy_name'] = new_name
+                            existing_names.add(new_name)
+
+                        st.session_state['saved_strategies'].append(strategy)
+                        imported_count += 1
+
+                    # Save to file for persistence
+                    save_strategies_to_file()
+
+                    st.success(f"✅ Successfully imported {imported_count} strategy(ies)!")
+                    st.rerun()
+
+            except json.JSONDecodeError as e:
+                st.error(f"❌ Invalid JSON file: {str(e)}")
+            except Exception as e:
+                st.error(f"❌ Error importing file: {str(e)}")
+
 
 def render_strategy_management():
     """Render strategy management section"""
@@ -722,7 +862,7 @@ def render_strategy_management():
                                         else:
                                             t_el2 = t_trigger.get('element2', 'N/A')
 
-                                        st.markdown(f"🎯 **Target {t_idx + 1}:** {t_el1} {t_event} {t_el2}")
+                                        st.markdown(f"**Target {t_idx + 1}:** {t_el1} {t_event} {t_el2}")
 
                                         # Target conditions
                                         for c_idx, cond in enumerate(target.get('conditions', []), 1):
@@ -749,7 +889,7 @@ def render_strategy_management():
                                         else:
                                             s_el2 = s_trigger.get('element2', 'N/A')
 
-                                        st.markdown(f"🛑 **Stop {s_idx + 1}:** {s_el1} {s_event} {s_el2}")
+                                        st.markdown(f"**Stop {s_idx + 1}:** {s_el1} {s_event} {s_el2}")
 
                                         # Stop conditions
                                         for c_idx, cond in enumerate(stop.get('conditions', []), 1):
@@ -787,6 +927,10 @@ def render_strategy_management():
                     st.rerun()
     else:
         st.info("No strategies saved yet. Create and save a strategy to see it here.")
+
+    # NEW: Add Export/Import section
+    st.divider()
+    render_export_import_section()
 
 
 
