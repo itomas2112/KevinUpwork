@@ -2,10 +2,10 @@
 
 import pandas as pd
 import numpy as np
+from config.constants import INDICATOR_MAP
 
 
 def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
-
     df = df.copy()
 
     # -------------------------------------------------
@@ -104,7 +104,7 @@ def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
                 num_trades,
                 win_rate,
                 loss_rate,
-                (total_return - 1)*100,
+                (total_return - 1) * 100,
             ]
         },
         index=[
@@ -121,6 +121,7 @@ def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
 def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     """
     Execute a custom strategy based on the saved strategy configuration.
+    Supports multiple exit groups with OCO (One-Cancels-Other) targets and stops.
 
     Parameters:
     -----------
@@ -134,7 +135,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
     df : pd.DataFrame
         DataFrame with entry_signal and exit_signal columns added
     stats_df : pd.DataFrame
-        Statistics DataFrame with win rate, loss rate, number of trades, total return
+        Statistics DataFrame with win rate, loss rate, number of trades, total return, P&L
     """
 
     df = df.copy()
@@ -147,27 +148,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
             df.drop(columns=col, inplace=True)
 
     # -------------------------------------------------
-    # Map indicator names to DataFrame columns
+    # Use global indicator mapping
     # -------------------------------------------------
-    indicator_map = {
-        "Price": "latest",
-        "BB Upper Band": "bb_upper",
-        "BB Middle Band": "bb_mid",
-        "BB Lower Band": "bb_lower",
-        "KC Upper Band": "kc_upper",
-        "KC Middle Band": "kc_mid",
-        "KC Lower Band": "kc_lower",
-        "Tenkan": "tenkan",
-        "Kijun": "kijun",
-        "Senkou A": "senkou_a",
-        "Senkou B": "senkou_b",
-        "RSI": "rsi",
-        "RSI 13 SMA": "ci_13",
-        "RSI 33 SMA": "ci_33",
-        "CMB": "cmb",
-        "CMB 13 SMA": "cmb_13_sma",
-        "CMB 33 SMA": "cmb_33_sma",
-    }
+    indicator_map = INDICATOR_MAP
 
     # -------------------------------------------------
     # Helper function to check if condition is met
@@ -298,94 +281,344 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         return True
 
     # -------------------------------------------------
-    # Extract entry and exit configurations
+    # Helper function to check exit (target or stop)
+    # -------------------------------------------------
+    def check_exit_signal(exit_config, current_idx):
+        """Check if an exit signal (target or stop) is triggered"""
+        trigger = exit_config.get('trigger', {})
+        conditions = exit_config.get('conditions', [])
+        return check_trigger_and_conditions(trigger, conditions, current_idx)
+
+    # -------------------------------------------------
+    # NEW: Helper function to check if stop is already violated
+    # -------------------------------------------------
+    def is_stop_already_violated(trigger_config, current_idx, strategy_direction):
+        """
+        Check if a stop condition is already in a violated state at entry time.
+
+        For Long trades:
+        - "Cross Below" stop: check if element1 is ALREADY below element2
+        - "Cross Above" stop: check if element1 is ALREADY above element2
+
+        For Short trades:
+        - "Cross Above" stop: check if element1 is ALREADY above element2
+        - "Cross Below" stop: check if element1 is ALREADY below element2
+
+        This prevents entries when the stop would be immediately triggered.
+        """
+        element1_name = trigger_config.get('element1')
+        event = trigger_config.get('event')
+        compare_type = trigger_config.get('compare_type', 'Indicator')
+        element2_name = trigger_config.get('element2')
+        fixed_value = trigger_config.get('value')
+
+        # Get the series for element1
+        col1 = indicator_map.get(element1_name)
+
+        if col1 is None or col1 not in df.columns:
+            return False
+
+        series1 = df[col1]
+        value1 = series1.iloc[current_idx]
+
+        # Determine what to compare against
+        if compare_type == "Fixed Value":
+            if fixed_value is None:
+                return False
+            value2 = fixed_value
+        else:
+            # Compare against another indicator
+            col2 = indicator_map.get(element2_name)
+
+            if col2 is None or col2 not in df.columns:
+                return False
+
+            series2 = df[col2]
+            value2 = series2.iloc[current_idx]
+
+        # Check if the stop condition is already violated
+        # A "Cross Below" stop means we exit when element1 goes below element2
+        # So if element1 is ALREADY below element2, we should NOT enter
+        if event == "Cross Below":
+            # Already below = stop already violated
+            return value1 < value2
+        elif event == "Cross Above":
+            # Already above = stop already violated
+            return value1 > value2
+        elif event == "Cross":
+            # For generic "Cross", we need to determine which direction matters
+            # based on strategy direction
+            if strategy_direction == 'Long':
+                # For long, typically "Cross" on a stop means crossing below
+                return value1 < value2
+            else:
+                # For short, typically "Cross" on a stop means crossing above
+                return value1 > value2
+
+        return False
+
+    def are_any_stops_already_violated(initial_stop_config, exit_groups, current_idx, strategy_direction):
+        """
+        Check if ANY stop condition (initial stop or group stops) is already violated.
+        Returns True if entry should be blocked.
+        """
+        # Check initial stop
+        if initial_stop_config:
+            if is_stop_already_violated(initial_stop_config, current_idx, strategy_direction):
+                return True
+
+        # Check all stop triggers in all exit groups
+        for group in exit_groups:
+            for stop in group.get('stops', []):
+                stop_trigger = stop.get('trigger', {})
+                if stop_trigger:
+                    if is_stop_already_violated(stop_trigger, current_idx, strategy_direction):
+                        return True
+
+        return False
+
+    # -------------------------------------------------
+    # Extract entry configuration
     # -------------------------------------------------
     entry_config = strategy_config.get('entry', {})
-    exit_config = strategy_config.get('exit', {})
-
     entry_trigger = entry_config.get('trigger', {})
     entry_conditions = entry_config.get('conditions', [])
+    entry_position_size = entry_config.get('position_size', 1.0)
 
-    exit_trigger = exit_config.get('trigger', {})
-    exit_conditions = exit_config.get('conditions', [])
+    # -------------------------------------------------
+    # Extract initial stop (shared across all exit groups)
+    # -------------------------------------------------
+    initial_stop_config = strategy_config.get('initial_stop') or None
+
+    # -------------------------------------------------
+    # Extract exit groups
+    # -------------------------------------------------
+    exit_groups = strategy_config.get('exit_groups', [])
+
+    # Fallback to old single exit structure for backward compatibility
+    if not exit_groups:
+        exit_config = strategy_config.get('exit', {})
+        if exit_config:
+            exit_groups = [{
+                'group_id': 1,
+                'position_size': entry_position_size,
+                'targets': [{
+                    'type': 'Target',
+                    'trigger': exit_config.get('trigger', {}),
+                    'conditions': exit_config.get('conditions', [])
+                }],
+                'stops': []
+            }]
 
     # Get strategy direction
     strategy_direction = strategy_config.get('direction', 'Long')
 
     # -------------------------------------------------
-    # Signal generation (entry first, exit after)
+    # Signal generation with multiple exits (OCO logic)
     # -------------------------------------------------
-    in_trade = False
+    current_position_size = 0
     entry_signal = []
     exit_signal = []
+    exit_type_series = []  # Track exit type per bar: None, "Target", "Stop", "Initial Stop"
 
-    entry_prices = []
-    trade_returns = []
+    # Track which exit groups are still active (not yet closed)
+    active_exit_groups = set()
 
+    # Trade tracking for P&L
+    all_trades = []  # List of dicts: {entry_price, exit_price, position_size, exit_type}
     current_entry_price = None
 
     for i in range(len(df)):
         price = df["latest"].iloc[i]
 
-        # Check entry conditions (only if not in trade)
-        if not in_trade:
-            if check_trigger_and_conditions(entry_trigger, entry_conditions, i):
+        # Check entry conditions (only if no position)
+        if current_position_size == 0:
+            # First check if entry trigger and conditions are met
+            entry_triggered = check_trigger_and_conditions(entry_trigger, entry_conditions, i)
+
+            # NEW: If entry would trigger, also check that stops are not already violated
+            if entry_triggered:
+                stops_violated = are_any_stops_already_violated(
+                    initial_stop_config, exit_groups, i, strategy_direction
+                )
+                if stops_violated:
+                    # Block entry - stop condition already violated
+                    entry_triggered = False
+
+            if entry_triggered:
                 # ---- Entry
                 entry_signal.append(True)
                 exit_signal.append(False)
+                exit_type_series.append(None)
 
-                in_trade = True
+                current_position_size = entry_position_size
                 current_entry_price = price
-                entry_prices.append(price)
+
+                # Activate all exit groups
+                active_exit_groups = set(range(len(exit_groups)))
             else:
                 entry_signal.append(False)
                 exit_signal.append(False)
+                exit_type_series.append(None)
 
-        # Check exit conditions (only if in trade)
-        else:  # in_trade
-            if check_trigger_and_conditions(exit_trigger, exit_conditions, i):
-                # ---- Exit
+        # Check exit conditions (only if in position)
+        elif current_position_size > 0:
+            exit_triggered = False
+            exit_size = 0
+            bar_exit_type = None  # Track the exit type for THIS bar
+
+            # First, check initial stop (applies to ALL active groups)
+            if initial_stop_config and check_trigger(initial_stop_config, i):
+                # Initial stop closes ALL remaining position
+                exit_size = current_position_size
+                bar_exit_type = "Stop"
+                exit_triggered = True
+
+                # Record trade for all active groups
+                for group_idx in active_exit_groups:
+                    group_size = exit_groups[group_idx].get('position_size', 0)
+                    all_trades.append({
+                        'entry_price': current_entry_price,
+                        'exit_price': price,
+                        'position_size': group_size,
+                        'exit_type': 'Initial Stop'
+                    })
+
+                # Close all groups
+                active_exit_groups.clear()
+
+            # If initial stop didn't trigger, check each active exit group
+            if not exit_triggered:
+                groups_to_close = []
+
+                for group_idx in list(active_exit_groups):
+                    group = exit_groups[group_idx]
+                    group_size = group.get('position_size', 0)
+
+                    # Check all targets in this group
+                    for target in group.get('targets', []):
+                        if check_exit_signal(target, i):
+                            exit_size += group_size
+                            exit_triggered = True
+
+                            # Mark bar exit type — Target, unless a stop also triggers
+                            if bar_exit_type is None:
+                                bar_exit_type = "Target"
+
+                            # Record trade
+                            all_trades.append({
+                                'entry_price': current_entry_price,
+                                'exit_price': price,
+                                'position_size': group_size,
+                                'exit_type': 'Target'
+                            })
+
+                            # OCO: This group is closed, cancel all other targets/stops in group
+                            groups_to_close.append(group_idx)
+                            break  # Exit target loop, this group is done
+
+                    # If no target hit, check stops in this group
+                    if group_idx not in groups_to_close:
+                        for stop in group.get('stops', []):
+                            if check_exit_signal(stop, i):
+                                exit_size += group_size
+                                exit_triggered = True
+
+                                # Stop takes priority over target for bar marker
+                                bar_exit_type = "Stop"
+
+                                # Record trade
+                                all_trades.append({
+                                    'entry_price': current_entry_price,
+                                    'exit_price': price,
+                                    'position_size': group_size,
+                                    'exit_type': 'Stop'
+                                })
+
+                                # OCO: This group is closed
+                                groups_to_close.append(group_idx)
+                                break  # Exit stop loop, this group is done
+
+                # Remove closed groups
+                for group_idx in groups_to_close:
+                    active_exit_groups.discard(group_idx)
+
+            # Update signals
+            if exit_triggered:
                 entry_signal.append(False)
                 exit_signal.append(True)
+                exit_type_series.append(bar_exit_type)
+                current_position_size -= exit_size
 
-                # Calculate return based on strategy direction
-                if strategy_direction == 'Long':
-                    trade_return = price / current_entry_price  # Long: profit when price goes up
-                else:  # Short
-                    trade_return = current_entry_price / price  # Short: profit when price goes down
-
-                trade_returns.append(trade_return)
-
-                in_trade = False
-                current_entry_price = None
+                # Ensure we don't go negative due to floating point errors
+                if current_position_size < 0.001:
+                    current_position_size = 0
+                    current_entry_price = None
             else:
                 entry_signal.append(False)
                 exit_signal.append(False)
+                exit_type_series.append(None)
+
+        else:
+            entry_signal.append(False)
+            exit_signal.append(False)
+            exit_type_series.append(None)
 
     # -------------------------------------------------
-    # Handle open trade at the end
+    # Handle open position at the end (close remaining groups)
     # -------------------------------------------------
-    if in_trade and current_entry_price is not None:
+    if current_position_size > 0 and current_entry_price is not None:
         last_price = df["latest"].iloc[-1]
 
-        # Calculate return based on strategy direction
-        if strategy_direction == 'Long':
-            trade_return = last_price / current_entry_price
-        else:  # Short
-            trade_return = current_entry_price / last_price
-
-        trade_returns.append(trade_return)
+        # Close all remaining active groups at last price
+        for group_idx in active_exit_groups:
+            group_size = exit_groups[group_idx].get('position_size', 0)
+            all_trades.append({
+                'entry_price': current_entry_price,
+                'exit_price': last_price,
+                'position_size': group_size,
+                'exit_type': 'End of Data'
+            })
 
     # -------------------------------------------------
     # Attach signals
     # -------------------------------------------------
     df["entry_signal"] = entry_signal
     df["exit_signal"] = exit_signal
+    df["exit_type"] = exit_type_series
 
     # -------------------------------------------------
-    # Statistics
+    # Statistics with P&L calculation
     # -------------------------------------------------
-    num_trades = len(trade_returns)
+    num_trades = len(all_trades)
+
+    # Get market parameters
+    tick_size = strategy_config.get('tick_size', 0.25)
+    minimal_change = strategy_config.get('minimal_change', 1.0)
+
+    # Calculate P&L for each trade
+    trade_returns = []
+    trade_pnls = []
+
+    for trade in all_trades:
+        entry_price = trade['entry_price']
+        exit_price = trade['exit_price']
+        position_size = trade['position_size']
+
+        # Calculate return
+        if strategy_direction == 'Long':
+            trade_return = exit_price / entry_price
+            price_change = exit_price - entry_price
+        else:  # Short
+            trade_return = entry_price / exit_price
+            price_change = entry_price - exit_price
+
+        trade_returns.append(trade_return)
+
+        # Calculate P&L
+        ticks_moved = price_change / minimal_change
+        pnl = position_size * ticks_moved * tick_size
+        trade_pnls.append(pnl)
 
     if num_trades > 0:
         wins = sum(r > 1 for r in trade_returns)
@@ -397,10 +630,19 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         total_return = 1.0
         for r in trade_returns:
             total_return *= r
+
+        total_pnl = sum(trade_pnls)
+        avg_pnl_per_trade = total_pnl / num_trades if num_trades > 0 else 0
+        winning_trades_pnl = sum(pnl for pnl in trade_pnls if pnl > 0)
+        losing_trades_pnl = sum(pnl for pnl in trade_pnls if pnl < 0)
     else:
         win_rate = 0.0
         loss_rate = 0.0
         total_return = 1.0
+        total_pnl = 0.0
+        avg_pnl_per_trade = 0.0
+        winning_trades_pnl = 0.0
+        losing_trades_pnl = 0.0
 
     stats_df = pd.DataFrame(
         {
@@ -409,6 +651,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                 win_rate,
                 loss_rate,
                 (total_return - 1) * 100,
+                total_pnl,
+                avg_pnl_per_trade,
+                winning_trades_pnl,
+                losing_trades_pnl,
             ]
         },
         index=[
@@ -416,8 +662,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
             "Win rate (%)",
             "Loss rate (%)",
             "Total return (%)",
+            "Total P&L ($)",
+            "Avg P&L per trade ($)",
+            "Winning trades P&L ($)",
+            "Losing trades P&L ($)",
         ],
     )
 
     return df, stats_df
-

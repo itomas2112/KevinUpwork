@@ -40,3 +40,10 @@ def initialize_session_state():
 
     if 'strategy_name_input' not in st.session_state:
         st.session_state['strategy_name_input'] = ""
+
+    # NEW: Exit groups management (for multiple exits)
+    if 'exit_groups' not in st.session_state:
+        st.session_state['exit_groups'] = []
+
+    if 'initial_stop' not in st.session_state:
+        st.session_state['initial_stop'] = None

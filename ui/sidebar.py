@@ -38,6 +38,28 @@ def render_sidebar():
     show_bb = st.sidebar.checkbox("Show Bollinger Bands", value=False)
     show_kc = st.sidebar.checkbox("Show Keltner Channel", value=False)
 
+    # ADD THIS SECTION HERE
+    st.sidebar.header("Market Parameters")
+    tick_size = st.sidebar.number_input(
+        "Tick Value",
+        min_value=0.001,
+        value=10.0,
+        step=0.01,
+        format="%.2f",
+        key="tick_size",
+        help="Contract size for 1 tick"
+    )
+
+    minimal_change = st.sidebar.number_input(
+        "Minimal Change",
+        min_value=0.001,
+        value=0.1,
+        step=0.01,
+        format="%.2f",
+        key="minimal_change",
+        help="Minimum price movement required"
+    )
+
     # Strategy Overlays
     # st.sidebar.header("Strategy Overlays")
     # show_tenkan_kijun = st.sidebar.checkbox("Show Tenkan Kijun Strategy", value=False)
@@ -98,6 +120,8 @@ def render_sidebar():
         'show_ichimoku': show_ichimoku,
         'show_bb': show_bb,
         'show_kc': show_kc,
+        'tick_size': tick_size,
+        'minimal_change': minimal_change,
         'show_tenkan_kijun': show_tenkan_kijun,
         'params_1h': params_1h,
         'params_15m': params_15m
