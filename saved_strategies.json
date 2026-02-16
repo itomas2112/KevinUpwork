@@ -1,0 +1,117 @@
+[
+    {
+        "strategy_name": "Test",
+        "direction": "Short",
+        "patterns": [
+            "W.(1) \u2192 W.1 Impulse"
+        ],
+        "created_at": "2026-02-16 12:15:54",
+        "entry": {
+            "trigger": {
+                "group": "Price & Indicators",
+                "element1": "Tenkan",
+                "event": "Cross Above",
+                "compare_type": "Indicator",
+                "element2": "Kijun",
+                "value": null
+            },
+            "position_size": 2.0,
+            "conditions_count": 0,
+            "conditions": []
+        },
+        "initial_stop": {
+            "element1": "Price",
+            "event": "Cross Below",
+            "compare_type": "Indicator",
+            "element2": "BB Lower Band"
+        },
+        "exit_groups": [
+            {
+                "group_id": 1,
+                "position_size": 1.0,
+                "targets": [
+                    {
+                        "type": "Target",
+                        "trigger": {
+                            "group": "Price & Indicators",
+                            "element1": "Tenkan",
+                            "event": "Cross Below",
+                            "compare_type": "Indicator",
+                            "element2": "Kijun",
+                            "value": null
+                        },
+                        "conditions": []
+                    }
+                ],
+                "stops": []
+            },
+            {
+                "group_id": 2,
+                "position_size": 1.0,
+                "targets": [
+                    {
+                        "type": "Target",
+                        "trigger": {
+                            "group": "Price & Indicators",
+                            "element1": "Price",
+                            "event": "Cross Below",
+                            "compare_type": "Indicator",
+                            "element2": "BB Middle Band",
+                            "value": null
+                        },
+                        "conditions": []
+                    }
+                ],
+                "stops": []
+            }
+        ]
+    },
+    {
+        "strategy_name": "Test2",
+        "direction": "Long",
+        "patterns": [
+            "W.(1) \u2192 W.1 Impulse"
+        ],
+        "created_at": "2026-02-16 12:21:36",
+        "entry": {
+            "trigger": {
+                "group": "Price & Indicators",
+                "element1": "Price",
+                "event": "Close Below",
+                "compare_type": "Indicator",
+                "element2": "BB Lower Band",
+                "value": null
+            },
+            "position_size": 1.0,
+            "conditions_count": 0,
+            "conditions": []
+        },
+        "initial_stop": {
+            "element1": "Price",
+            "event": "Cross Above",
+            "compare_type": "Indicator",
+            "element2": "BB Upper Band"
+        },
+        "exit_groups": [
+            {
+                "group_id": 1,
+                "position_size": 1.0,
+                "targets": [
+                    {
+                        "type": "Target",
+                        "trigger": {
+                            "group": "Price & Indicators",
+                            "element1": "Price",
+                            "event": "Cross Above",
+                            "compare_type": "Indicator",
+                            "element2": "BB Upper Band",
+                            "value": null
+                        },
+                        "conditions": []
+                    }
+                ],
+                "stops": []
+            }
+        ]
+    }
+]

@@ -8,6 +8,15 @@ from data.helpers import on_primary_change, PRIMARY_SECONDARY_MAP
 def render_sidebar():
     """Render the complete sidebar with all controls"""
 
+    # Analysis Mode Toggle
+    analysis_mode = st.sidebar.radio(
+        "Analysis Mode",
+        options=["15m Only", "1H + 15m"],
+        index=0,
+        key="analysis_mode",
+        horizontal=True,
+    )
+
     # Pattern Parameters
     st.sidebar.header("Pattern Parameters")
     pattern = st.sidebar.selectbox("Pattern", ['Bullish', 'Bearish'], index=0, key="pattern_select")
@@ -38,7 +47,6 @@ def render_sidebar():
     show_bb = st.sidebar.checkbox("Show Bollinger Bands", value=False)
     show_kc = st.sidebar.checkbox("Show Keltner Channel", value=False)
 
-    # ADD THIS SECTION HERE
     st.sidebar.header("Market Parameters")
     tick_size = st.sidebar.number_input(
         "Tick Value",
@@ -110,10 +118,12 @@ def render_sidebar():
                 st.rerun()
 
     # Indicator Parameters
-    params_1h = render_timeframe_parameters("1H")
+    show_1h = analysis_mode == "1H + 15m"
+    params_1h = render_timeframe_parameters("1H") if show_1h else None
     params_15m = render_timeframe_parameters("15m")
 
     return {
+        'analysis_mode': analysis_mode,
         'pattern': pattern,
         'primary_choice': primary_choice,
         'secondary_choice': secondary_choice,
@@ -138,26 +148,63 @@ def render_timeframe_parameters(timeframe):
             f"RSI window ({timeframe})", 5, 50, 14,
             key=f"rsi_{key_prefix}"
         ),
-        'bb_period': st.sidebar.number_input(
-            f"BB Period ({timeframe})", 5, 100, 20, step=1,
-            key=f"bb_p_{key_prefix}"
-        ),
-        'bb_stdev': st.sidebar.number_input(
-            f"BB StdDev ({timeframe})", 0.5, 5.0, 2.0, step=0.1,
-            key=f"bb_s_{key_prefix}"
-        ),
-        'kc_ema_period': st.sidebar.number_input(
-            f"KC EMA Period ({timeframe})", 5, 100, 20, step=1,
-            key=f"kc_ema_{key_prefix}"
-        ),
-        'kc_atr_period': st.sidebar.number_input(
-            f"KC ATR Period ({timeframe})", 5, 100, 10, step=1,
-            key=f"kc_atr_{key_prefix}"
-        ),
-        'kc_atr_mult': st.sidebar.number_input(
-            f"KC ATR Mult ({timeframe})", 0.5, 5.0, 2.0, step=0.1,
-            key=f"kc_mult_{key_prefix}"
-        ),
     }
+
+    with st.sidebar.expander(f"RSI Zones ({timeframe})"):
+        params['rsi_upper_1'] = st.number_input(
+            "Upper Line 1", 0.0, 100.0, 70.0, step=1.0,
+            key=f"rsi_u1_{key_prefix}"
+        )
+        params['rsi_upper_2'] = st.number_input(
+            "Upper Line 2", 0.0, 100.0, 67.0, step=1.0,
+            key=f"rsi_u2_{key_prefix}"
+        )
+        params['rsi_lower_1'] = st.number_input(
+            "Lower Line 1", 0.0, 100.0, 33.0, step=1.0,
+            key=f"rsi_l1_{key_prefix}"
+        )
+        params['rsi_lower_2'] = st.number_input(
+            "Lower Line 2", 0.0, 100.0, 30.0, step=1.0,
+            key=f"rsi_l2_{key_prefix}"
+        )
+
+    with st.sidebar.expander(f"CMB Lines ({timeframe})"):
+        params['cmb_line_1'] = st.number_input(
+            "CMB Line 1", 0.0, 100.0, 70.0, step=1.0,
+            key=f"cmb_l1_{key_prefix}"
+        )
+        params['cmb_line_2'] = st.number_input(
+            "CMB Line 2", 0.0, 100.0, 60.0, step=1.0,
+            key=f"cmb_l2_{key_prefix}"
+        )
+        params['cmb_line_3'] = st.number_input(
+            "CMB Line 3", 0.0, 100.0, 40.0, step=1.0,
+            key=f"cmb_l3_{key_prefix}"
+        )
+        params['cmb_line_4'] = st.number_input(
+            "CMB Line 4", 0.0, 100.0, 30.0, step=1.0,
+            key=f"cmb_l4_{key_prefix}"
+        )
+
+    params['bb_period'] = st.sidebar.number_input(
+        f"BB Period ({timeframe})", 5, 100, 20, step=1,
+        key=f"bb_p_{key_prefix}"
+    )
+    params['bb_stdev'] = st.sidebar.number_input(
+        f"BB StdDev ({timeframe})", 0.5, 5.0, 2.0, step=0.1,
+        key=f"bb_s_{key_prefix}"
+    )
+    params['kc_ema_period'] = st.sidebar.number_input(
+        f"KC EMA Period ({timeframe})", 5, 100, 20, step=1,
+        key=f"kc_ema_{key_prefix}"
+    )
+    params['kc_atr_period'] = st.sidebar.number_input(
+        f"KC ATR Period ({timeframe})", 5, 100, 10, step=1,
+        key=f"kc_atr_{key_prefix}"
+    )
+    params['kc_atr_mult'] = st.sidebar.number_input(
+        f"KC ATR Mult ({timeframe})", 0.5, 5.0, 2.0, step=0.1,
+        key=f"kc_mult_{key_prefix}"
+    )
 
     return params

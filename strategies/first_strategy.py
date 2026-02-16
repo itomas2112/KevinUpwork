@@ -118,7 +118,7 @@ def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
     return df, stats_df
 
 
-def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
+def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_start=None, period_end=None):
     """
     Execute a custom strategy based on the saved strategy configuration.
     Supports multiple exit groups with OCO (One-Cancels-Other) targets and stops.
@@ -129,6 +129,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         DataFrame with OHLC data and all calculated indicators
     strategy_config : dict
         The strategy configuration from saved_strategies
+    period_start : pd.Timestamp, optional
+        Start of the DRM date range — entries only allowed from this point
+    period_end : pd.Timestamp, optional
+        End of the DRM date range — entries only allowed up to this point
 
     Returns:
     --------
@@ -240,17 +244,17 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                 value2_prev = series2.iloc[current_idx - 1]
 
         # Check the event type
-        if event == "Cross Above":
+        if event in ("Cross Above", "Close Above"):
             if current_idx == 0:
                 return False
             return (value1 > value2) and (value1_prev <= value2_prev)
 
-        elif event == "Cross Below":
+        elif event in ("Cross Below", "Close Below"):
             if current_idx == 0:
                 return False
             return (value1 < value2) and (value1_prev >= value2_prev)
 
-        elif event == "Cross":
+        elif event in ("Cross", "Close"):
             if current_idx == 0:
                 return False
             cross_above = (value1 > value2) and (value1_prev <= value2_prev)
@@ -261,6 +265,32 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
             return abs(value1 - value2) < 0.01
 
         return False
+
+    def get_trigger_price(trigger_config, current_idx):
+        """
+        Determine the trade price for a triggered event.
+        - Cross events with Price as element1: use the crossed indicator's value
+        - Close events or non-Price triggers: use bar close price
+        """
+        event = trigger_config.get('event', '')
+        is_cross = event in ('Cross', 'Cross Above', 'Cross Below')
+
+        if is_cross:
+            element1 = trigger_config.get('element1')
+            compare_type = trigger_config.get('compare_type', 'Indicator')
+
+            if element1 == 'Price':
+                if compare_type == 'Fixed Value':
+                    fixed_val = trigger_config.get('value')
+                    if fixed_val is not None:
+                        return fixed_val
+                else:
+                    element2 = trigger_config.get('element2')
+                    col2 = indicator_map.get(element2)
+                    if col2 and col2 in df.columns:
+                        return df[col2].iloc[current_idx]
+
+        return df['latest'].iloc[current_idx]
 
     # -------------------------------------------------
     # Helper function to check trigger with conditions
@@ -290,7 +320,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         return check_trigger_and_conditions(trigger, conditions, current_idx)
 
     # -------------------------------------------------
-    # NEW: Helper function to check if stop is already violated
+    # Helper function to check if stop is already violated
     # -------------------------------------------------
     def is_stop_already_violated(trigger_config, current_idx, strategy_direction):
         """
@@ -339,20 +369,18 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         # Check if the stop condition is already violated
         # A "Cross Below" stop means we exit when element1 goes below element2
         # So if element1 is ALREADY below element2, we should NOT enter
-        if event == "Cross Below":
+        if event in ("Cross Below", "Close Below"):
             # Already below = stop already violated
             return value1 < value2
-        elif event == "Cross Above":
+        elif event in ("Cross Above", "Close Above"):
             # Already above = stop already violated
             return value1 > value2
-        elif event == "Cross":
-            # For generic "Cross", we need to determine which direction matters
+        elif event in ("Cross", "Close"):
+            # For generic "Cross"/"Close", we need to determine which direction matters
             # based on strategy direction
             if strategy_direction == 'Long':
-                # For long, typically "Cross" on a stop means crossing below
                 return value1 < value2
             else:
-                # For short, typically "Cross" on a stop means crossing above
                 return value1 > value2
 
         return False
@@ -433,10 +461,18 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
 
         # Check entry conditions (only if no position)
         if current_position_size == 0:
-            # First check if entry trigger and conditions are met
-            entry_triggered = check_trigger_and_conditions(entry_trigger, entry_conditions, i)
+            # Block entries outside the DRM date range
+            bar_time = df.index[i]
+            in_date_range = True
+            if period_start is not None and bar_time < period_start:
+                in_date_range = False
+            if period_end is not None and bar_time > period_end:
+                in_date_range = False
 
-            # NEW: If entry would trigger, also check that stops are not already violated
+            # First check if entry trigger and conditions are met
+            entry_triggered = in_date_range and check_trigger_and_conditions(entry_trigger, entry_conditions, i)
+
+            # If entry would trigger, also check that stops are not already violated
             if entry_triggered:
                 stops_violated = are_any_stops_already_violated(
                     initial_stop_config, exit_groups, i, strategy_direction
@@ -452,7 +488,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                 exit_type_series.append(None)
 
                 current_position_size = entry_position_size
-                current_entry_price = price
+                current_entry_price = get_trigger_price(entry_trigger, i)
 
                 # Activate all exit groups
                 active_exit_groups = set(range(len(exit_groups)))
@@ -473,13 +509,14 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                 exit_size = current_position_size
                 bar_exit_type = "Stop"
                 exit_triggered = True
+                stop_exit_price = get_trigger_price(initial_stop_config, i)
 
                 # Record trade for all active groups
                 for group_idx in active_exit_groups:
                     group_size = exit_groups[group_idx].get('position_size', 0)
                     all_trades.append({
                         'entry_price': current_entry_price,
-                        'exit_price': price,
+                        'exit_price': stop_exit_price,
                         'position_size': group_size,
                         'exit_type': 'Initial Stop'
                     })
@@ -506,9 +543,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                                 bar_exit_type = "Target"
 
                             # Record trade
+                            target_trigger = target.get('trigger', {})
                             all_trades.append({
                                 'entry_price': current_entry_price,
-                                'exit_price': price,
+                                'exit_price': get_trigger_price(target_trigger, i),
                                 'position_size': group_size,
                                 'exit_type': 'Target'
                             })
@@ -528,9 +566,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                                 bar_exit_type = "Stop"
 
                                 # Record trade
+                                stop_trigger = stop.get('trigger', {})
                                 all_trades.append({
                                     'entry_price': current_entry_price,
-                                    'exit_price': price,
+                                    'exit_price': get_trigger_price(stop_trigger, i),
                                     'position_size': group_size,
                                     'exit_type': 'Stop'
                                 })
@@ -635,6 +674,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         avg_pnl_per_trade = total_pnl / num_trades if num_trades > 0 else 0
         winning_trades_pnl = sum(pnl for pnl in trade_pnls if pnl > 0)
         losing_trades_pnl = sum(pnl for pnl in trade_pnls if pnl < 0)
+
+        target_exits = sum(1 for t in all_trades if t['exit_type'] == 'Target')
+        stop_exits = sum(1 for t in all_trades if t['exit_type'] in ('Stop', 'Initial Stop'))
+        target_exit_pct = target_exits / num_trades * 100
+        stop_exit_pct = stop_exits / num_trades * 100
     else:
         win_rate = 0.0
         loss_rate = 0.0
@@ -643,6 +687,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
         avg_pnl_per_trade = 0.0
         winning_trades_pnl = 0.0
         losing_trades_pnl = 0.0
+        target_exit_pct = 0.0
+        stop_exit_pct = 0.0
 
     stats_df = pd.DataFrame(
         {
@@ -655,6 +701,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
                 avg_pnl_per_trade,
                 winning_trades_pnl,
                 losing_trades_pnl,
+                target_exit_pct,
+                stop_exit_pct,
             ]
         },
         index=[
@@ -666,6 +714,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict):
             "Avg P&L per trade ($)",
             "Winning trades P&L ($)",
             "Losing trades P&L ($)",
+            "Target exit (%)",
+            "Stop exit (%)",
         ],
     )
 

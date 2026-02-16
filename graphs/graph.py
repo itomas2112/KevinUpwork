@@ -11,6 +11,14 @@ def build_main_chart(
     show_bb: bool,
     show_kc: bool,
     show_strategy: bool,
+    rsi_upper_1: float = 70.0,
+    rsi_upper_2: float = 67.0,
+    rsi_lower_1: float = 33.0,
+    rsi_lower_2: float = 30.0,
+    cmb_line_1: float = 70.0,
+    cmb_line_2: float = 60.0,
+    cmb_line_3: float = 40.0,
+    cmb_line_4: float = 30.0,
 ):
     """
     Build main chart:
@@ -80,7 +88,7 @@ def build_main_chart(
     # -------------------------------------------------
     if show_strategy:
 
-        # ---- Entry markers (green triangle up)
+        # ---- Entry markers (yellow triangle up)
         entries = df_slice[df_slice["entry_signal"]]
 
         if not entries.empty:
@@ -92,7 +100,7 @@ def build_main_chart(
                     marker=dict(
                         symbol="triangle-up",
                         size=12,
-                        color="lime",
+                        color="yellow",
                         line=dict(color="black", width=1),
                     ),
                     name="Entry",
@@ -101,7 +109,7 @@ def build_main_chart(
                 col=1,
             )
 
-        # ---- Exit markers: Target (orange triangle down)
+        # ---- Exit markers: Target (green triangle down)
         if "exit_type" in df_slice.columns:
             target_exits = df_slice[
                 (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Target")
@@ -116,10 +124,10 @@ def build_main_chart(
                         marker=dict(
                             symbol="triangle-down",
                             size=12,
-                            color="orange",
+                            color="green",
                             line=dict(color="black", width=1),
                         ),
-                        name="Target Exit",
+                        name="Exit",
                     ),
                     row=1,
                     col=1,
@@ -142,7 +150,7 @@ def build_main_chart(
                             color="red",
                             line=dict(color="black", width=1),
                         ),
-                        name="Stop Exit",
+                        name="Stop",
                     ),
                     row=1,
                     col=1,
@@ -160,7 +168,7 @@ def build_main_chart(
                         marker=dict(
                             symbol="triangle-down",
                             size=12,
-                            color="red",
+                            color="green",
                             line=dict(color="black", width=1),
                         ),
                         name="Exit",
@@ -178,7 +186,8 @@ def build_main_chart(
                 x=df_slice["x"],
                 y=df_slice["tenkan"],
                 name="Tenkan",
-                line=dict(color="blue", width=1),
+                line=dict(color="red", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -189,7 +198,8 @@ def build_main_chart(
                 x=df_slice["x"],
                 y=df_slice["kijun"],
                 name="Kijun",
-                line=dict(color="red", width=1),
+                line=dict(color="lightblue", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -200,7 +210,8 @@ def build_main_chart(
                 x=df_slice["x"],
                 y=df_slice["senkou_a"],
                 name="Senkou A",
-                line=dict(color="rgba(0,200,0,0.6)", width=1),
+                line=dict(color="yellow", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -211,7 +222,8 @@ def build_main_chart(
                 x=df_slice["x"],
                 y=df_slice["senkou_b"],
                 name="Senkou B",
-                line=dict(color="rgba(200,0,0,0.6)", width=1),
+                line=dict(color="green", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -227,6 +239,7 @@ def build_main_chart(
                 y=df_slice["bb_mid"],
                 name="BB Mid",
                 line=dict(color="gray", width=1, dash="dot"),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -238,6 +251,7 @@ def build_main_chart(
                 y=df_slice["bb_upper"],
                 name="BB Upper",
                 line=dict(color="gray", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -249,6 +263,7 @@ def build_main_chart(
                 y=df_slice["bb_lower"],
                 name="BB Lower",
                 line=dict(color="gray", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -264,6 +279,7 @@ def build_main_chart(
                 y=df_slice["kc_mid"],
                 name="KC Mid",
                 line=dict(color="orange", width=1, dash="dot"),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -275,6 +291,7 @@ def build_main_chart(
                 y=df_slice["kc_upper"],
                 name="KC Upper",
                 line=dict(color="orange", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -286,6 +303,7 @@ def build_main_chart(
                 y=df_slice["kc_lower"],
                 name="KC Lower",
                 line=dict(color="orange", width=1),
+                showlegend=False,
             ),
             row=1,
             col=1,
@@ -299,14 +317,47 @@ def build_main_chart(
             x=df_slice["x"],
             y=df_slice["rsi"],
             name="RSI",
-            line=dict(color="orange", width=2),
+            line=dict(color="purple", width=2),
+            showlegend=False,
         ),
         row=2,
         col=1,
     )
 
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2)
+    fig.add_trace(
+        go.Scatter(
+            x=df_slice["x"],
+            y=df_slice["rsi_13"],
+            name="RSI 13 SMA",
+            line=dict(color="red", width=1.5),
+            showlegend=False,
+        ),
+        row=2,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df_slice["x"],
+            y=df_slice["rsi_33"],
+            name="RSI 33 SMA",
+            line=dict(color="blue", width=1.5),
+            showlegend=False,
+        ),
+        row=2,
+        col=1,
+    )
+
+    fig.add_hrect(
+        y0=rsi_upper_2, y1=rsi_upper_1,
+        fillcolor="red", opacity=0.15,
+        line_width=0, row=2, col=1,
+    )
+    fig.add_hrect(
+        y0=rsi_lower_2, y1=rsi_lower_1,
+        fillcolor="green", opacity=0.15,
+        line_width=0, row=2, col=1,
+    )
 
     # -------------------------------------------------
     # CMB Composite
@@ -316,7 +367,8 @@ def build_main_chart(
             x=df_slice["x"],
             y=df_slice["ci"],
             name="CI",
-            line=dict(color="gray", width=2),
+            line=dict(color="purple", width=2),
+            showlegend=False,
         ),
         row=3,
         col=1,
@@ -327,7 +379,8 @@ def build_main_chart(
             x=df_slice["x"],
             y=df_slice["ci_13"],
             name="CI 13",
-            line=dict(color="dodgerblue", width=1.5),
+            line=dict(color="red", width=1.5),
+            showlegend=False,
         ),
         row=3,
         col=1,
@@ -338,11 +391,22 @@ def build_main_chart(
             x=df_slice["x"],
             y=df_slice["ci_33"],
             name="CI 33",
-            line=dict(color="red", width=1.5),
+            line=dict(color="blue", width=1.5),
+            showlegend=False,
         ),
         row=3,
         col=1,
     )
+
+    # CMB horizontal reference lines
+    cmb_line_colors = ["red", "orange", "teal", "green"]
+    for i, (val, color) in enumerate(
+        zip([cmb_line_1, cmb_line_2, cmb_line_3, cmb_line_4], cmb_line_colors), 1
+    ):
+        fig.add_hline(
+            y=val, line_dash="dash", line_color=color, line_width=1,
+            row=3, col=1,
+        )
 
     # -------------------------------------------------
     # Layout
@@ -396,27 +460,47 @@ def render_charts(
     show_bb,
     show_kc,
     show_strategy,
+    rsi_zones_1h=None,
+    rsi_zones_15m=None,
+    show_1h=True,
 ):
     """
-    Renders the 1H and 15m charts side by side.
+    Renders charts. Side by side when 1H+15m, full width when 15m only.
     """
+    rsi_zones_1h = rsi_zones_1h or {}
+    rsi_zones_15m = rsi_zones_15m or {}
 
-    col_left, col_right = st.columns([1, 1], gap="small")
+    if show_1h:
+        col_left, col_right = st.columns([1, 1], gap="small")
 
-    with col_left:
-        st.subheader("1H Chart")
-        fig_1h = build_main_chart(
-            df_slice=df_slice_1h,
-            period_start=start_1h,
-            period_end=end_1h,
-            show_ichimoku=show_ichimoku,
-            show_bb=show_bb,
-            show_kc=show_kc,
-            show_strategy = show_strategy,
-        )
-        st.plotly_chart(fig_1h, use_container_width=True)
+        with col_left:
+            st.subheader("1H Chart")
+            fig_1h = build_main_chart(
+                df_slice=df_slice_1h,
+                period_start=start_1h,
+                period_end=end_1h,
+                show_ichimoku=show_ichimoku,
+                show_bb=show_bb,
+                show_kc=show_kc,
+                show_strategy=show_strategy,
+                **rsi_zones_1h,
+            )
+            st.plotly_chart(fig_1h, use_container_width=True)
 
-    with col_right:
+        with col_right:
+            st.subheader("15m Chart")
+            fig_15m = build_main_chart(
+                df_slice=df_slice_15m,
+                period_start=start_15m,
+                period_end=end_15m,
+                show_ichimoku=show_ichimoku,
+                show_bb=show_bb,
+                show_kc=show_kc,
+                show_strategy=show_strategy,
+                **rsi_zones_15m,
+            )
+            st.plotly_chart(fig_15m, use_container_width=True)
+    else:
         st.subheader("15m Chart")
         fig_15m = build_main_chart(
             df_slice=df_slice_15m,
@@ -425,6 +509,7 @@ def render_charts(
             show_ichimoku=show_ichimoku,
             show_bb=show_bb,
             show_kc=show_kc,
-            show_strategy = show_strategy,
+            show_strategy=show_strategy,
+            **rsi_zones_15m,
         )
         st.plotly_chart(fig_15m, use_container_width=True)

@@ -40,9 +40,7 @@ def save_strategy_to_session(strategy_name):
             "conditions_count": st.session_state['entry_conditions_count'],
             "conditions": []
         },
-        # NEW: Initial Stop
         "initial_stop": st.session_state.get('initial_stop', {}),
-        # NEW: Exit Groups (replaces single exit)
         "exit_groups": []
     }
 

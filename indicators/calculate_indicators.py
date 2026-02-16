@@ -29,6 +29,8 @@ def calculate_indicators(
     # RSI
     # -------------------------------------------------
     df["rsi"] = rsi(df["latest"], rsi_window)
+    df["rsi_13"] = df["rsi"].rolling(13).mean()
+    df["rsi_33"] = df["rsi"].rolling(33).mean()
 
     # -------------------------------------------------
     # CMB Composite
@@ -114,7 +116,7 @@ def slice_for_graph(
     # -------------------------------------------------
     # Drop NaNs only on required cols
     # -------------------------------------------------
-    required_cols = ["latest", "rsi", "ci", "ci_13", "ci_33"]
+    required_cols = ["latest", "rsi", "rsi_13", "rsi_33", "ci", "ci_13", "ci_33"]
 
     if show_ichimoku:
         required_cols += ["tenkan", "kijun", "senkou_a", "senkou_b"]

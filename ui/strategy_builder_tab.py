@@ -592,7 +592,7 @@ def render_save_button(strategy_name_input: str):
 
 
 # =============================================================================
-# NEW: Export/Import Functions
+# Export/Import Functions
 # =============================================================================
 
 def render_export_import_section():
@@ -929,7 +929,7 @@ def render_strategy_management():
     else:
         st.info("No strategies saved yet. Create and save a strategy to see it here.")
 
-    # NEW: Add Export/Import section
+    # Export/Import section
     st.divider()
     render_export_import_section()
 

@@ -35,12 +35,16 @@ EVENT_TYPES = [
     "Cross",
     "Cross Above",
     "Cross Below",
-    # "At Level"  # Disabled — triggers every bar when values are close, not a one-time event
+    "Close",
+    "Close Above",
+    "Close Below",
 ]
 
 STOP_EVENT_TYPES = [
     "Cross Above",
     "Cross Below",
+    "Close Above",
+    "Close Below",
 ]
 
 CONDITION_OPERATORS = [
@@ -74,9 +78,9 @@ INDICATOR_MAP = {
     "Senkou A": "senkou_a",
     "Senkou B": "senkou_b",
     "RSI": "rsi",
-    "RSI 13 SMA": "ci_13",  # NOT rsi_13_sma
-    "RSI 33 SMA": "ci_33",  # NOT rsi_33_sma
-    "CMB": "cmb",
-    "CMB 13 SMA": "cmb_13_sma",
-    "CMB 33 SMA": "cmb_33_sma",
+    "RSI 13 SMA": "rsi_13",
+    "RSI 33 SMA": "rsi_33",
+    "CMB": "ci",
+    "CMB 13 SMA": "ci_13",
+    "CMB 33 SMA": "ci_33",
 }
