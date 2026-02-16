@@ -11,3 +11,6 @@ __pycache__/
 # Documentation / AI
 *.md
 *.txt
+
+# Local strategy data
+saved_strategies.json
