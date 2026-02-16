@@ -13,8 +13,11 @@ def initialize_session_state():
     # Saved strategies
     if 'saved_strategies' not in st.session_state:
         if os.path.exists(STRATEGIES_FILE):
-            with open(STRATEGIES_FILE, 'r') as f:
-                st.session_state['saved_strategies'] = json.load(f)
+            try:
+                with open(STRATEGIES_FILE, 'r') as f:
+                    st.session_state['saved_strategies'] = json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                st.session_state['saved_strategies'] = []
         else:
             st.session_state['saved_strategies'] = []
 
