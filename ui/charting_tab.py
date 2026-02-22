@@ -71,6 +71,9 @@ def render_charting_tab(sidebar_config):
     all_stats_15m = []
     strategy_label = None
 
+    # Reserve a container at the top for the global performance summary
+    global_perf_container = st.container()
+
     # Render each period
     for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
         stats_1h, stats_15m = render_period(
@@ -90,10 +93,11 @@ def render_charting_tab(sidebar_config):
     if show_custom_strategy and selected_custom_strategy is not None:
         strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
 
-    # Render global performance summary
+    # Render global performance summary at the top
     has_stats = all_stats_15m and (all_stats_1h or not show_1h)
     if has_stats:
-        render_global_performance(all_stats_1h, all_stats_15m, strategy_label, len(drm_periods), show_1h)
+        with global_perf_container:
+            render_global_performance(all_stats_1h, all_stats_15m, strategy_label, len(drm_periods), show_1h)
 
 
 def render_file_uploaders(show_1h=True):

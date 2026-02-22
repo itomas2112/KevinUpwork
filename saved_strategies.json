@@ -1,1 +1,50 @@
-[]
+[
+    {
+        "strategy_name": "Test",
+        "direction": "Long",
+        "patterns": [
+            "W.(1) \u2192 W.1 Impulse"
+        ],
+        "created_at": "2026-02-21 11:48:55",
+        "entry": {
+            "trigger": {
+                "group": "Price & Indicators",
+                "element1": "Tenkan",
+                "event": "Cross Above",
+                "compare_type": "Indicator",
+                "element2": "Kijun",
+                "value": null
+            },
+            "position_size": 1.0,
+            "conditions_count": 0,
+            "conditions": []
+        },
+        "initial_stop": {
+            "element1": "Price",
+            "event": "Cross Below",
+            "compare_type": "Indicator",
+            "element2": "BB Lower Band"
+        },
+        "exit_groups": [
+            {
+                "group_id": 1,
+                "position_size": 1.0,
+                "targets": [
+                    {
+                        "type": "Target",
+                        "trigger": {
+                            "group": "Price & Indicators",
+                            "element1": "Tenkan",
+                            "event": "Cross",
+                            "compare_type": "Indicator",
+                            "element2": "Kijun",
+                            "value": null
+                        },
+                        "conditions": []
+                    }
+                ],
+                "stops": []
+            }
+        ]
+    }
+]

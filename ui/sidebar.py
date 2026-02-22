@@ -18,55 +18,55 @@ def render_sidebar():
     )
 
     # Pattern Parameters
-    st.sidebar.header("Pattern Parameters")
-    pattern = st.sidebar.selectbox("Pattern", ['Bullish', 'Bearish'], index=0, key="pattern_select")
+    with st.sidebar.expander("Pattern Parameters", expanded=True):
+        pattern = st.selectbox("Pattern", ['Bullish', 'Bearish'], index=0, key="pattern_select")
 
-    # Store pattern in session state so other functions can access it
-    st.session_state['pattern'] = pattern
+        # Store pattern in session state so other functions can access it
+        st.session_state['pattern'] = pattern
 
-    primary_choice = st.sidebar.selectbox(
-        "Primary wave",
-        options=[None] + list(PRIMARY_SECONDARY_MAP.keys()),
-        format_func=lambda x: "Select..." if x is None else x,
-        key="primary_choice",
-        on_change=on_primary_change,
-    )
-
-    secondary_choice = None
-    if primary_choice is not None:
-        secondary_choice = st.sidebar.selectbox(
-            "Secondary wave",
-            options=[None] + PRIMARY_SECONDARY_MAP[primary_choice],
+        primary_choice = st.selectbox(
+            "Primary wave",
+            options=[None] + list(PRIMARY_SECONDARY_MAP.keys()),
             format_func=lambda x: "Select..." if x is None else x,
-            key="secondary_choice",
+            key="primary_choice",
+            on_change=on_primary_change,
         )
 
+        secondary_choice = None
+        if primary_choice is not None:
+            secondary_choice = st.selectbox(
+                "Secondary wave",
+                options=[None] + PRIMARY_SECONDARY_MAP[primary_choice],
+                format_func=lambda x: "Select..." if x is None else x,
+                key="secondary_choice",
+            )
+
     # Global Overlays
-    st.sidebar.header("Global Overlays")
-    show_ichimoku = st.sidebar.checkbox("Show Ichimoku Cloud", value=False)
-    show_bb = st.sidebar.checkbox("Show Bollinger Bands", value=False)
-    show_kc = st.sidebar.checkbox("Show Keltner Channel", value=False)
+    with st.sidebar.expander("Global Overlays"):
+        show_ichimoku = st.checkbox("Show Ichimoku Cloud", value=False)
+        show_bb = st.checkbox("Show Bollinger Bands", value=False)
+        show_kc = st.checkbox("Show Keltner Channel", value=False)
 
-    st.sidebar.header("Market Parameters")
-    tick_size = st.sidebar.number_input(
-        "Tick Value",
-        min_value=0.001,
-        value=10.0,
-        step=0.01,
-        format="%.2f",
-        key="tick_size",
-        help="Contract size for 1 tick"
-    )
+    with st.sidebar.expander("Market Parameters"):
+        tick_size = st.number_input(
+            "Tick Value",
+            min_value=0.001,
+            value=10.0,
+            step=0.01,
+            format="%.2f",
+            key="tick_size",
+            help="Contract size for 1 tick"
+        )
 
-    minimal_change = st.sidebar.number_input(
-        "Minimal Change",
-        min_value=0.001,
-        value=0.1,
-        step=0.01,
-        format="%.2f",
-        key="minimal_change",
-        help="Minimum price movement required"
-    )
+        minimal_change = st.number_input(
+            "Minimal Change",
+            min_value=0.001,
+            value=0.1,
+            step=0.01,
+            format="%.2f",
+            key="minimal_change",
+            help="Minimum price movement required"
+        )
 
     # Strategy Overlays
     # st.sidebar.header("Strategy Overlays")
@@ -86,36 +86,35 @@ def render_sidebar():
         ]
 
         if filtered_strategies:
-            st.sidebar.header("Custom Strategies:")
+            with st.sidebar.expander("Custom Strategies", expanded=True):
+                strategy_options = ["None"] + [
+                    strategy.get('strategy_name', f'Strategy_{idx + 1}')
+                    for idx, strategy in filtered_strategies
+                ]
 
-            strategy_options = ["None"] + [
-                strategy.get('strategy_name', f'Strategy_{idx + 1}')
-                for idx, strategy in filtered_strategies
-            ]
+                # Map display indices to actual strategy indices
+                strategy_index_map = {i: idx for i, (idx, _) in enumerate(filtered_strategies, 1)}
 
-            # Map display indices to actual strategy indices
-            strategy_index_map = {i: idx for i, (idx, _) in enumerate(filtered_strategies, 1)}
+                if 'selected_custom_strategy_idx' not in st.session_state:
+                    st.session_state['selected_custom_strategy_idx'] = 0
 
-            if 'selected_custom_strategy_idx' not in st.session_state:
-                st.session_state['selected_custom_strategy_idx'] = 0
+                selected_option = st.radio(
+                    "Select one strategy:",
+                    options=range(len(strategy_options)),
+                    format_func=lambda x: strategy_options[x],
+                    index=st.session_state['selected_custom_strategy_idx'],
+                    key="custom_strategy_radio"
+                )
 
-            selected_option = st.sidebar.radio(
-                "Select one strategy:",
-                options=range(len(strategy_options)),
-                format_func=lambda x: strategy_options[x],
-                index=st.session_state['selected_custom_strategy_idx'],
-                key="custom_strategy_radio"
-            )
-
-            # Check if selection changed and update
-            if selected_option != st.session_state['selected_custom_strategy_idx']:
-                st.session_state['selected_custom_strategy_idx'] = selected_option
-                # Store the actual strategy index
-                if selected_option > 0:
-                    st.session_state['selected_custom_strategy_actual_idx'] = strategy_index_map[selected_option]
-                else:
-                    st.session_state['selected_custom_strategy_actual_idx'] = None
-                st.rerun()
+                # Check if selection changed and update
+                if selected_option != st.session_state['selected_custom_strategy_idx']:
+                    st.session_state['selected_custom_strategy_idx'] = selected_option
+                    # Store the actual strategy index
+                    if selected_option > 0:
+                        st.session_state['selected_custom_strategy_actual_idx'] = strategy_index_map[selected_option]
+                    else:
+                        st.session_state['selected_custom_strategy_actual_idx'] = None
+                    st.rerun()
 
     # Indicator Parameters
     show_1h = analysis_mode == "1H + 15m"
@@ -143,14 +142,13 @@ def render_timeframe_parameters(timeframe):
 
     key_prefix = timeframe.lower().replace('h', '_h').replace('m', '_m')
 
-    params = {
-        'rsi_window': st.sidebar.slider(
-            f"RSI window ({timeframe})", 5, 50, 14,
-            key=f"rsi_{key_prefix}"
-        ),
-    }
+    params = {}
 
-    with st.sidebar.expander(f"RSI Zones ({timeframe})"):
+    with st.sidebar.expander(f"RSI ({timeframe})"):
+        params['rsi_window'] = st.slider(
+            f"RSI window", 5, 50, 14,
+            key=f"rsi_{key_prefix}"
+        )
         params['rsi_upper_1'] = st.number_input(
             "Upper Line 1", 0.0, 100.0, 70.0, step=1.0,
             key=f"rsi_u1_{key_prefix}"
@@ -186,25 +184,28 @@ def render_timeframe_parameters(timeframe):
             key=f"cmb_l4_{key_prefix}"
         )
 
-    params['bb_period'] = st.sidebar.number_input(
-        f"BB Period ({timeframe})", 5, 100, 20, step=1,
-        key=f"bb_p_{key_prefix}"
-    )
-    params['bb_stdev'] = st.sidebar.number_input(
-        f"BB StdDev ({timeframe})", 0.5, 5.0, 2.0, step=0.1,
-        key=f"bb_s_{key_prefix}"
-    )
-    params['kc_ema_period'] = st.sidebar.number_input(
-        f"KC EMA Period ({timeframe})", 5, 100, 20, step=1,
-        key=f"kc_ema_{key_prefix}"
-    )
-    params['kc_atr_period'] = st.sidebar.number_input(
-        f"KC ATR Period ({timeframe})", 5, 100, 10, step=1,
-        key=f"kc_atr_{key_prefix}"
-    )
-    params['kc_atr_mult'] = st.sidebar.number_input(
-        f"KC ATR Mult ({timeframe})", 0.5, 5.0, 2.0, step=0.1,
-        key=f"kc_mult_{key_prefix}"
-    )
+    with st.sidebar.expander(f"Bollinger Bands ({timeframe})"):
+        params['bb_period'] = st.number_input(
+            f"BB Period", 5, 100, 20, step=1,
+            key=f"bb_p_{key_prefix}"
+        )
+        params['bb_stdev'] = st.number_input(
+            f"BB StdDev", 0.5, 5.0, 2.0, step=0.1,
+            key=f"bb_s_{key_prefix}"
+        )
+
+    with st.sidebar.expander(f"Keltner Channel ({timeframe})"):
+        params['kc_ema_period'] = st.number_input(
+            f"KC EMA Period", 5, 100, 20, step=1,
+            key=f"kc_ema_{key_prefix}"
+        )
+        params['kc_atr_period'] = st.number_input(
+            f"KC ATR Period", 5, 100, 10, step=1,
+            key=f"kc_atr_{key_prefix}"
+        )
+        params['kc_atr_mult'] = st.number_input(
+            f"KC ATR Mult", 0.5, 5.0, 2.0, step=0.1,
+            key=f"kc_mult_{key_prefix}"
+        )
 
     return params
