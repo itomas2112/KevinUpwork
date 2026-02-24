@@ -167,22 +167,38 @@ def render_timeframe_parameters(timeframe):
         )
 
     with st.sidebar.expander(f"CMB Lines ({timeframe})"):
-        params['cmb_line_1'] = st.number_input(
-            "CMB Line 1", 0.0, 100.0, 70.0, step=1.0,
-            key=f"cmb_l1_{key_prefix}"
-        )
-        params['cmb_line_2'] = st.number_input(
-            "CMB Line 2", 0.0, 100.0, 60.0, step=1.0,
-            key=f"cmb_l2_{key_prefix}"
-        )
-        params['cmb_line_3'] = st.number_input(
-            "CMB Line 3", 0.0, 100.0, 40.0, step=1.0,
-            key=f"cmb_l3_{key_prefix}"
-        )
-        params['cmb_line_4'] = st.number_input(
-            "CMB Line 4", 0.0, 100.0, 30.0, step=1.0,
-            key=f"cmb_l4_{key_prefix}"
-        )
+        # Dynamic CMB lines: default 0, user can add/remove
+        cmb_state_key = f"cmb_lines_{key_prefix}"
+        if cmb_state_key not in st.session_state:
+            st.session_state[cmb_state_key] = []
+
+        # Render existing lines with remove buttons
+        lines_to_remove = []
+        for idx, line_val in enumerate(st.session_state[cmb_state_key]):
+            line_col, remove_col = st.columns([3, 1])
+            with line_col:
+                new_val = st.number_input(
+                    f"Line {idx + 1}", 0.0, 200.0, float(line_val), step=1.0,
+                    key=f"cmb_line_{key_prefix}_{idx}"
+                )
+                st.session_state[cmb_state_key][idx] = new_val
+            with remove_col:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("X", key=f"cmb_rm_{key_prefix}_{idx}"):
+                    lines_to_remove.append(idx)
+
+        # Remove lines (in reverse to preserve indices)
+        if lines_to_remove:
+            for idx in sorted(lines_to_remove, reverse=True):
+                st.session_state[cmb_state_key].pop(idx)
+            st.rerun()
+
+        # Add line button
+        if st.button("+ Add Line", key=f"cmb_add_{key_prefix}"):
+            st.session_state[cmb_state_key].append(50.0)
+            st.rerun()
+
+        params['cmb_lines'] = list(st.session_state[cmb_state_key])
 
     with st.sidebar.expander(f"Bollinger Bands ({timeframe})"):
         params['bb_period'] = st.number_input(

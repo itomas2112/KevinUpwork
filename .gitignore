@@ -8,7 +8,7 @@
 __pycache__/
 *.pyc
 
-# Documentation / AI
+# Documentation
 *.md
 *.txt
 

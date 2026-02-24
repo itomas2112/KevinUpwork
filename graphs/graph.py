@@ -15,10 +15,7 @@ def build_main_chart(
     rsi_upper_2: float = 67.0,
     rsi_lower_1: float = 33.0,
     rsi_lower_2: float = 30.0,
-    cmb_line_1: float = 70.0,
-    cmb_line_2: float = 60.0,
-    cmb_line_3: float = 40.0,
-    cmb_line_4: float = 30.0,
+    cmb_lines: list = None,
 ):
     """
     Build main chart:
@@ -350,12 +347,12 @@ def build_main_chart(
 
     fig.add_hrect(
         y0=rsi_upper_2, y1=rsi_upper_1,
-        fillcolor="yellow", opacity=0.15,
+        fillcolor="red", opacity=0.3,
         line_width=0, row=2, col=1,
     )
     fig.add_hrect(
         y0=rsi_lower_2, y1=rsi_lower_1,
-        fillcolor="green", opacity=0.15,
+        fillcolor="blue", opacity=0.3,
         line_width=0, row=2, col=1,
     )
 
@@ -367,7 +364,7 @@ def build_main_chart(
             x=df_slice["x"],
             y=df_slice["ci"],
             name="CI",
-            line=dict(color="violet", width=2),
+            line=dict(color="#9932CC", width=2),
             showlegend=False,
         ),
         row=3,
@@ -398,15 +395,13 @@ def build_main_chart(
         col=1,
     )
 
-    # CMB horizontal reference lines
-    cmb_line_colors = ["red", "orange", "teal", "green"]
-    for i, (val, color) in enumerate(
-        zip([cmb_line_1, cmb_line_2, cmb_line_3, cmb_line_4], cmb_line_colors), 1
-    ):
-        fig.add_hline(
-            y=val, line_dash="dash", line_color=color, line_width=1,
-            row=3, col=1,
-        )
+    # CMB horizontal reference lines (white, dotted, user-defined)
+    if cmb_lines:
+        for val in cmb_lines:
+            fig.add_hline(
+                y=val, line_dash="dot", line_color="white", line_width=1,
+                row=3, col=1,
+            )
 
     # -------------------------------------------------
     # Layout

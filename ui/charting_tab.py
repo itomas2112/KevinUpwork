@@ -27,7 +27,7 @@ def render_charting_tab(sidebar_config):
 
     # Calculate indicators (exclude display-only params: RSI zones and CMB lines)
     display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
-                         'cmb_line_1', 'cmb_line_2', 'cmb_line_3', 'cmb_line_4'}
+                         'cmb_lines'}
     indicator_params_15m = {k: v for k, v in sidebar_config['params_15m'].items() if k not in display_only_keys}
 
     df_features_1h = None
@@ -204,7 +204,7 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
 
     # RSI zone and CMB line parameters per timeframe
     chart_param_keys = ['rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
-                        'cmb_line_1', 'cmb_line_2', 'cmb_line_3', 'cmb_line_4']
+                        'cmb_lines']
     rsi_zones_1h = {k: sidebar_config['params_1h'][k] for k in chart_param_keys} if show_1h else None
     rsi_zones_15m = {k: sidebar_config['params_15m'][k] for k in chart_param_keys}
 
@@ -396,4 +396,7 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
         ],
     )
 
-    st.table(global_table)
+    # Constrain table width so values sit close to category labels
+    narrow_col, _ = st.columns([1, 2])
+    with narrow_col:
+        st.table(global_table)
