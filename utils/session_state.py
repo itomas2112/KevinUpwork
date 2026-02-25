@@ -50,3 +50,10 @@ def initialize_session_state():
 
     if 'initial_stop' not in st.session_state:
         st.session_state['initial_stop'] = None
+
+    # DRM data for both patterns (used by Performance tab)
+    if 'drm_bullish' not in st.session_state:
+        st.session_state['drm_bullish'] = None
+
+    if 'drm_bearish' not in st.session_state:
+        st.session_state['drm_bearish'] = None

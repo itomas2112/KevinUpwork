@@ -142,6 +142,19 @@ def render_file_uploaders(show_1h=True):
             # Since sidebar is already rendered, we need to get pattern differently
             drm = load_drm(uploaded_drm, st.session_state.get('pattern', 'Bullish'))
             st.session_state['drm'] = drm
+
+            # Load both sheets for Performance tab
+            try:
+                uploaded_drm.seek(0)
+                st.session_state['drm_bullish'] = load_drm(uploaded_drm, 'Bullish')
+            except Exception:
+                st.session_state['drm_bullish'] = None
+            try:
+                uploaded_drm.seek(0)
+                st.session_state['drm_bearish'] = load_drm(uploaded_drm, 'Bearish')
+            except Exception:
+                st.session_state['drm_bearish'] = None
+
             st.success("Date Range Manager loaded")
 
 def check_data_loaded(show_1h=True):
@@ -256,12 +269,20 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
         st.caption(f"**{strategy_label}**")
 
     def _format_stats(stats):
+        n = int(stats.loc['Number of trades', 'value'])
+        win_rate = stats.loc['Win rate (%)', 'value']
+        wins = round(n * win_rate / 100) if n > 0 else 0
+        losses = n - wins
+        total_win = stats.loc['Winning trades P&L ($)', 'value']
+        total_lose = stats.loc['Losing trades P&L ($)', 'value']
+        avg_profit = total_win / wins if wins > 0 else 0.0
+        avg_loss = total_lose / losses if losses > 0 else 0.0
         return [
-            f"{int(stats.loc['Number of trades', 'value'])}",
-            f"{round(stats.loc['Win rate (%)', 'value']):.0f}%",
+            f"{n}",
+            f"{round(win_rate):.0f}%",
             f"{round(stats.loc['Loss rate (%)', 'value']):.0f}%",
-            f"${stats.loc['Winning trades P&L ($)', 'value']:.2f}",
-            f"${stats.loc['Losing trades P&L ($)', 'value']:.2f}",
+            f"${avg_profit:.2f}",
+            f"${avg_loss:.2f}",
             f"${stats.loc['Total P&L ($)', 'value']:.2f}",
             f"{round(stats.loc['Target exit (%)', 'value']):.0f}%",
             f"{round(stats.loc['Stop exit (%)', 'value']):.0f}%",
@@ -278,8 +299,8 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
             "Number of trades",
             "Win %",
             "Lose %",
-            "Win $",
-            "Lose $",
+            "Avg Profit",
+            "Avg Loss",
             "Total P&L",
             "Target Exit %",
             "Stop Exit %",
@@ -328,12 +349,17 @@ def _aggregate_stats(all_stats):
         target_exit_pct = (total_target_exits / total_trades) * 100
         stop_exit_pct = (total_stop_exits / total_trades) * 100
 
-        # Expected Value = (Win% x Avg Win $) - (Lose% x Avg Lose $)
-        expected_value = (win_pct/100 * total_win_pnl) + (lose_pct / 100 * total_lose_pnl)
+        avg_win_pnl = total_win_pnl / total_wins if total_wins > 0 else 0.0
+        avg_lose_pnl = total_lose_pnl / total_losses if total_losses > 0 else 0.0
+
+        # Expected Value = (Win% x Avg Profit) - (Lose% x Avg Loss)
+        expected_value = (win_pct / 100 * avg_win_pnl) + (lose_pct / 100 * avg_lose_pnl)
     else:
         win_pct = 0.0
         lose_pct = 0.0
         total_pnl = 0.0
+        avg_win_pnl = 0.0
+        avg_lose_pnl = 0.0
         expected_value = 0.0
         target_exit_pct = 0.0
         stop_exit_pct = 0.0
@@ -342,8 +368,8 @@ def _aggregate_stats(all_stats):
         'num_trades': total_trades,
         'win_pct': win_pct,
         'lose_pct': lose_pct,
-        'win_pnl': total_win_pnl,
-        'lose_pnl': total_lose_pnl,
+        'avg_win_pnl': avg_win_pnl,
+        'avg_lose_pnl': avg_lose_pnl,
         'total_pnl': total_pnl,
         'expected_value': expected_value,
         'target_exit_pct': target_exit_pct,
@@ -368,8 +394,8 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             f"{agg['num_trades']}",
             f"{agg['win_pct']:.0f}%",
             f"{agg['lose_pct']:.0f}%",
-            f"${agg['win_pnl']:.2f}",
-            f"${agg['lose_pnl']:.2f}",
+            f"${agg['avg_win_pnl']:.2f}",
+            f"${agg['avg_lose_pnl']:.2f}",
             f"${agg['total_pnl']:.2f}",
             f"${agg['expected_value']:.2f}",
             f"{agg['target_exit_pct']:.0f}%",
@@ -387,8 +413,8 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             "Number of Trades",
             "Win %",
             "Lose %",
-            "Win $",
-            "Lose $",
+            "Avg Profit",
+            "Avg Loss",
             "Total P&L",
             "Expected Value",
             "Target Exit %",
@@ -396,7 +422,4 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
         ],
     )
 
-    # Constrain table width so values sit close to category labels
-    narrow_col, _ = st.columns([1, 2])
-    with narrow_col:
-        st.table(global_table)
+    st.table(global_table)
