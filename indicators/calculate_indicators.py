@@ -108,6 +108,12 @@ def slice_for_graph(
     start_pos = full_index.get_loc(period_start)
     end_pos = full_index.get_loc(period_end)
 
+    # get_loc may return a slice when there are duplicate index values
+    if isinstance(start_pos, slice):
+        start_pos = start_pos.start
+    if isinstance(end_pos, slice):
+        end_pos = end_pos.stop - 1
+
     ext_start = max(0, start_pos - context_bars)
     ext_end = min(len(df) - 1, end_pos + context_bars)
 

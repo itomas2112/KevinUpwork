@@ -79,3 +79,7 @@ PRIMARY_SECONDARY_MAP = {
         "W.Y Zigzag",
     ],
 }
+
+ALL_UNIQUE_SECONDARIES = sorted(set(
+    sec for secs in PRIMARY_SECONDARY_MAP.values() for sec in secs
+))
