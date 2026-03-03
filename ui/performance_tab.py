@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 
 from data.loader import parse_drm_periods
-from data.helpers import PRIMARY_SECONDARY_MAP, ALL_UNIQUE_SECONDARIES
+from data.helpers import PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES, expand_selection, selection_label
 from indicators.calculate_indicators import calculate_indicators, slice_for_graph
 from strategies.first_strategy import execute_custom_strategy
 from ui.charting_tab import _aggregate_stats
@@ -19,9 +19,6 @@ SELECTION_MODES = [
     "Specified Secondary",
     "Secondary Across Primaries",
 ]
-
-PRIMARY_LIST = list(PRIMARY_SECONDARY_MAP.keys())
-
 
 def render_performance_tab(sidebar_config):
     """Render the Performance tab content."""
@@ -48,8 +45,13 @@ def render_performance_tab(sidebar_config):
     # --------------------------------------------------
     # Prerequisites
     # --------------------------------------------------
-    if 'df_15m' not in st.session_state:
-        st.info("Please upload 15m OHLC data in the Charting tab first.")
+    show_1h = sidebar_config['analysis_mode'] == "1H"
+    df_key = 'df_1h' if show_1h else 'df_15m'
+    params_key = 'params_1h' if show_1h else 'params_15m'
+    tf_label = "1H" if show_1h else "15m"
+
+    if df_key not in st.session_state:
+        st.info(f"Please upload {tf_label} OHLC data in the Charting tab first.")
         return
 
     drm_bullish = st.session_state.get('drm_bullish')
@@ -173,16 +175,13 @@ def render_performance_tab(sidebar_config):
     # --------------------------------------------------
     # Calculate indicators once on full DataFrame
     # --------------------------------------------------
-    display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2', 'cmb_lines'}
-    indicator_params = {k: v for k, v in sidebar_config['params_15m'].items() if k not in display_only_keys}
-    df_full = calculate_indicators(df=st.session_state['df_15m'], **indicator_params)
-
-    # --------------------------------------------------
-    # Strategy market parameters
-    # --------------------------------------------------
-    strategy_with_params = selected_strategy.copy()
-    strategy_with_params['tick_size'] = sidebar_config['tick_size']
-    strategy_with_params['minimal_change'] = sidebar_config['minimal_change']
+    display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2', 'cmb_lines',
+                         'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
+                         'ichi_show_senkou_b', 'ichi_show_chikou',
+                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
+                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower'}
+    indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
+    df_full = calculate_indicators(df=st.session_state[df_key], **indicator_params)
 
     # --------------------------------------------------
     # Reserve placeholder for global metrics (rendered after loop)
@@ -203,7 +202,7 @@ def render_performance_tab(sidebar_config):
     total_combos = 0
     expanded_per_selection = []
     for sel in selections:
-        combos = _expand_selection(sel)
+        combos = expand_selection(sel)
         expanded_per_selection.append(combos)
         total_combos += len(combos)
 
@@ -211,7 +210,7 @@ def render_performance_tab(sidebar_config):
     combo_counter = 0
 
     for sel, combos in zip(selections, expanded_per_selection):
-        label = _selection_label(sel)
+        label = selection_label(sel)
         # Ensure unique column labels when duplicate selections exist
         if label in results:
             n = 2
@@ -259,7 +258,7 @@ def render_performance_tab(sidebar_config):
                 if df_slice.empty:
                     continue
 
-                _, stats = execute_custom_strategy(df_slice, strategy_with_params, period_start, period_end)
+                _, stats = execute_custom_strategy(df_slice, selected_strategy, period_start, period_end)
                 combo_stats.append(stats)
 
             combo_cache[combo_key] = combo_stats
@@ -308,95 +307,6 @@ def render_performance_tab(sidebar_config):
 # Helpers
 # ------------------------------------------------------------------
 
-def _expand_selection(selection):
-    """
-    Expand a selection dict into a list of (pattern_type, primary, secondary) tuples.
-    """
-    mode = selection.get("mode", "All Patterns")
-
-    if mode == "All Patterns":
-        combos = []
-        for ptype in ("Bullish", "Bearish"):
-            for primary, secondaries in PRIMARY_SECONDARY_MAP.items():
-                for sec in secondaries:
-                    combos.append((ptype, primary, sec))
-        return combos
-
-    if mode == "All Bullish":
-        combos = []
-        for primary, secondaries in PRIMARY_SECONDARY_MAP.items():
-            for sec in secondaries:
-                combos.append(("Bullish", primary, sec))
-        return combos
-
-    if mode == "All Bearish":
-        combos = []
-        for primary, secondaries in PRIMARY_SECONDARY_MAP.items():
-            for sec in secondaries:
-                combos.append(("Bearish", primary, sec))
-        return combos
-
-    ptype = selection.get("pattern_type", "Bullish")
-
-    if mode == "Specified Primary":
-        primary = selection.get("primary") or PRIMARY_LIST[0]
-        secondaries = PRIMARY_SECONDARY_MAP.get(primary, [])
-        return [(ptype, primary, sec) for sec in secondaries]
-
-    if mode == "Specified Secondary":
-        primary = selection.get("primary") or PRIMARY_LIST[0]
-        secondary = selection.get("secondary")
-        if secondary is None:
-            secondaries = PRIMARY_SECONDARY_MAP.get(primary, [])
-            secondary = secondaries[0] if secondaries else None
-        if secondary is None:
-            return []
-        return [(ptype, primary, secondary)]
-
-    if mode == "Secondary Across Primaries":
-        secondary = selection.get("secondary")
-        if secondary is None:
-            secondary = ALL_UNIQUE_SECONDARIES[0] if ALL_UNIQUE_SECONDARIES else None
-        if secondary is None:
-            return []
-        combos = []
-        for primary, secondaries in PRIMARY_SECONDARY_MAP.items():
-            if secondary in secondaries:
-                combos.append((ptype, primary, secondary))
-        return combos
-
-    return []
-
-
-def _selection_label(selection):
-    """Generate a readable label for a selection."""
-    mode = selection.get("mode", "All Patterns")
-
-    if mode == "All Patterns":
-        return "All Patterns"
-    if mode == "All Bullish":
-        return "All Bullish"
-    if mode == "All Bearish":
-        return "All Bearish"
-
-    ptype = selection.get("pattern_type", "Bullish")
-
-    if mode == "Specified Primary":
-        primary = selection.get("primary", "?")
-        return f"{primary} {ptype}"
-
-    if mode == "Specified Secondary":
-        primary = selection.get("primary", "?")
-        secondary = selection.get("secondary", "?")
-        return f"{primary} → {secondary} {ptype}"
-
-    if mode == "Secondary Across Primaries":
-        secondary = selection.get("secondary", "?")
-        return f"{secondary} (All Primaries) {ptype}"
-
-    return mode
-
-
 def _build_metrics_table(results_dict):
     """Build a DataFrame with metric rows and one column per result."""
     metric_names = [
@@ -417,10 +327,10 @@ def _build_metrics_table(results_dict):
             f"{agg['num_trades']}",
             f"{agg['win_pct']:.0f}%",
             f"{agg['lose_pct']:.0f}%",
-            f"${agg['avg_win_pnl']:.2f}",
-            f"${agg['avg_lose_pnl']:.2f}",
-            f"${agg['total_pnl']:.2f}",
-            f"${agg['expected_value']:.2f}",
+            f"{agg['avg_win_pnl']:.2f}R",
+            f"{agg['avg_lose_pnl']:.2f}R",
+            f"{agg['total_pnl']:.2f}R",
+            f"{agg['expected_value']:.2f}R",
             f"{agg['target_exit_pct']:.0f}%",
             f"{agg['stop_exit_pct']:.0f}%",
         ]

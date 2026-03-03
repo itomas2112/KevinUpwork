@@ -3,6 +3,7 @@ Charting tab (Tab 1) UI and logic
 """
 import streamlit as st
 from data.loader import load_ohlc, load_drm, parse_drm_periods
+from data.helpers import expand_selection
 from indicators.calculate_indicators import calculate_indicators, slice_for_graph
 from graphs.graph import render_charts
 from strategies.first_strategy import ichimoku_tenkan_kijun_strategy, execute_custom_strategy
@@ -12,7 +13,7 @@ import pandas as pd
 def render_charting_tab(sidebar_config):
     """Render the charting tab content"""
 
-    show_1h = sidebar_config['analysis_mode'] == "1H + 15m"
+    show_1h = sidebar_config['analysis_mode'] == "1H"
 
     # File uploaders
     render_file_uploaders(show_1h)
@@ -21,27 +22,42 @@ def render_charting_tab(sidebar_config):
     if not check_data_loaded(show_1h):
         return
 
-    if sidebar_config['primary_choice'] is None or sidebar_config['secondary_choice'] is None:
-        st.info("Please select Pattern, Primary setup, and Secondary setup to display charts.")
+    # Expand all charting selections into (pattern_type, primary, secondary) combos
+    charting_selections = sidebar_config['charting_selections']
+    all_combos = []
+    seen_combos = set()
+    for sel in charting_selections:
+        for combo in expand_selection(sel):
+            if combo not in seen_combos:
+                seen_combos.add(combo)
+                all_combos.append(combo)
+
+    if not all_combos:
+        st.info("Please configure pattern selections in the sidebar to display charts.")
         return
 
     # Calculate indicators (exclude display-only params: RSI zones and CMB lines)
     display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
-                         'cmb_lines'}
-    indicator_params_15m = {k: v for k, v in sidebar_config['params_15m'].items() if k not in display_only_keys}
+                         'cmb_lines',
+                         'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
+                         'ichi_show_senkou_b', 'ichi_show_chikou',
+                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
+                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower'}
 
     df_features_1h = None
+    df_features_15m = None
     if show_1h:
         indicator_params_1h = {k: v for k, v in sidebar_config['params_1h'].items() if k not in display_only_keys}
         df_features_1h = calculate_indicators(
             df=st.session_state["df_1h"],
             **indicator_params_1h
         )
-
-    df_features_15m = calculate_indicators(
-        df=st.session_state["df_15m"],
-        **indicator_params_15m
-    )
+    else:
+        indicator_params_15m = {k: v for k, v in sidebar_config['params_15m'].items() if k not in display_only_keys}
+        df_features_15m = calculate_indicators(
+            df=st.session_state["df_15m"],
+            **indicator_params_15m
+        )
 
     # Determine if custom strategy is selected
     show_custom_strategy = False
@@ -54,61 +70,69 @@ def render_charting_tab(sidebar_config):
             show_custom_strategy = True
             selected_custom_strategy = st.session_state['saved_strategies'][actual_idx]
 
-    # Parse DRM periods
-    drm_periods = parse_drm_periods(
-        st.session_state["drm"],
-        sidebar_config['pattern'],
-        sidebar_config['primary_choice'],
-        sidebar_config['secondary_choice']
-    )
-
-    if not drm_periods:
-        st.warning("No valid date ranges found in DRM.")
-        return
-
     # Collect stats from all periods for global aggregation
     all_stats_1h = []
     all_stats_15m = []
     strategy_label = None
+    total_periods = 0
 
     # Reserve a container at the top for the global performance summary
     global_perf_container = st.container()
 
-    # Render each period
-    for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
-        stats_1h, stats_15m = render_period(
-            i, start_dt, end_dt,
-            df_features_1h, df_features_15m,
-            sidebar_config,
-            show_custom_strategy,
-            selected_custom_strategy,
-            show_1h,
-        )
+    # Get DRM data
+    drm_bullish = st.session_state.get('drm_bullish')
+    drm_bearish = st.session_state.get('drm_bearish')
 
-        if stats_1h is not None:
-            all_stats_1h.append(stats_1h)
-        if stats_15m is not None:
-            all_stats_15m.append(stats_15m)
+    # Render periods for each combo
+    for pattern_type, primary, secondary in all_combos:
+        drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
+        if drm_df is None:
+            continue
+
+        drm_periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
+        if not drm_periods:
+            continue
+
+        # Sort periods newest first
+        drm_periods.sort(key=lambda p: p[0], reverse=True)
+
+        st.markdown(f"## {pattern_type} — {primary} → {secondary}")
+
+        for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
+            chart_key = f"{pattern_type}_{primary}_{secondary}_{i}"
+            stats_1h, stats_15m = render_period(
+                i, start_dt, end_dt,
+                df_features_1h, df_features_15m,
+                sidebar_config,
+                show_custom_strategy,
+                selected_custom_strategy,
+                show_1h,
+                chart_key=chart_key,
+            )
+
+            if stats_1h is not None:
+                all_stats_1h.append(stats_1h)
+            if stats_15m is not None:
+                all_stats_15m.append(stats_15m)
+
+        total_periods += len(drm_periods)
 
     if show_custom_strategy and selected_custom_strategy is not None:
         strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
 
     # Render global performance summary at the top
-    has_stats = all_stats_15m and (all_stats_1h or not show_1h)
+    has_stats = bool(all_stats_1h) if show_1h else bool(all_stats_15m)
     if has_stats:
         with global_perf_container:
-            render_global_performance(all_stats_1h, all_stats_15m, strategy_label, len(drm_periods), show_1h)
+            render_global_performance(all_stats_1h, all_stats_15m, strategy_label, total_periods, show_1h)
 
 
-def render_file_uploaders(show_1h=True):
+def render_file_uploaders(show_1h=False):
     """Render file upload section"""
-    if show_1h:
-        col_u1, col_u2, col_u3 = st.columns([1, 1, 1], gap="small")
-    else:
-        col_u2, col_u3 = st.columns([1, 1], gap="small")
+    col_data, col_drm = st.columns([1, 1], gap="small")
 
-    if show_1h:
-        with col_u1:
+    with col_data:
+        if show_1h:
             uploaded_file_1h = st.file_uploader(
                 "1H OHLC", type=["csv"], key="1h", label_visibility="collapsed"
             )
@@ -118,34 +142,26 @@ def render_file_uploaders(show_1h=True):
                 df_1h = load_ohlc(uploaded_file_1h)
                 st.session_state["df_1h"] = df_1h
                 st.success("1H data loaded")
+        else:
+            uploaded_file_15m = st.file_uploader(
+                "15m OHLC", type=["csv"], key="15m", label_visibility="collapsed"
+            )
+            st.caption("15m OHLC (.csv)")
 
-    with col_u2:
-        uploaded_file_15m = st.file_uploader(
-            "15m OHLC", type=["csv"], key="15m", label_visibility="collapsed"
-        )
-        st.caption("15m OHLC (.csv)")
+            if uploaded_file_15m is not None:
+                df_15m = load_ohlc(uploaded_file_15m)
+                st.session_state["df_15m"] = df_15m
+                st.success("15m data loaded")
 
-        if uploaded_file_15m is not None:
-            df_15m = load_ohlc(uploaded_file_15m)
-            st.session_state["df_15m"] = df_15m
-            st.success("15m data loaded")
-
-    with col_u3:
+    with col_drm:
         uploaded_drm = st.file_uploader(
             "Date Range Manager", type=["xlsx"], key="drm_", label_visibility="collapsed"
         )
         st.caption("DRM (.xlsx)")
 
         if uploaded_drm is not None:
-
-            # Just get the pattern from session state or use a default
-            # Since sidebar is already rendered, we need to get pattern differently
-            drm = load_drm(uploaded_drm, st.session_state.get('pattern', 'Bullish'))
-            st.session_state['drm'] = drm
-
-            # Load both sheets for Performance tab
+            # Load both sheets for multi-pattern support
             try:
-                uploaded_drm.seek(0)
                 st.session_state['drm_bullish'] = load_drm(uploaded_drm, 'Bullish')
             except Exception:
                 st.session_state['drm_bullish'] = None
@@ -155,32 +171,44 @@ def render_file_uploaders(show_1h=True):
             except Exception:
                 st.session_state['drm_bearish'] = None
 
+            # Keep legacy 'drm' key pointing to bullish by default
+            if st.session_state.get('drm_bullish') is not None:
+                st.session_state['drm'] = st.session_state['drm_bullish']
+            elif st.session_state.get('drm_bearish') is not None:
+                st.session_state['drm'] = st.session_state['drm_bearish']
+
             st.success("Date Range Manager loaded")
 
-def check_data_loaded(show_1h=True):
+def check_data_loaded(show_1h=False):
     """Check if all required data is loaded"""
     if show_1h:
-        if ("df_1h" not in st.session_state or
-                "df_15m" not in st.session_state or
-                "drm" not in st.session_state):
-            st.info("Please upload 1H, 15m data files and DRM file.")
+        if "df_1h" not in st.session_state:
+            st.info("Please upload 1H data file and DRM file.")
             return False
     else:
-        if ("df_15m" not in st.session_state or
-                "drm" not in st.session_state):
+        if "df_15m" not in st.session_state:
             st.info("Please upload 15m data file and DRM file.")
             return False
+
+    drm_bullish = st.session_state.get('drm_bullish')
+    drm_bearish = st.session_state.get('drm_bearish')
+    if drm_bullish is None and drm_bearish is None:
+        st.info("Please upload a DRM file.")
+        return False
+
     return True
 
 
 def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
-                  sidebar_config, show_custom_strategy, selected_custom_strategy, show_1h=True):
+                  sidebar_config, show_custom_strategy, selected_custom_strategy, show_1h=True,
+                  chart_key=None):
     """Render a single period with charts and stats. Returns (stats_1h, stats_15m) or (None, None)."""
 
     st.markdown(f"### Period {period_num}: {start_dt} → {end_dt}")
 
-    # Slice data
+    # Slice data for the active timeframe only
     df_slice_1h, period_start_1h, period_end_1h = None, None, None
+    df_slice_15m, period_start_15m, period_end_15m = None, None, None
     if show_1h:
         df_slice_1h, period_start_1h, period_end_1h = slice_for_graph(
             df=df_features_1h, start_date=start_dt, end_date=end_dt,
@@ -188,15 +216,16 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
             show_bb=sidebar_config['show_bb'],
             show_kc=sidebar_config['show_kc']
         )
+    else:
+        df_slice_15m, period_start_15m, period_end_15m = slice_for_graph(
+            df=df_features_15m, start_date=start_dt, end_date=end_dt,
+            show_ichimoku=sidebar_config['show_ichimoku'],
+            show_bb=sidebar_config['show_bb'],
+            show_kc=sidebar_config['show_kc']
+        )
 
-    df_slice_15m, period_start_15m, period_end_15m = slice_for_graph(
-        df=df_features_15m, start_date=start_dt, end_date=end_dt,
-        show_ichimoku=sidebar_config['show_ichimoku'],
-        show_bb=sidebar_config['show_bb'],
-        show_kc=sidebar_config['show_kc']
-    )
-
-    if df_slice_15m.empty or (show_1h and df_slice_1h.empty):
+    active_slice = df_slice_1h if show_1h else df_slice_15m
+    if active_slice.empty:
         st.info("No data for this period.")
         return None, None
 
@@ -205,24 +234,26 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
     strategy_label = None
 
     if show_custom_strategy and selected_custom_strategy is not None:
-        # Add market parameters to strategy config
-        strategy_with_params = selected_custom_strategy.copy()
-        strategy_with_params['tick_size'] = sidebar_config['tick_size']
-        strategy_with_params['minimal_change'] = sidebar_config['minimal_change']
-
         if show_1h:
-            df_slice_1h, stats_1h = execute_custom_strategy(df_slice_1h, strategy_with_params, period_start_1h, period_end_1h)
-        df_slice_15m, stats_15m = execute_custom_strategy(df_slice_15m, strategy_with_params, period_start_15m, period_end_15m)
+            df_slice_1h, stats_1h = execute_custom_strategy(df_slice_1h, selected_custom_strategy, period_start_1h, period_end_1h)
+        else:
+            df_slice_15m, stats_15m = execute_custom_strategy(df_slice_15m, selected_custom_strategy, period_start_15m, period_end_15m)
         strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
 
     # RSI zone and CMB line parameters per timeframe
     chart_param_keys = ['rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
-                        'cmb_lines']
+                        'cmb_lines',
+                        'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
+                        'ichi_show_senkou_b', 'ichi_show_chikou',
+                        'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
+                        'kc_show_upper', 'kc_show_middle', 'kc_show_lower']
     rsi_zones_1h = {k: sidebar_config['params_1h'][k] for k in chart_param_keys} if show_1h else None
-    rsi_zones_15m = {k: sidebar_config['params_15m'][k] for k in chart_param_keys}
+    rsi_zones_15m = {k: sidebar_config['params_15m'][k] for k in chart_param_keys} if not show_1h else None
 
     # Render charts
-    show_strategy = show_custom_strategy and stats_15m is not None
+    draw_mode = sidebar_config.get('draw_mode', False)
+    active_stats = stats_1h if show_1h else stats_15m
+    show_strategy = show_custom_strategy and active_stats is not None
     if show_strategy:
         col_charts, col_stats = st.columns([3, 1], gap="medium")
 
@@ -238,6 +269,8 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                 rsi_zones_1h,
                 rsi_zones_15m,
                 show_1h,
+                chart_key=chart_key,
+                draw_mode=draw_mode,
             )
 
         with col_stats:
@@ -254,6 +287,8 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
             rsi_zones_1h,
             rsi_zones_15m,
             show_1h,
+            chart_key=chart_key,
+            draw_mode=draw_mode,
         )
 
     st.divider()
@@ -273,25 +308,25 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
         win_rate = stats.loc['Win rate (%)', 'value']
         wins = round(n * win_rate / 100) if n > 0 else 0
         losses = n - wins
-        total_win = stats.loc['Winning trades P&L ($)', 'value']
-        total_lose = stats.loc['Losing trades P&L ($)', 'value']
+        total_win = stats.loc['Winning trades P&L (R)', 'value']
+        total_lose = stats.loc['Losing trades P&L (R)', 'value']
         avg_profit = total_win / wins if wins > 0 else 0.0
         avg_loss = total_lose / losses if losses > 0 else 0.0
         return [
             f"{n}",
             f"{round(win_rate):.0f}%",
             f"{round(stats.loc['Loss rate (%)', 'value']):.0f}%",
-            f"${avg_profit:.2f}",
-            f"${avg_loss:.2f}",
-            f"${stats.loc['Total P&L ($)', 'value']:.2f}",
+            f"{avg_profit:.2f}R",
+            f"{avg_loss:.2f}R",
+            f"{stats.loc['Total P&L (R)', 'value']:.2f}R",
             f"{round(stats.loc['Target exit (%)', 'value']):.0f}%",
             f"{round(stats.loc['Stop exit (%)', 'value']):.0f}%",
         ]
 
-    data = {"15m": _format_stats(stats_15m)}
-    if show_1h and stats_1h is not None:
-        data["1H"] = _format_stats(stats_1h)
-        data = {"1H": data["1H"], "15m": data["15m"]}  # 1H first
+    if show_1h:
+        data = {"1H": _format_stats(stats_1h)}
+    else:
+        data = {"15m": _format_stats(stats_15m)}
 
     stats_table = pd.DataFrame(
         data,
@@ -315,8 +350,8 @@ def _aggregate_stats(all_stats):
 
     Each stats_df has these rows:
         Number of trades, Win rate (%), Loss rate (%),
-        Total return (%), Total P&L ($), Avg P&L per trade ($),
-        Winning trades P&L ($), Losing trades P&L ($)
+        Total return (%), Total P&L (R), Avg P&L per trade (R),
+        Winning trades P&L (R), Losing trades P&L (R)
 
     We sum the raw counts and dollars, then recompute rates.
     """
@@ -335,8 +370,8 @@ def _aggregate_stats(all_stats):
 
         total_trades += n
         total_wins += wins
-        total_win_pnl += stats_df.loc['Winning trades P&L ($)', 'value']
-        total_lose_pnl += stats_df.loc['Losing trades P&L ($)', 'value']
+        total_win_pnl += stats_df.loc['Winning trades P&L (R)', 'value']
+        total_lose_pnl += stats_df.loc['Losing trades P&L (R)', 'value']
         total_target_exits += round(n * stats_df.loc['Target exit (%)', 'value'] / 100.0)
         total_stop_exits += round(n * stats_df.loc['Stop exit (%)', 'value'] / 100.0)
 
@@ -387,25 +422,25 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
     if strategy_label:
         st.caption(f"Strategy: **{strategy_label}**")
 
-    agg_15m = _aggregate_stats(all_stats_15m)
-
     def _format_agg(agg):
         return [
             f"{agg['num_trades']}",
             f"{agg['win_pct']:.0f}%",
             f"{agg['lose_pct']:.0f}%",
-            f"${agg['avg_win_pnl']:.2f}",
-            f"${agg['avg_lose_pnl']:.2f}",
-            f"${agg['total_pnl']:.2f}",
-            f"${agg['expected_value']:.2f}",
+            f"{agg['avg_win_pnl']:.2f}R",
+            f"{agg['avg_lose_pnl']:.2f}R",
+            f"{agg['total_pnl']:.2f}R",
+            f"{agg['expected_value']:.2f}R",
             f"{agg['target_exit_pct']:.0f}%",
             f"{agg['stop_exit_pct']:.0f}%",
         ]
 
-    data = {"15m": _format_agg(agg_15m)}
-    if show_1h and all_stats_1h:
-        agg_1h = _aggregate_stats(all_stats_1h)
-        data = {"1H": _format_agg(agg_1h), "15m": data["15m"]}
+    if show_1h:
+        agg = _aggregate_stats(all_stats_1h)
+        data = {"1H": _format_agg(agg)}
+    else:
+        agg = _aggregate_stats(all_stats_15m)
+        data = {"15m": _format_agg(agg)}
 
     global_table = pd.DataFrame(
         data,

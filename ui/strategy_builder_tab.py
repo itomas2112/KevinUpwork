@@ -104,15 +104,18 @@ def _apply_pending_edit():
     st.session_state['exit_groups'] = []
 
     for group_idx, group in enumerate(saved_groups):
+        # Backward compat: if old format has position_size but no allocation_pct, split equally
+        alloc_pct = group.get('allocation_pct', 100.0 / max(len(saved_groups), 1))
+
         group_data = {
             'group_id': group.get('group_id', group_idx + 1),
-            'position_size': group.get('position_size', 1.0),
+            'allocation_pct': alloc_pct,
             'targets': group.get('targets', []),
             'stops': group.get('stops', []),
         }
         st.session_state['exit_groups'].append(group_data)
 
-        st.session_state[f'exit_group_{group_idx}_size'] = group.get('position_size', 1.0)
+        st.session_state[f'exit_group_{group_idx}_alloc'] = alloc_pct
 
         for target_idx, target in enumerate(group.get('targets', [])):
             _load_exit_widget_keys(group_idx, 'Target', target_idx, target)
@@ -188,15 +191,11 @@ def render_strategy_form():
 
     st.divider()
 
-    # Entry box
+    # Entry box (includes Static Stop)
     render_entry_box()
     st.divider()
 
-    # Initial Stop (Passive Stop) - NEW
-    render_initial_stop_box()
-    st.divider()
-
-    # Exit Groups - NEW
+    # Exit Groups
     render_exit_groups()
     st.divider()
 
@@ -273,17 +272,59 @@ def render_entry_box():
 
         st.divider()
 
-        # POSITION SIZE (Required) - Units of position
+        # POSITION SIZE (Required) - R multiples
         st.markdown("#### Position Size (Required)")
-        st.caption("Specify the units/size of the position to enter")
+        st.caption("Specify the position size in R multiples (risk units)")
 
         entry_position_size = st.number_input(
-            "Position Size (units)",
-            min_value=0.0,
+            "Position Size (R)",
+            min_value=0.1,
             value=1.0,
             step=0.1,
             key="entry_position_size"
         )
+
+        st.divider()
+
+        # STATIC STOP (Required) - Defines 1R
+        st.markdown("#### Static Stop (Required)")
+        st.caption("Defines 1R — must be a Price × Indicator event")
+        st.warning("⚠️ The distance between entry price and this indicator at entry bar = 1R")
+
+        sc1, sc2, sc3 = st.columns([2, 1, 2])
+
+        with sc1:
+            st.info("Element 1: **Price** (fixed)")
+
+        with sc2:
+            initial_stop_event = st.selectbox(
+                "Event",
+                STOP_EVENT_TYPES,
+                key="initial_stop_event"
+            )
+
+        with sc3:
+            st.radio(
+                "Compare to",
+                ["Indicator"],
+                key="initial_stop_compare_type",
+                horizontal=True
+            )
+
+            initial_stop_element2 = st.selectbox(
+                "Indicator",
+                PRICE_AND_INDICATORS[1:],
+                key="initial_stop_element2"
+            )
+            st.caption(f"Example: Price {initial_stop_event} {initial_stop_element2}")
+
+        # Store initial stop in session state
+        st.session_state['initial_stop'] = {
+            'element1': 'Price',
+            'event': initial_stop_event,
+            'compare_type': 'Indicator',
+            'element2': initial_stop_element2
+        }
 
         st.divider()
 
@@ -550,14 +591,17 @@ def render_save_button(strategy_name_input: str):
 
     if not is_valid:
         exit_groups = st.session_state.get('exit_groups', [])
-        has_empty_targets = any(len(g.get('targets', [])) == 0 for g in exit_groups)
+        has_empty_group = any(
+            len(g.get('targets', [])) == 0 and len(g.get('stops', [])) == 0
+            for g in exit_groups
+        )
 
         if not exit_groups:
             st.error("⚠️ You must add at least one exit group!")
-        elif has_empty_targets:
-            st.error("⚠️ Every exit group must have at least one target!")
+        elif has_empty_group:
+            st.error("⚠️ Every exit group must have at least one target or stop!")
         else:
-            st.error("⚠️ Total exit size must equal entry size!")
+            st.error("⚠️ Total allocation must equal 100%!")
 
     col1, col2 = st.columns([3, 1])
     with col2:
@@ -803,7 +847,7 @@ def render_strategy_management():
                         # Position Size
                         st.markdown("#### Position Size")
                         position_size = entry.get('position_size', 'N/A')
-                        st.info(f"**{position_size}** units")
+                        st.info(f"**{position_size}R**")
 
                         # Conditions
                         st.markdown("#### Conditions")
@@ -830,11 +874,11 @@ def render_strategy_management():
                     # Exit Strategy Section
                     st.markdown("### Exit Strategy")
 
-                    # Initial Stop
+                    # Static Stop
                     initial_stop = strategy.get('initial_stop')
                     if initial_stop and initial_stop.get('element1'):
                         with st.container(border=True):
-                            st.markdown("#### 🛑 Initial Stop (closes all remaining position)")
+                            st.markdown("#### 🛑 Static Stop (defines 1R, closes all remaining position)")
                             stop_el1 = initial_stop.get('element1', 'N/A')
                             stop_event = initial_stop.get('event', 'N/A')
                             stop_el2 = initial_stop.get('element2', 'N/A')
@@ -846,8 +890,8 @@ def render_strategy_management():
                     if exit_groups:
                         for g_idx, group in enumerate(exit_groups):
                             with st.container(border=True):
-                                g_size = group.get('position_size', 'N/A')
-                                st.markdown(f"#### Exit Group {g_idx + 1}  —  {g_size} units")
+                                g_alloc = group.get('allocation_pct', group.get('position_size', 'N/A'))
+                                st.markdown(f"#### Exit Group {g_idx + 1}  —  {g_alloc}%")
 
                                 # Targets
                                 targets = group.get('targets', [])
@@ -876,7 +920,7 @@ def render_strategy_management():
                                                 c_el2 = cond.get('element2', 'N/A')
                                             st.caption(f"   Condition {c_idx}: {c_el1} {c_op} {c_el2}")
 
-                                # Stops
+                                # Dynamic Stops
                                 stops = group.get('stops', [])
                                 if stops:
                                     for s_idx, stop in enumerate(stops):
@@ -890,7 +934,7 @@ def render_strategy_management():
                                         else:
                                             s_el2 = s_trigger.get('element2', 'N/A')
 
-                                        st.markdown(f"**Stop {s_idx + 1}:** {s_el1} {s_event} {s_el2}")
+                                        st.markdown(f"**Dynamic Stop {s_idx + 1}:** {s_el1} {s_event} {s_el2}")
 
                                         # Stop conditions
                                         for c_idx, cond in enumerate(stop.get('conditions', []), 1):
@@ -954,23 +998,24 @@ def load_strategy_for_editing(strategy, strategy_idx):
 
 
 def validate_exit_groups():
-    """Validate that total exit size equals entry size and every group has at least one target"""
+    """Validate that total allocation equals 100% and every group has at least one target or stop"""
     exit_groups = st.session_state.get('exit_groups', [])
-    entry_size = st.session_state.get('entry_position_size', 0)
 
     # Must have at least one exit group
     if not exit_groups:
         return False
 
-    total_exit_size = 0
+    total_alloc = 0
     for exit_group in exit_groups:
-        total_exit_size += exit_group.get('position_size', 0)
+        total_alloc += exit_group.get('allocation_pct', 0)
 
-        # Every group must have at least one target
-        if len(exit_group.get('targets', [])) == 0:
+        # Every group must have at least one target or one stop
+        has_target = len(exit_group.get('targets', [])) > 0
+        has_stop = len(exit_group.get('stops', [])) > 0
+        if not has_target and not has_stop:
             return False
 
-    return abs(total_exit_size - entry_size) < 0.001  # Small tolerance for float comparison
+    return abs(total_alloc - 100.0) < 0.01  # Small tolerance for float comparison
 
 
 
@@ -981,7 +1026,7 @@ def add_exit_group():
 
     new_group = {
         'group_id': len(st.session_state['exit_groups']) + 1,
-        'position_size': 1.0,
+        'allocation_pct': 100.0,
         'targets': [],
         'stops': []
     }
@@ -1026,74 +1071,25 @@ def remove_exit_from_group(group_idx, exit_type, exit_idx):
                 st.session_state['exit_groups'][group_idx]['stops'].pop(exit_idx)
 
 
-def render_initial_stop_box():
-    """Render the initial stop (passive stop) configuration"""
-    st.subheader("🛑 Initial Stop (Passive Stop)")
-    st.caption("This stop is shared across ALL exit groups and used for risk calculation")
-
-    with st.container(border=True):
-        st.markdown("#### Initial Stop Trigger")
-        st.warning("⚠️ Must be a Price × Indicator event for proper 1R calculation")
-
-        col1, col2, col3 = st.columns([2, 1, 2])
-
-        with col1:
-            # Force Price group for initial stop
-            st.info("Element 1: **Price** (fixed)")
-            initial_stop_element1 = "Price"
-
-        with col2:
-            initial_stop_event = st.selectbox(
-                "Event",
-                STOP_EVENT_TYPES,
-                key="initial_stop_event"
-            )
-
-        with col3:
-            # Must be indicator for initial stop
-            initial_stop_compare_type = st.radio(
-                "Compare to",
-                ["Indicator"],  # Only Indicator, no Fixed Value
-                key="initial_stop_compare_type",
-                horizontal=True
-            )
-
-            initial_stop_element2 = st.selectbox(
-                "Indicator",
-                PRICE_AND_INDICATORS[1:],  # Exclude "Price" from options
-                key="initial_stop_element2"
-            )
-            st.caption(f"Example: Price {initial_stop_event} {initial_stop_element2}")
-
-        # Store initial stop in session state
-        st.session_state['initial_stop'] = {
-            'element1': initial_stop_element1,
-            'event': initial_stop_event,
-            'compare_type': 'Indicator',
-            'element2': initial_stop_element2
-        }
-
-
 def render_exit_groups():
-    """Render all exit groups with targets and stops"""
+    """Render all exit groups with targets and dynamic stops"""
     st.subheader("Exit Strategy Groups")
     st.caption(
-        "Each group handles a portion of your position. Targets and Stops within a group are OCO (One-Cancels-Other)")
+        "Each group handles a percentage of your position. Targets and Dynamic Stops within a group are OCO (One-Cancels-Other)")
 
     # Initialize exit groups if not exists
     if 'exit_groups' not in st.session_state:
         st.session_state['exit_groups'] = []
 
-    # Calculate total sizes
-    entry_size = st.session_state.get('entry_position_size', 0)
-    total_exit_size = sum(group.get('position_size', 0) for group in st.session_state.get('exit_groups', []))
+    # Calculate total allocation
+    total_alloc = sum(group.get('allocation_pct', 0) for group in st.session_state.get('exit_groups', []))
 
     # Validation message
     if len(st.session_state.get('exit_groups', [])) > 0:
-        if abs(total_exit_size - entry_size) < 0.001:
-            st.success(f"✓ Entry Size: {entry_size} units = Total Exit Size: {total_exit_size} units")
+        if abs(total_alloc - 100.0) < 0.01:
+            st.success(f"✓ Total Allocation: {total_alloc:.0f}%")
         else:
-            st.error(f"⚠️ Entry Size ({entry_size}) ≠ Total Exit Size ({total_exit_size}) - Strategy invalid!")
+            st.error(f"⚠️ Total Allocation ({total_alloc:.1f}%) must equal 100% - Strategy invalid!")
 
     # Render each exit group
     for group_idx, exit_group in enumerate(st.session_state.get('exit_groups', [])):
@@ -1105,14 +1101,15 @@ def render_exit_groups():
                 st.markdown(f"### Exit Group {group_idx + 1}")
 
             with col2:
-                group_size = st.number_input(
-                    "Group Size (units)",
+                group_alloc = st.number_input(
+                    "Allocation (%)",
                     min_value=0.0,
-                    value=exit_group.get('position_size', 1.0),
-                    step=0.1,
-                    key=f"exit_group_{group_idx}_size"
+                    max_value=100.0,
+                    value=exit_group.get('allocation_pct', 100.0),
+                    step=1.0,
+                    key=f"exit_group_{group_idx}_alloc"
                 )
-                st.session_state['exit_groups'][group_idx]['position_size'] = group_size
+                st.session_state['exit_groups'][group_idx]['allocation_pct'] = group_alloc
 
             with col3:
                 if st.button("🗑️", key=f"remove_exit_group_{group_idx}", help="Remove this exit group"):
@@ -1137,25 +1134,25 @@ def render_exit_groups():
 
             st.divider()
 
-            # Stops section
-            st.markdown("#### Stops")
-            st.caption("Initial Stop is automatically included in all groups")
+            # Dynamic Stops section
+            st.markdown("#### Dynamic Stops")
+            st.caption("Static Stop is defined in the Entry box and applies to all groups")
 
             stops = exit_group.get('stops', [])
 
-            # Show initial stop (always present)
+            # Show static stop reference (always present)
             if st.session_state.get('initial_stop'):
                 initial = st.session_state['initial_stop']
                 st.info(
-                    f"🔒 Initial Stop: {initial['element1']} {initial['event']} {initial['element2']} (auto-included)")
+                    f"🔒 Static Stop: {initial['element1']} {initial['event']} {initial['element2']} (auto-included)")
 
             if len(stops) == 0:
-                st.info("No additional stops added")
+                st.info("No dynamic stops added")
             else:
                 for stop_idx, stop in enumerate(stops):
                     render_exit_config(group_idx, 'Stop', stop_idx, stop)
 
-            if st.button(f"➕ Add Stop", key=f"add_stop_group_{group_idx}"):
+            if st.button(f"➕ Add Dynamic Stop", key=f"add_stop_group_{group_idx}"):
                 add_exit_to_group(group_idx, 'Stop')
                 st.rerun()
 

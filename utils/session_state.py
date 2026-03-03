@@ -58,6 +58,15 @@ def initialize_session_state():
     if 'drm_bearish' not in st.session_state:
         st.session_state['drm_bearish'] = None
 
+    # Charting tab multi-pattern selections
+    if 'charting_selections' not in st.session_state:
+        st.session_state['charting_selections'] = [{
+            "mode": "Specified Secondary",
+            "pattern_type": "Bullish",
+            "primary": None,
+            "secondary": None,
+        }]
+
     # Performance tab selections
     if 'perf_selections' not in st.session_state:
         st.session_state['perf_selections'] = [{

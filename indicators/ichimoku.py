@@ -4,19 +4,21 @@ import pandas as pd
 def ichimoku(
     high: pd.Series,
     low: pd.Series,
+    close: pd.Series = None,
     tenkan_len: int = 9,
     kijun_len: int = 26,
     senkou_b_len: int = 52,
     displacement: int = 26,
 ):
     """
-    Ichimoku Cloud (without Chikou span)
+    Ichimoku Cloud
 
     Returns:
     - tenkan
     - kijun
     - senkou_a
     - senkou_b
+    - chikou (close shifted back by displacement periods)
     """
 
     # -------------------------------------------------
@@ -50,4 +52,9 @@ def ichimoku(
         ) / 2
     ).shift(displacement)
 
-    return tenkan, kijun, senkou_a, senkou_b
+    # -------------------------------------------------
+    # Chikou Span (Lagging Span) — close shifted back
+    # -------------------------------------------------
+    chikou = close.shift(-displacement) if close is not None else None
+
+    return tenkan, kijun, senkou_a, senkou_b, chikou

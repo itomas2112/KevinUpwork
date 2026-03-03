@@ -122,6 +122,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     """
     Execute a custom strategy based on the saved strategy configuration.
     Supports multiple exit groups with OCO (One-Cancels-Other) targets and stops.
+    Uses R-based position sizing: R = distance between entry price and static stop.
 
     Parameters:
     -----------
@@ -139,7 +140,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     df : pd.DataFrame
         DataFrame with entry_signal and exit_signal columns added
     stats_df : pd.DataFrame
-        Statistics DataFrame with win rate, loss rate, number of trades, total return, P&L
+        Statistics DataFrame with win rate, loss rate, number of trades, total return, P&L in R
     """
 
     df = df.copy()
@@ -202,8 +203,16 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     # Helper function to check trigger events
     # -------------------------------------------------
-    def check_trigger(trigger_config, current_idx):
-        """Check if a trigger event occurred at given index"""
+    def check_trigger(trigger_config, current_idx, locked_value=None):
+        """
+        Check if a trigger event occurred at given index.
+
+        Parameters:
+        -----------
+        locked_value : float, optional
+            If provided, overrides the element2 value with this fixed price.
+            Used by the initial (static) stop to lock the indicator value at entry time.
+        """
         element1_name = trigger_config.get('element1')
         event = trigger_config.get('event')
         compare_type = trigger_config.get('compare_type', 'Indicator')
@@ -220,7 +229,14 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         value1 = series1.iloc[current_idx]
 
         # Determine what to compare against
-        if compare_type == "Fixed Value":
+        if locked_value is not None:
+            # Static stop: use locked price from entry time
+            value2 = locked_value
+
+            if current_idx > 0:
+                value1_prev = series1.iloc[current_idx - 1]
+                value2_prev = locked_value
+        elif compare_type == "Fixed Value":
             if fixed_value is None:
                 return False
 
@@ -266,20 +282,25 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         return False
 
-    def get_trigger_price(trigger_config, current_idx):
+    def get_trigger_price(trigger_config, current_idx, locked_value=None):
         """
         Determine the trade price for a triggered event.
         - Cross events with Price as element1: use the crossed indicator's value
         - Close events or non-Price triggers: use bar close price
+        - If locked_value is provided (static stop), use that as the crossed level
         """
         event = trigger_config.get('event', '')
         is_cross = event in ('Cross', 'Cross Above', 'Cross Below')
 
         if is_cross:
             element1 = trigger_config.get('element1')
-            compare_type = trigger_config.get('compare_type', 'Indicator')
 
             if element1 == 'Price':
+                # Static stop: use locked price
+                if locked_value is not None:
+                    return locked_value
+
+                compare_type = trigger_config.get('compare_type', 'Indicator')
                 if compare_type == 'Fixed Value':
                     fixed_val = trigger_config.get('value')
                     if fixed_val is not None:
@@ -291,6 +312,27 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                         return df[col2].iloc[current_idx]
 
         return df['latest'].iloc[current_idx]
+
+    # -------------------------------------------------
+    # Helper: get the static stop indicator value at a bar
+    # -------------------------------------------------
+    def get_static_stop_price(stop_config, current_idx):
+        """
+        Return the indicator value used by the initial (static) stop at a given bar.
+        The static stop is always Price × Indicator, so we return the indicator's value.
+        """
+        if not stop_config:
+            return None
+
+        compare_type = stop_config.get('compare_type', 'Indicator')
+        if compare_type == 'Fixed Value':
+            return stop_config.get('value')
+
+        element2 = stop_config.get('element2')
+        col2 = indicator_map.get(element2)
+        if col2 and col2 in df.columns:
+            return df[col2].iloc[current_idx]
+        return None
 
     # -------------------------------------------------
     # Helper function to check trigger with conditions
@@ -411,7 +453,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     entry_config = strategy_config.get('entry', {})
     entry_trigger = entry_config.get('trigger', {})
     entry_conditions = entry_config.get('conditions', [])
-    entry_position_size = entry_config.get('position_size', 1.0)
+    entry_r = entry_config.get('position_size', 1.0)  # R multiples
 
     # -------------------------------------------------
     # Extract initial stop (shared across all exit groups)
@@ -429,7 +471,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         if exit_config:
             exit_groups = [{
                 'group_id': 1,
-                'position_size': entry_position_size,
+                'allocation_pct': 100.0,
                 'targets': [{
                     'type': 'Target',
                     'trigger': exit_config.get('trigger', {}),
@@ -438,13 +480,18 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 'stops': []
             }]
 
+    # Backward compat: if exit groups have position_size but no allocation_pct, split equally
+    for g in exit_groups:
+        if 'allocation_pct' not in g:
+            g['allocation_pct'] = 100.0 / max(len(exit_groups), 1)
+
     # Get strategy direction
     strategy_direction = strategy_config.get('direction', 'Long')
 
     # -------------------------------------------------
     # Signal generation with multiple exits (OCO logic)
     # -------------------------------------------------
-    current_position_size = 0
+    in_position = False
     entry_signal = []
     exit_signal = []
     exit_type_series = []  # Track exit type per bar: None, "Target", "Stop", "Initial Stop"
@@ -452,15 +499,17 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # Track which exit groups are still active (not yet closed)
     active_exit_groups = set()
 
-    # Trade tracking for P&L
-    all_trades = []  # List of dicts: {entry_price, exit_price, position_size, exit_type}
+    # Trade tracking for P&L (R-based)
+    all_trades = []  # List of dicts: {entry_price, exit_price, allocation_pct, r_distance, entry_r, exit_type}
     current_entry_price = None
+    current_r_distance = 0.0  # abs(entry_price - static_stop_value)
+    locked_stop_value = None  # Static stop price locked at entry time
 
     for i in range(len(df)):
         price = df["latest"].iloc[i]
 
         # Check entry conditions (only if no position)
-        if current_position_size == 0:
+        if not in_position:
             # Block entries outside the DRM date range
             bar_time = df.index[i]
             in_date_range = True
@@ -487,8 +536,17 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 exit_signal.append(False)
                 exit_type_series.append(None)
 
-                current_position_size = entry_position_size
+                in_position = True
                 current_entry_price = get_trigger_price(entry_trigger, i)
+
+                # Lock the static stop price at entry time
+                locked_stop_value = get_static_stop_price(initial_stop_config, i)
+
+                # Calculate R-distance from static stop
+                if locked_stop_value is not None:
+                    current_r_distance = abs(current_entry_price - locked_stop_value)
+                else:
+                    current_r_distance = 0.0
 
                 # Activate all exit groups
                 active_exit_groups = set(range(len(exit_groups)))
@@ -498,26 +556,27 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 exit_type_series.append(None)
 
         # Check exit conditions (only if in position)
-        elif current_position_size > 0:
+        elif in_position:
             exit_triggered = False
-            exit_size = 0
             bar_exit_type = None  # Track the exit type for THIS bar
 
             # First, check initial stop (applies to ALL active groups)
-            if initial_stop_config and check_trigger(initial_stop_config, i):
+            # Uses locked_stop_value so the stop level stays fixed from entry time
+            if initial_stop_config and check_trigger(initial_stop_config, i, locked_value=locked_stop_value):
                 # Initial stop closes ALL remaining position
-                exit_size = current_position_size
                 bar_exit_type = "Stop"
                 exit_triggered = True
-                stop_exit_price = get_trigger_price(initial_stop_config, i)
+                stop_exit_price = get_trigger_price(initial_stop_config, i, locked_value=locked_stop_value)
 
                 # Record trade for all active groups
                 for group_idx in active_exit_groups:
-                    group_size = exit_groups[group_idx].get('position_size', 0)
+                    alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
                     all_trades.append({
                         'entry_price': current_entry_price,
                         'exit_price': stop_exit_price,
-                        'position_size': group_size,
+                        'allocation_pct': alloc_pct,
+                        'r_distance': current_r_distance,
+                        'entry_r': entry_r,
                         'exit_type': 'Initial Stop'
                     })
 
@@ -530,12 +589,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
                 for group_idx in list(active_exit_groups):
                     group = exit_groups[group_idx]
-                    group_size = group.get('position_size', 0)
+                    alloc_pct = group.get('allocation_pct', 100.0)
 
                     # Check all targets in this group
                     for target in group.get('targets', []):
                         if check_exit_signal(target, i):
-                            exit_size += group_size
                             exit_triggered = True
 
                             # Mark bar exit type — Target, unless a stop also triggers
@@ -547,7 +605,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                             all_trades.append({
                                 'entry_price': current_entry_price,
                                 'exit_price': get_trigger_price(target_trigger, i),
-                                'position_size': group_size,
+                                'allocation_pct': alloc_pct,
+                                'r_distance': current_r_distance,
+                                'entry_r': entry_r,
                                 'exit_type': 'Target'
                             })
 
@@ -559,7 +619,6 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                     if group_idx not in groups_to_close:
                         for stop in group.get('stops', []):
                             if check_exit_signal(stop, i):
-                                exit_size += group_size
                                 exit_triggered = True
 
                                 # Stop takes priority over target for bar marker
@@ -570,7 +629,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                                 all_trades.append({
                                     'entry_price': current_entry_price,
                                     'exit_price': get_trigger_price(stop_trigger, i),
-                                    'position_size': group_size,
+                                    'allocation_pct': alloc_pct,
+                                    'r_distance': current_r_distance,
+                                    'entry_r': entry_r,
                                     'exit_type': 'Stop'
                                 })
 
@@ -587,12 +648,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 entry_signal.append(False)
                 exit_signal.append(True)
                 exit_type_series.append(bar_exit_type)
-                current_position_size -= exit_size
 
-                # Ensure we don't go negative due to floating point errors
-                if current_position_size < 0.001:
-                    current_position_size = 0
+                # If all groups closed, position is done
+                if not active_exit_groups:
+                    in_position = False
                     current_entry_price = None
+                    locked_stop_value = None
             else:
                 entry_signal.append(False)
                 exit_signal.append(False)
@@ -606,16 +667,18 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     # Handle open position at the end (close remaining groups)
     # -------------------------------------------------
-    if current_position_size > 0 and current_entry_price is not None:
+    if in_position and current_entry_price is not None:
         last_price = df["latest"].iloc[-1]
 
         # Close all remaining active groups at last price
         for group_idx in active_exit_groups:
-            group_size = exit_groups[group_idx].get('position_size', 0)
+            alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
             all_trades.append({
                 'entry_price': current_entry_price,
                 'exit_price': last_price,
-                'position_size': group_size,
+                'allocation_pct': alloc_pct,
+                'r_distance': current_r_distance,
+                'entry_r': entry_r,
                 'exit_type': 'End of Data'
             })
 
@@ -627,37 +690,41 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     df["exit_type"] = exit_type_series
 
     # -------------------------------------------------
-    # Statistics with P&L calculation
+    # Statistics with R-based P&L calculation
     # -------------------------------------------------
     num_trades = len(all_trades)
 
-    # Get market parameters
-    tick_size = strategy_config.get('tick_size', 0.25)
-    minimal_change = strategy_config.get('minimal_change', 1.0)
-
-    # Calculate P&L for each trade
+    # Calculate P&L in R for each trade
     trade_returns = []
-    trade_pnls = []
+    trade_pnls_r = []
 
     for trade in all_trades:
         entry_price = trade['entry_price']
         exit_price = trade['exit_price']
-        position_size = trade['position_size']
+        alloc_pct = trade['allocation_pct']
+        r_distance = trade['r_distance']
+        t_entry_r = trade['entry_r']
 
-        # Calculate return
+        # Calculate return ratio
         if strategy_direction == 'Long':
             trade_return = exit_price / entry_price
-            price_change = exit_price - entry_price
+            price_move = exit_price - entry_price
         else:  # Short
             trade_return = entry_price / exit_price
-            price_change = entry_price - exit_price
+            price_move = entry_price - exit_price
 
         trade_returns.append(trade_return)
 
-        # Calculate P&L
-        ticks_moved = price_change / minimal_change
-        pnl = position_size * ticks_moved * tick_size
-        trade_pnls.append(pnl)
+        # Calculate P&L in R
+        # group_R = entry_R * (allocation_pct / 100)
+        # pnl_R = (price_move / r_distance) * group_R
+        if r_distance > 0:
+            group_r = t_entry_r * (alloc_pct / 100.0)
+            pnl_r = (price_move / r_distance) * group_r
+        else:
+            pnl_r = 0.0
+
+        trade_pnls_r.append(pnl_r)
 
     if num_trades > 0:
         wins = sum(r > 1 for r in trade_returns)
@@ -670,10 +737,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         for r in trade_returns:
             total_return *= r
 
-        total_pnl = sum(trade_pnls)
+        total_pnl = sum(trade_pnls_r)
         avg_pnl_per_trade = total_pnl / num_trades if num_trades > 0 else 0
-        winning_trades_pnl = sum(pnl for pnl in trade_pnls if pnl > 0)
-        losing_trades_pnl = sum(pnl for pnl in trade_pnls if pnl < 0)
+        winning_trades_pnl = sum(pnl for pnl in trade_pnls_r if pnl > 0)
+        losing_trades_pnl = sum(pnl for pnl in trade_pnls_r if pnl < 0)
 
         target_exits = sum(1 for t in all_trades if t['exit_type'] == 'Target')
         stop_exits = sum(1 for t in all_trades if t['exit_type'] in ('Stop', 'Initial Stop'))
@@ -710,10 +777,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             "Win rate (%)",
             "Loss rate (%)",
             "Total return (%)",
-            "Total P&L ($)",
-            "Avg P&L per trade ($)",
-            "Winning trades P&L ($)",
-            "Losing trades P&L ($)",
+            "Total P&L (R)",
+            "Avg P&L per trade (R)",
+            "Winning trades P&L (R)",
+            "Losing trades P&L (R)",
             "Target exit (%)",
             "Stop exit (%)",
         ],

@@ -62,7 +62,7 @@ def save_strategy_to_session(strategy_name):
     for group_idx, exit_group in enumerate(st.session_state.get('exit_groups', [])):
         group_data = {
             "group_id": exit_group.get('group_id', group_idx + 1),
-            "position_size": st.session_state.get(f'exit_group_{group_idx}_size', exit_group.get('position_size', 1.0)),
+            "allocation_pct": st.session_state.get(f'exit_group_{group_idx}_alloc', exit_group.get('allocation_pct', 100.0)),
             "targets": [],
             "stops": []
         }

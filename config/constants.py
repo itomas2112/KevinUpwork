@@ -31,6 +31,11 @@ CMB_GROUP = [
     "CMB 33 SMA"
 ]
 
+STOCH_GROUP = [
+    "Stoch %K",
+    "Stoch %D",
+]
+
 EVENT_TYPES = [
     "Cross",
     "Cross Above",
@@ -83,4 +88,6 @@ INDICATOR_MAP = {
     "CMB": "ci",
     "CMB 13 SMA": "ci_13",
     "CMB 33 SMA": "ci_33",
+    "Stoch %K": "stoch_k",
+    "Stoch %D": "stoch_d",
 }

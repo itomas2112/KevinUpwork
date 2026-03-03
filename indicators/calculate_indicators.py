@@ -5,6 +5,7 @@ from indicators.cmb import cmb_composite
 from indicators.ichimoku import ichimoku
 from indicators.bollinger import bollinger_bands
 from indicators.keltner import keltner_channel
+from indicators.stochastic import stochastic
 
 
 def calculate_indicators(
@@ -15,6 +16,9 @@ def calculate_indicators(
     kc_ema_period: int,
     kc_atr_period: int,
     kc_atr_mult: float,
+    stoch_k_period: int = 14,
+    stoch_k_smooth: int = 3,
+    stoch_d_smooth: int = 3,
 ) -> pd.DataFrame:
     """
     Calculate all indicators on full data, then slice and clean.
@@ -48,7 +52,8 @@ def calculate_indicators(
         df["kijun"],
         df["senkou_a"],
         df["senkou_b"],
-    ) = ichimoku(df["high"], df["low"])
+        df["chikou"],
+    ) = ichimoku(df["high"], df["low"], df["latest"])
 
     # -------------------------------------------------
     # Bollinger Bands
@@ -77,6 +82,21 @@ def calculate_indicators(
         ema_period=kc_ema_period,
         atr_period=kc_atr_period,
         atr_mult=kc_atr_mult,
+    )
+
+    # -------------------------------------------------
+    # Stochastic
+    # -------------------------------------------------
+    (
+        df["stoch_k"],
+        df["stoch_d"],
+    ) = stochastic(
+        df["high"],
+        df["low"],
+        df["latest"],
+        k_period=stoch_k_period,
+        k_smooth=stoch_k_smooth,
+        d_smooth=stoch_d_smooth,
     )
 
     return df
@@ -122,7 +142,8 @@ def slice_for_graph(
     # -------------------------------------------------
     # Drop NaNs only on required cols
     # -------------------------------------------------
-    required_cols = ["latest", "rsi", "rsi_13", "rsi_33", "ci", "ci_13", "ci_33"]
+    required_cols = ["latest", "rsi", "rsi_13", "rsi_33", "ci", "ci_13", "ci_33",
+                     "stoch_k", "stoch_d"]
 
     if show_ichimoku:
         required_cols += ["tenkan", "kijun", "senkou_a", "senkou_b"]

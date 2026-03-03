@@ -2,7 +2,16 @@
 Sidebar UI components
 """
 import streamlit as st
-from data.helpers import on_primary_change, PRIMARY_SECONDARY_MAP
+from data.helpers import (
+    PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
+    expand_selection,
+)
+
+CHARTING_MODES = [
+    "Specified Primary",
+    "Specified Secondary",
+    "Secondary Across Primaries",
+]
 
 
 def render_sidebar():
@@ -11,78 +20,133 @@ def render_sidebar():
     # Analysis Mode Toggle
     analysis_mode = st.sidebar.radio(
         "Analysis Mode",
-        options=["15m Only", "1H + 15m"],
+        options=["15m", "1H"],
         index=0,
         key="analysis_mode",
         horizontal=True,
     )
 
-    # Pattern Parameters
+    # Pattern Parameters — multi-row selection
     with st.sidebar.expander("Pattern Parameters", expanded=True):
-        pattern = st.selectbox("Pattern", ['Bullish', 'Bearish'], index=0, key="pattern_select")
+        selections = st.session_state['charting_selections']
 
-        # Store pattern in session state so other functions can access it
-        st.session_state['pattern'] = pattern
-
-        primary_choice = st.selectbox(
-            "Primary wave",
-            options=[None] + list(PRIMARY_SECONDARY_MAP.keys()),
-            format_func=lambda x: "Select..." if x is None else x,
-            key="primary_choice",
-            on_change=on_primary_change,
-        )
-
-        secondary_choice = None
-        if primary_choice is not None:
-            secondary_choice = st.selectbox(
-                "Secondary wave",
-                options=[None] + PRIMARY_SECONDARY_MAP[primary_choice],
-                format_func=lambda x: "Select..." if x is None else x,
-                key="secondary_choice",
+        rows_to_remove = []
+        for idx, sel in enumerate(selections):
+            # Mode
+            current_mode = sel.get("mode", "Specified Secondary")
+            mode = st.selectbox(
+                "Mode",
+                CHARTING_MODES,
+                index=CHARTING_MODES.index(current_mode) if current_mode in CHARTING_MODES else 1,
+                key=f"chart_sel_{idx}_mode",
             )
+            selections[idx]["mode"] = mode
 
-    # Global Overlays
-    with st.sidebar.expander("Global Overlays"):
+            # Pattern Type
+            ptype_options = ["Bullish", "Bearish"]
+            current_ptype = sel.get("pattern_type", "Bullish")
+            ptype = st.selectbox(
+                "Pattern Type",
+                ptype_options,
+                index=ptype_options.index(current_ptype) if current_ptype in ptype_options else 0,
+                key=f"chart_sel_{idx}_pattern_type",
+            )
+            selections[idx]["pattern_type"] = ptype
+
+            # Primary (visible for Specified Primary and Specified Secondary)
+            show_primary = mode in ("Specified Primary", "Specified Secondary")
+            show_secondary = mode in ("Specified Secondary", "Secondary Across Primaries")
+
+            if show_primary:
+                current_primary = sel.get("primary")
+                primary_idx = PRIMARY_LIST.index(current_primary) if current_primary in PRIMARY_LIST else 0
+                primary = st.selectbox(
+                    "Primary",
+                    PRIMARY_LIST,
+                    index=primary_idx,
+                    key=f"chart_sel_{idx}_primary",
+                )
+                selections[idx]["primary"] = primary
+
+            # Secondary
+            if show_secondary:
+                if mode == "Specified Secondary":
+                    chosen_primary = selections[idx].get("primary") or PRIMARY_LIST[0]
+                    sec_options = PRIMARY_SECONDARY_MAP.get(chosen_primary, [])
+                else:
+                    sec_options = ALL_UNIQUE_SECONDARIES
+
+                if sec_options:
+                    current_sec = sel.get("secondary")
+                    sec_idx = sec_options.index(current_sec) if current_sec in sec_options else 0
+                    secondary = st.selectbox(
+                        "Secondary",
+                        sec_options,
+                        index=sec_idx,
+                        key=f"chart_sel_{idx}_secondary",
+                    )
+                    selections[idx]["secondary"] = secondary
+
+            # Delete button
+            if st.button("Remove", key=f"chart_sel_{idx}_remove", type="primary"):
+                rows_to_remove.append(idx)
+
+            if idx < len(selections) - 1:
+                st.markdown("---")
+
+        # Remove rows
+        if rows_to_remove:
+            for i in sorted(rows_to_remove, reverse=True):
+                st.session_state['charting_selections'].pop(i)
+            if not st.session_state['charting_selections']:
+                st.session_state['charting_selections'] = [{
+                    "mode": "Specified Secondary",
+                    "pattern_type": "Bullish",
+                    "primary": None,
+                    "secondary": None,
+                }]
+            st.rerun()
+
+        # Add selection button
+        if st.button("+ Add Selection", key="chart_add_selection"):
+            st.session_state['charting_selections'].append({
+                "mode": "Specified Secondary",
+                "pattern_type": "Bullish",
+                "primary": None,
+                "secondary": None,
+            })
+            st.rerun()
+
+    # Indicators
+    with st.sidebar.expander("Indicators"):
         show_ichimoku = st.checkbox("Show Ichimoku Cloud", value=False)
         show_bb = st.checkbox("Show Bollinger Bands", value=False)
         show_kc = st.checkbox("Show Keltner Channel", value=False)
 
-    with st.sidebar.expander("Market Parameters"):
-        tick_size = st.number_input(
-            "Tick Value",
-            min_value=0.001,
-            value=10.0,
-            step=0.01,
-            format="%.2f",
-            key="tick_size",
-            help="Contract size for 1 tick"
-        )
+    # Chart Tools
+    draw_mode = st.sidebar.checkbox("Draw Boxes on Charts", value=False, key="draw_mode")
 
-        minimal_change = st.number_input(
-            "Minimal Change",
-            min_value=0.001,
-            value=0.1,
-            step=0.01,
-            format="%.2f",
-            key="minimal_change",
-            help="Minimum price movement required"
-        )
-
-    # Strategy Overlays
-    # st.sidebar.header("Strategy Overlays")
-    # show_tenkan_kijun = st.sidebar.checkbox("Show Tenkan Kijun Strategy", value=False)
     show_tenkan_kijun = False
 
-    # Custom Strategies (single selection) - FILTERED BY PATTERN
-    if st.session_state['saved_strategies'] and primary_choice and secondary_choice:
-        # Create current pattern combination string
-        current_pattern = f"{primary_choice} → {secondary_choice}"
+    # Custom Strategies (single selection) - FILTERED BY ALL SELECTED PATTERNS
+    charting_selections = st.session_state['charting_selections']
 
-        # Filter strategies that apply to current pattern
+    # Build set of all pattern strings from expanded selections
+    all_pattern_strings = set()
+    for sel in charting_selections:
+        combos = expand_selection(sel)
+        for _ptype, primary, secondary in combos:
+            all_pattern_strings.add(f"{primary} → {secondary}")
+
+    if st.session_state['saved_strategies'] and all_pattern_strings:
+        # Filter strategies that apply to any selected pattern
         filtered_strategies = [
             (idx, strategy)
             for idx, strategy in enumerate(st.session_state['saved_strategies'])
-            if current_pattern in strategy.get('patterns', [])
+            if any(
+                pat in all_pattern_strings
+                for pat in strategy.get('patterns', [])
+            )
         ]
 
         if filtered_strategies:
@@ -117,36 +181,33 @@ def render_sidebar():
                     st.rerun()
 
     # Indicator Parameters
-    show_1h = analysis_mode == "1H + 15m"
+    show_1h = analysis_mode == "1H"
     params_1h = render_timeframe_parameters("1H") if show_1h else None
-    params_15m = render_timeframe_parameters("15m")
+    params_15m = render_timeframe_parameters("15m") if not show_1h else None
 
     return {
         'analysis_mode': analysis_mode,
-        'pattern': pattern,
-        'primary_choice': primary_choice,
-        'secondary_choice': secondary_choice,
+        'charting_selections': charting_selections,
         'show_ichimoku': show_ichimoku,
         'show_bb': show_bb,
         'show_kc': show_kc,
-        'tick_size': tick_size,
-        'minimal_change': minimal_change,
         'show_tenkan_kijun': show_tenkan_kijun,
+        'draw_mode': draw_mode,
         'params_1h': params_1h,
         'params_15m': params_15m
     }
 
 def render_timeframe_parameters(timeframe):
     """Render indicator parameters for a specific timeframe"""
-    st.sidebar.header(f"{timeframe} Parameters")
+    st.sidebar.header("Indicator Settings")
 
     key_prefix = timeframe.lower().replace('h', '_h').replace('m', '_m')
 
     params = {}
 
-    with st.sidebar.expander(f"RSI ({timeframe})"):
+    with st.sidebar.expander("RSI"):
         params['rsi_window'] = st.slider(
-            f"RSI window", 5, 50, 14,
+            f"RSI Period", 5, 50, 14,
             key=f"rsi_{key_prefix}"
         )
         params['rsi_upper_1'] = st.number_input(
@@ -166,7 +227,7 @@ def render_timeframe_parameters(timeframe):
             key=f"rsi_l2_{key_prefix}"
         )
 
-    with st.sidebar.expander(f"CMB Lines ({timeframe})"):
+    with st.sidebar.expander("CMB"):
         # Dynamic CMB lines: default 0, user can add/remove
         cmb_state_key = f"cmb_lines_{key_prefix}"
         if cmb_state_key not in st.session_state:
@@ -200,7 +261,47 @@ def render_timeframe_parameters(timeframe):
 
         params['cmb_lines'] = list(st.session_state[cmb_state_key])
 
-    with st.sidebar.expander(f"Bollinger Bands ({timeframe})"):
+    with st.sidebar.expander("Stochastic"):
+        params['stoch_k_period'] = st.number_input(
+            "%K Period", 1, 100, 14, step=1,
+            key=f"stoch_kp_{key_prefix}"
+        )
+        params['stoch_k_smooth'] = st.number_input(
+            "%K Smoothing", 1, 50, 3, step=1,
+            key=f"stoch_ks_{key_prefix}"
+        )
+        params['stoch_d_smooth'] = st.number_input(
+            "%D Smoothing", 1, 50, 3, step=1,
+            key=f"stoch_ds_{key_prefix}"
+        )
+
+    with st.sidebar.expander("Ichimoku"):
+        params['ichi_show_tenkan'] = st.checkbox(
+            "Show Tenkan", value=True, key=f"ichi_tenkan_{key_prefix}"
+        )
+        params['ichi_show_kijun'] = st.checkbox(
+            "Show Kijun", value=True, key=f"ichi_kijun_{key_prefix}"
+        )
+        params['ichi_show_senkou_a'] = st.checkbox(
+            "Show Senkou A", value=True, key=f"ichi_senkou_a_{key_prefix}"
+        )
+        params['ichi_show_senkou_b'] = st.checkbox(
+            "Show Senkou B", value=True, key=f"ichi_senkou_b_{key_prefix}"
+        )
+        params['ichi_show_chikou'] = st.checkbox(
+            "Show Chikou", value=True, key=f"ichi_chikou_{key_prefix}"
+        )
+
+    with st.sidebar.expander("Bollinger Bands"):
+        params['bb_show_upper'] = st.checkbox(
+            "Show Upper Band", value=True, key=f"bb_upper_{key_prefix}"
+        )
+        params['bb_show_middle'] = st.checkbox(
+            "Show Middle Band", value=True, key=f"bb_mid_{key_prefix}"
+        )
+        params['bb_show_lower'] = st.checkbox(
+            "Show Lower Band", value=True, key=f"bb_lower_{key_prefix}"
+        )
         params['bb_period'] = st.number_input(
             f"BB Period", 5, 100, 20, step=1,
             key=f"bb_p_{key_prefix}"
@@ -210,7 +311,16 @@ def render_timeframe_parameters(timeframe):
             key=f"bb_s_{key_prefix}"
         )
 
-    with st.sidebar.expander(f"Keltner Channel ({timeframe})"):
+    with st.sidebar.expander("Keltner Channel"):
+        params['kc_show_upper'] = st.checkbox(
+            "Show Upper Band", value=True, key=f"kc_upper_{key_prefix}"
+        )
+        params['kc_show_middle'] = st.checkbox(
+            "Show Middle Band", value=True, key=f"kc_mid_{key_prefix}"
+        )
+        params['kc_show_lower'] = st.checkbox(
+            "Show Lower Band", value=True, key=f"kc_lower_{key_prefix}"
+        )
         params['kc_ema_period'] = st.number_input(
             f"KC EMA Period", 5, 100, 20, step=1,
             key=f"kc_ema_{key_prefix}"
