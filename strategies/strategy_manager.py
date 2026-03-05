@@ -44,6 +44,27 @@ def save_strategy_to_session(strategy_name):
         "exit_groups": []
     }
 
+    # Capture current indicator calculation params
+    analysis_mode = st.session_state.get('analysis_mode', '15m')
+    key_prefix = analysis_mode.lower().replace('h', '_h').replace('m', '_m')
+    strategy_data["indicator_settings"] = {
+        "rsi_window": st.session_state.get(f"rsi_{key_prefix}", 14),
+        "bb_upper_period": st.session_state.get(f"bb_up_p_{key_prefix}", 20),
+        "bb_upper_stdev": st.session_state.get(f"bb_up_s_{key_prefix}", 2.0),
+        "bb_mid_period": st.session_state.get(f"bb_mid_p_{key_prefix}", 20),
+        "bb_lower_period": st.session_state.get(f"bb_lo_p_{key_prefix}", 20),
+        "bb_lower_stdev": st.session_state.get(f"bb_lo_s_{key_prefix}", 2.0),
+        "kc_upper_ema": st.session_state.get(f"kc_up_ema_{key_prefix}", 20),
+        "kc_upper_mult": st.session_state.get(f"kc_up_mult_{key_prefix}", 2.0),
+        "kc_mid_ema": st.session_state.get(f"kc_mid_ema_{key_prefix}", 20),
+        "kc_lower_ema": st.session_state.get(f"kc_lo_ema_{key_prefix}", 20),
+        "kc_lower_mult": st.session_state.get(f"kc_lo_mult_{key_prefix}", 2.0),
+        "kc_atr_period": st.session_state.get(f"kc_atr_{key_prefix}", 10),
+        "stoch_k_period": st.session_state.get(f"stoch_kp_{key_prefix}", 14),
+        "stoch_k_smooth": st.session_state.get(f"stoch_ks_{key_prefix}", 3),
+        "stoch_d_smooth": st.session_state.get(f"stoch_ds_{key_prefix}", 3),
+    }
+
     # Collect entry conditions
     for i in range(st.session_state['entry_conditions_count']):
         compare_type = st.session_state.get(f'entry_cond_{i}_compare_type', 'Indicator')

@@ -16,7 +16,8 @@ PRICE_AND_INDICATORS = [
     "Tenkan",
     "Kijun",
     "Senkou A",
-    "Senkou B"
+    "Senkou B",
+    "Chikou"
 ]
 
 RSI_GROUP = [
@@ -80,8 +81,8 @@ INDICATOR_MAP = {
     "KC Lower Band": "kc_lower",
     "Tenkan": "tenkan",
     "Kijun": "kijun",
-    "Senkou A": "senkou_a",
-    "Senkou B": "senkou_b",
+    "Senkou A": "senkou_a_current",
+    "Senkou B": "senkou_b_current",
     "RSI": "rsi",
     "RSI 13 SMA": "rsi_13",
     "RSI 33 SMA": "rsi_33",
@@ -90,4 +91,5 @@ INDICATOR_MAP = {
     "CMB 33 SMA": "ci_33",
     "Stoch %K": "stoch_k",
     "Stoch %D": "stoch_d",
+    "Chikou": "chikou",
 }

@@ -6,6 +6,7 @@ from data.helpers import (
     PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
     expand_selection,
 )
+from indicators.calculate_indicators import migrate_indicator_settings
 
 CHARTING_MODES = [
     "Specified Primary",
@@ -124,7 +125,8 @@ def render_sidebar():
         show_kc = st.checkbox("Show Keltner Channel", value=False)
 
     # Chart Tools
-    draw_mode = st.sidebar.checkbox("Draw Boxes on Charts", value=False, key="draw_mode")
+    draw_mode = st.sidebar.checkbox("Shade Sections on Price Chart", value=False, key="draw_mode")
+    chart_height = st.sidebar.slider("Chart Height", min_value=600, max_value=2000, value=920, step=20, key="chart_height")
 
     show_tenkan_kijun = False
 
@@ -138,12 +140,19 @@ def render_sidebar():
         for _ptype, primary, secondary in combos:
             all_pattern_strings.add(f"{primary} → {secondary}")
 
+    # Handle deselect request from Strategy Builder tab
+    if st.session_state.pop('_deselect_strategy', False):
+        st.session_state['selected_custom_strategy_idx'] = 0
+        st.session_state['selected_custom_strategy_actual_idx'] = None
+        if 'custom_strategy_radio' in st.session_state:
+            st.session_state['custom_strategy_radio'] = 0
+
     if st.session_state['saved_strategies'] and all_pattern_strings:
         # Filter strategies that apply to any selected pattern
         filtered_strategies = [
             (idx, strategy)
             for idx, strategy in enumerate(st.session_state['saved_strategies'])
-            if any(
+            if not strategy.get('patterns') or any(
                 pat in all_pattern_strings
                 for pat in strategy.get('patterns', [])
             )
@@ -180,10 +189,40 @@ def render_sidebar():
                         st.session_state['selected_custom_strategy_actual_idx'] = None
                     st.rerun()
 
+    # Detect active strategy and override indicator widget values
+    strategy_active = False
+    if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
+        actual_idx = st.session_state.get('selected_custom_strategy_actual_idx')
+        if actual_idx is not None and actual_idx < len(st.session_state['saved_strategies']):
+            saved_settings = st.session_state['saved_strategies'][actual_idx].get('indicator_settings')
+            if saved_settings:
+                saved_settings = migrate_indicator_settings(saved_settings)
+                strategy_active = True
+                key_prefix = analysis_mode.lower().replace('h', '_h').replace('m', '_m')
+                for param, wk in {
+                    "rsi_window": f"rsi_{key_prefix}",
+                    "bb_upper_period": f"bb_up_p_{key_prefix}",
+                    "bb_upper_stdev": f"bb_up_s_{key_prefix}",
+                    "bb_mid_period": f"bb_mid_p_{key_prefix}",
+                    "bb_lower_period": f"bb_lo_p_{key_prefix}",
+                    "bb_lower_stdev": f"bb_lo_s_{key_prefix}",
+                    "kc_upper_ema": f"kc_up_ema_{key_prefix}",
+                    "kc_upper_mult": f"kc_up_mult_{key_prefix}",
+                    "kc_mid_ema": f"kc_mid_ema_{key_prefix}",
+                    "kc_lower_ema": f"kc_lo_ema_{key_prefix}",
+                    "kc_lower_mult": f"kc_lo_mult_{key_prefix}",
+                    "kc_atr_period": f"kc_atr_{key_prefix}",
+                    "stoch_k_period": f"stoch_kp_{key_prefix}",
+                    "stoch_k_smooth": f"stoch_ks_{key_prefix}",
+                    "stoch_d_smooth": f"stoch_ds_{key_prefix}",
+                }.items():
+                    if param in saved_settings:
+                        st.session_state[wk] = saved_settings[param]
+
     # Indicator Parameters
     show_1h = analysis_mode == "1H"
-    params_1h = render_timeframe_parameters("1H") if show_1h else None
-    params_15m = render_timeframe_parameters("15m") if not show_1h else None
+    params_1h = render_timeframe_parameters("1H", disabled=strategy_active) if show_1h else None
+    params_15m = render_timeframe_parameters("15m", disabled=strategy_active) if not show_1h else None
 
     return {
         'analysis_mode': analysis_mode,
@@ -193,13 +232,16 @@ def render_sidebar():
         'show_kc': show_kc,
         'show_tenkan_kijun': show_tenkan_kijun,
         'draw_mode': draw_mode,
+        'chart_height': chart_height,
         'params_1h': params_1h,
         'params_15m': params_15m
     }
 
-def render_timeframe_parameters(timeframe):
+def render_timeframe_parameters(timeframe, disabled=False):
     """Render indicator parameters for a specific timeframe"""
     st.sidebar.header("Indicator Settings")
+    if disabled:
+        st.sidebar.caption("*Indicator settings locked by active strategy*")
 
     key_prefix = timeframe.lower().replace('h', '_h').replace('m', '_m')
 
@@ -208,7 +250,8 @@ def render_timeframe_parameters(timeframe):
     with st.sidebar.expander("RSI"):
         params['rsi_window'] = st.slider(
             f"RSI Period", 5, 50, 14,
-            key=f"rsi_{key_prefix}"
+            key=f"rsi_{key_prefix}",
+            disabled=disabled,
         )
         params['rsi_upper_1'] = st.number_input(
             "Upper Line 1", 0.0, 100.0, 70.0, step=1.0,
@@ -264,15 +307,18 @@ def render_timeframe_parameters(timeframe):
     with st.sidebar.expander("Stochastic"):
         params['stoch_k_period'] = st.number_input(
             "%K Period", 1, 100, 14, step=1,
-            key=f"stoch_kp_{key_prefix}"
+            key=f"stoch_kp_{key_prefix}",
+            disabled=disabled,
         )
         params['stoch_k_smooth'] = st.number_input(
             "%K Smoothing", 1, 50, 3, step=1,
-            key=f"stoch_ks_{key_prefix}"
+            key=f"stoch_ks_{key_prefix}",
+            disabled=disabled,
         )
         params['stoch_d_smooth'] = st.number_input(
             "%D Smoothing", 1, 50, 3, step=1,
-            key=f"stoch_ds_{key_prefix}"
+            key=f"stoch_ds_{key_prefix}",
+            disabled=disabled,
         )
 
     with st.sidebar.expander("Ichimoku"):
@@ -291,6 +337,17 @@ def render_timeframe_parameters(timeframe):
         params['ichi_show_chikou'] = st.checkbox(
             "Show Chikou", value=True, key=f"ichi_chikou_{key_prefix}"
         )
+        st.divider()
+        st.caption("Strategy decision lines (un-displaced)")
+        params['ichi_show_senkou_a_current'] = st.checkbox(
+            "Show Senkou A (current)", value=False, key=f"ichi_senkou_a_current_{key_prefix}"
+        )
+        params['ichi_show_senkou_b_current'] = st.checkbox(
+            "Show Senkou B (current)", value=False, key=f"ichi_senkou_b_current_{key_prefix}"
+        )
+        params['ichi_show_chikou_decision'] = st.checkbox(
+            "Show Chikou (decision)", value=False, key=f"ichi_chikou_decision_{key_prefix}"
+        )
 
     with st.sidebar.expander("Bollinger Bands"):
         params['bb_show_upper'] = st.checkbox(
@@ -302,13 +359,34 @@ def render_timeframe_parameters(timeframe):
         params['bb_show_lower'] = st.checkbox(
             "Show Lower Band", value=True, key=f"bb_lower_{key_prefix}"
         )
-        params['bb_period'] = st.number_input(
-            f"BB Period", 5, 100, 20, step=1,
-            key=f"bb_p_{key_prefix}"
+        st.divider()
+        st.caption("**Upper Band**")
+        params['bb_upper_period'] = st.number_input(
+            "Upper Period", 5, 100, 20, step=1,
+            key=f"bb_up_p_{key_prefix}",
+            disabled=disabled,
         )
-        params['bb_stdev'] = st.number_input(
-            f"BB StdDev", 0.5, 5.0, 2.0, step=0.1,
-            key=f"bb_s_{key_prefix}"
+        params['bb_upper_stdev'] = st.number_input(
+            "Upper StdDev", 0.5, 5.0, 2.0, step=0.1,
+            key=f"bb_up_s_{key_prefix}",
+            disabled=disabled,
+        )
+        st.caption("**Middle Band**")
+        params['bb_mid_period'] = st.number_input(
+            "Middle Period", 5, 100, 20, step=1,
+            key=f"bb_mid_p_{key_prefix}",
+            disabled=disabled,
+        )
+        st.caption("**Lower Band**")
+        params['bb_lower_period'] = st.number_input(
+            "Lower Period", 5, 100, 20, step=1,
+            key=f"bb_lo_p_{key_prefix}",
+            disabled=disabled,
+        )
+        params['bb_lower_stdev'] = st.number_input(
+            "Lower StdDev", 0.5, 5.0, 2.0, step=0.1,
+            key=f"bb_lo_s_{key_prefix}",
+            disabled=disabled,
         )
 
     with st.sidebar.expander("Keltner Channel"):
@@ -321,17 +399,39 @@ def render_timeframe_parameters(timeframe):
         params['kc_show_lower'] = st.checkbox(
             "Show Lower Band", value=True, key=f"kc_lower_{key_prefix}"
         )
-        params['kc_ema_period'] = st.number_input(
-            f"KC EMA Period", 5, 100, 20, step=1,
-            key=f"kc_ema_{key_prefix}"
-        )
+        st.divider()
         params['kc_atr_period'] = st.number_input(
-            f"KC ATR Period", 5, 100, 10, step=1,
-            key=f"kc_atr_{key_prefix}"
+            "ATR Period", 5, 100, 10, step=1,
+            key=f"kc_atr_{key_prefix}",
+            disabled=disabled,
         )
-        params['kc_atr_mult'] = st.number_input(
-            f"KC ATR Mult", 0.5, 5.0, 2.0, step=0.1,
-            key=f"kc_mult_{key_prefix}"
+        st.caption("**Upper Band**")
+        params['kc_upper_ema'] = st.number_input(
+            "Upper EMA Period", 5, 100, 20, step=1,
+            key=f"kc_up_ema_{key_prefix}",
+            disabled=disabled,
+        )
+        params['kc_upper_mult'] = st.number_input(
+            "Upper ATR Mult", 0.5, 5.0, 2.0, step=0.1,
+            key=f"kc_up_mult_{key_prefix}",
+            disabled=disabled,
+        )
+        st.caption("**Middle Band**")
+        params['kc_mid_ema'] = st.number_input(
+            "Middle EMA Period", 5, 100, 20, step=1,
+            key=f"kc_mid_ema_{key_prefix}",
+            disabled=disabled,
+        )
+        st.caption("**Lower Band**")
+        params['kc_lower_ema'] = st.number_input(
+            "Lower EMA Period", 5, 100, 20, step=1,
+            key=f"kc_lo_ema_{key_prefix}",
+            disabled=disabled,
+        )
+        params['kc_lower_mult'] = st.number_input(
+            "Lower ATR Mult", 0.5, 5.0, 2.0, step=0.1,
+            key=f"kc_lo_mult_{key_prefix}",
+            disabled=disabled,
         )
 
     return params

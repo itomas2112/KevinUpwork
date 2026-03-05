@@ -8,14 +8,55 @@ from indicators.keltner import keltner_channel
 from indicators.stochastic import stochastic
 
 
+def migrate_indicator_settings(settings):
+    """
+    Convert old-format indicator settings (bb_period, bb_stdev, kc_ema_period,
+    kc_atr_mult) to the new per-band format. Returns a new dict; does not
+    mutate the original.
+    """
+    if settings is None:
+        return settings
+    s = dict(settings)
+
+    # BB migration: bb_period -> all 3 band periods, bb_stdev -> both stdevs
+    if 'bb_period' in s:
+        val = s.pop('bb_period')
+        s.setdefault('bb_upper_period', val)
+        s.setdefault('bb_mid_period', val)
+        s.setdefault('bb_lower_period', val)
+    if 'bb_stdev' in s:
+        val = s.pop('bb_stdev')
+        s.setdefault('bb_upper_stdev', val)
+        s.setdefault('bb_lower_stdev', val)
+
+    # KC migration: kc_ema_period -> all 3 EMAs, kc_atr_mult -> both mults
+    if 'kc_ema_period' in s:
+        val = s.pop('kc_ema_period')
+        s.setdefault('kc_upper_ema', val)
+        s.setdefault('kc_mid_ema', val)
+        s.setdefault('kc_lower_ema', val)
+    if 'kc_atr_mult' in s:
+        val = s.pop('kc_atr_mult')
+        s.setdefault('kc_upper_mult', val)
+        s.setdefault('kc_lower_mult', val)
+
+    return s
+
+
 def calculate_indicators(
     df: pd.DataFrame,
     rsi_window: int,
-    bb_period: int,
-    bb_stdev: float,
-    kc_ema_period: int,
-    kc_atr_period: int,
-    kc_atr_mult: float,
+    bb_upper_period: int = 20,
+    bb_upper_stdev: float = 2.0,
+    bb_mid_period: int = 20,
+    bb_lower_period: int = 20,
+    bb_lower_stdev: float = 2.0,
+    kc_upper_ema: int = 20,
+    kc_mid_ema: int = 20,
+    kc_lower_ema: int = 20,
+    kc_atr_period: int = 10,
+    kc_upper_mult: float = 2.0,
+    kc_lower_mult: float = 2.0,
     stoch_k_period: int = 14,
     stoch_k_smooth: int = 3,
     stoch_d_smooth: int = 3,
@@ -53,6 +94,8 @@ def calculate_indicators(
         df["senkou_a"],
         df["senkou_b"],
         df["chikou"],
+        df["senkou_a_current"],
+        df["senkou_b_current"],
     ) = ichimoku(df["high"], df["low"], df["latest"])
 
     # -------------------------------------------------
@@ -64,8 +107,11 @@ def calculate_indicators(
         df["bb_lower"],
     ) = bollinger_bands(
         df["latest"],
-        period=bb_period,
-        stdev=bb_stdev,
+        bb_upper_period=bb_upper_period,
+        bb_upper_stdev=bb_upper_stdev,
+        bb_mid_period=bb_mid_period,
+        bb_lower_period=bb_lower_period,
+        bb_lower_stdev=bb_lower_stdev,
     )
 
     # -------------------------------------------------
@@ -79,9 +125,12 @@ def calculate_indicators(
         df["high"],
         df["low"],
         df["latest"],
-        ema_period=kc_ema_period,
-        atr_period=kc_atr_period,
-        atr_mult=kc_atr_mult,
+        kc_upper_ema=kc_upper_ema,
+        kc_mid_ema=kc_mid_ema,
+        kc_lower_ema=kc_lower_ema,
+        kc_atr_period=kc_atr_period,
+        kc_upper_mult=kc_upper_mult,
+        kc_lower_mult=kc_lower_mult,
     )
 
     # -------------------------------------------------
@@ -146,7 +195,8 @@ def slice_for_graph(
                      "stoch_k", "stoch_d"]
 
     if show_ichimoku:
-        required_cols += ["tenkan", "kijun", "senkou_a", "senkou_b"]
+        required_cols += ["tenkan", "kijun", "senkou_a", "senkou_b",
+                          "senkou_a_current", "senkou_b_current"]
     if show_bb:
         required_cols += ["bb_mid", "bb_upper", "bb_lower"]
     if show_kc:
@@ -157,8 +207,8 @@ def slice_for_graph(
     # -------------------------------------------------
     # Categorical x-axis helpers
     # -------------------------------------------------
-    df_plot["x"] = df_plot.index.strftime("%Y-%m-%d %H:%M")
-    df_plot["date_only"] = df_plot.index.strftime("%Y-%m-%d")
+    df_plot["x"] = df_plot.index.strftime("%d.%m.%Y_%H:%M")
+    df_plot["date_only"] = df_plot.index.strftime("%d.%m.%Y")
 
     period_start = _snap_to_plot_index(period_start, df_plot.index)
     period_end = _snap_to_plot_index(period_end, df_plot.index)

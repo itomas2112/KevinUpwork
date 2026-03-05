@@ -8,6 +8,7 @@ from config.constants import (
     PRICE_AND_INDICATORS,
     RSI_GROUP,
     CMB_GROUP,
+    STOCH_GROUP,
     EVENT_TYPES,
     CONDITION_OPERATORS,
     CONDITION_COMPARE_TYPES,
@@ -127,6 +128,7 @@ def _apply_pending_edit():
 def render_create_button():
     """Render the create new strategy button"""
     if st.button("➕ Create New Strategy", type="primary", use_container_width=True):
+        st.session_state['_deselect_strategy'] = True
         st.session_state['strategy_started'] = True
         st.rerun()
 
@@ -218,7 +220,7 @@ def render_entry_box():
             # Group selection for element 1
             entry_trigger_group1 = st.selectbox(
                 "Select Group",
-                ["Price & Indicators", "RSI Group", "CMB Group"],
+                ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
                 key="entry_trigger_group1"
             )
 
@@ -226,8 +228,10 @@ def render_entry_box():
                 available_elements1 = PRICE_AND_INDICATORS
             elif entry_trigger_group1 == "RSI Group":
                 available_elements1 = RSI_GROUP
-            else:
+            elif entry_trigger_group1 == "CMB Group":
                 available_elements1 = CMB_GROUP
+            else:
+                available_elements1 = STOCH_GROUP
 
             entry_trigger_element1 = st.selectbox(
                 "Element 1",
@@ -333,18 +337,11 @@ def render_entry_box():
         st.caption(
             "All conditions must be met for the trigger to activate. If any condition fails, entry will not occur.")
 
-        # Add/Remove condition buttons
-        col1, col2, col3 = st.columns([1, 1, 3])
-        with col1:
-            if st.button("➕ Add Condition", key="add_entry_condition"):
-                if st.session_state['entry_conditions_count'] < 10:
-                    st.session_state['entry_conditions_count'] += 1
-                    st.rerun()
-        with col2:
-            if st.button("➖ Remove", key="remove_entry_condition"):
-                if st.session_state['entry_conditions_count'] > 0:
-                    st.session_state['entry_conditions_count'] -= 1
-                    st.rerun()
+        # Add condition button
+        if st.button("➕ Add Condition", key="add_entry_condition"):
+            if st.session_state['entry_conditions_count'] < 10:
+                st.session_state['entry_conditions_count'] += 1
+                st.rerun()
 
         # Display conditions
         if st.session_state['entry_conditions_count'] > 0:
@@ -352,13 +349,18 @@ def render_entry_box():
 
             for i in range(st.session_state['entry_conditions_count']):
                 with st.expander(f"Condition {i + 1}", expanded=True):
+                    # Remove button inside the condition box
+                    if st.button("Remove", key=f"remove_entry_cond_{i}"):
+                        _remove_entry_condition(i)
+                        st.rerun()
+
                     col1, col2, col3 = st.columns([2, 1, 2])
 
                     with col1:
                         # Group selection for condition element 1
                         cond_group1 = st.selectbox(
                             "Select Group",
-                            ["Price & Indicators", "RSI Group", "CMB Group"],
+                            ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
                             key=f"entry_cond_{i}_group1"
                         )
 
@@ -366,8 +368,10 @@ def render_entry_box():
                             cond_available_elements1 = PRICE_AND_INDICATORS
                         elif cond_group1 == "RSI Group":
                             cond_available_elements1 = RSI_GROUP
-                        else:
+                        elif cond_group1 == "CMB Group":
                             cond_available_elements1 = CMB_GROUP
+                        else:
+                            cond_available_elements1 = STOCH_GROUP
 
                         cond_element1 = st.selectbox(
                             "Element 1",
@@ -427,7 +431,7 @@ def render_exit_box():
             # Group selection for element 1
             exit_trigger_group1 = st.selectbox(
                 "Select Group",
-                ["Price & Indicators", "RSI Group", "CMB Group"],
+                ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
                 key="exit_trigger_group1"
             )
 
@@ -435,8 +439,10 @@ def render_exit_box():
                 available_elements1 = PRICE_AND_INDICATORS
             elif exit_trigger_group1 == "RSI Group":
                 available_elements1 = RSI_GROUP
-            else:
+            elif exit_trigger_group1 == "CMB Group":
                 available_elements1 = CMB_GROUP
+            else:
+                available_elements1 = STOCH_GROUP
 
             exit_trigger_element1 = st.selectbox(
                 "Element 1",
@@ -500,18 +506,11 @@ def render_exit_box():
         st.caption(
             "All conditions must be met for the trigger to activate. If any condition fails, exit will not occur.")
 
-        # Add/Remove condition buttons
-        col1, col2, col3 = st.columns([1, 1, 3])
-        with col1:
-            if st.button("➕ Add Condition", key="add_exit_condition"):
-                if st.session_state['exit_conditions_count'] < 10:
-                    st.session_state['exit_conditions_count'] += 1
-                    st.rerun()
-        with col2:
-            if st.button("➖ Remove", key="remove_exit_condition"):
-                if st.session_state['exit_conditions_count'] > 0:
-                    st.session_state['exit_conditions_count'] -= 1
-                    st.rerun()
+        # Add condition button
+        if st.button("➕ Add Condition", key="add_exit_condition"):
+            if st.session_state['exit_conditions_count'] < 10:
+                st.session_state['exit_conditions_count'] += 1
+                st.rerun()
 
         # Display conditions
         if st.session_state['exit_conditions_count'] > 0:
@@ -519,13 +518,18 @@ def render_exit_box():
 
             for i in range(st.session_state['exit_conditions_count']):
                 with st.expander(f"Condition {i + 1}", expanded=True):
+                    # Remove button inside the condition box
+                    if st.button("Remove", key=f"remove_exit_cond_{i}"):
+                        _remove_exit_condition(i)
+                        st.rerun()
+
                     col1, col2, col3 = st.columns([2, 1, 2])
 
                     with col1:
                         # Group selection for condition element 1
                         cond_group1 = st.selectbox(
                             "Select Group",
-                            ["Price & Indicators", "RSI Group", "CMB Group"],
+                            ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
                             key=f"exit_cond_{i}_group1"
                         )
 
@@ -533,8 +537,10 @@ def render_exit_box():
                             cond_available_elements1 = PRICE_AND_INDICATORS
                         elif cond_group1 == "RSI Group":
                             cond_available_elements1 = RSI_GROUP
-                        else:
+                        elif cond_group1 == "CMB Group":
                             cond_available_elements1 = CMB_GROUP
+                        else:
+                            cond_available_elements1 = STOCH_GROUP
 
                         cond_element1 = st.selectbox(
                             "Element 1",
@@ -980,12 +986,46 @@ def render_strategy_management():
 
 
 
+def _remove_entry_condition(idx):
+    """Remove entry condition at given index, shifting subsequent keys down."""
+    count = st.session_state['entry_conditions_count']
+    keys_per_cond = ['group1', 'element1', 'operator', 'compare_type', 'element2', 'value']
+    for i in range(idx, count - 1):
+        for k in keys_per_cond:
+            src = f"entry_cond_{i + 1}_{k}"
+            dst = f"entry_cond_{i}_{k}"
+            if src in st.session_state:
+                st.session_state[dst] = st.session_state[src]
+    # Clean up last slot
+    for k in keys_per_cond:
+        st.session_state.pop(f"entry_cond_{count - 1}_{k}", None)
+    st.session_state['entry_conditions_count'] = count - 1
+
+
+def _remove_exit_condition(idx):
+    """Remove exit condition at given index, shifting subsequent keys down."""
+    count = st.session_state['exit_conditions_count']
+    keys_per_cond = ['group1', 'element1', 'operator', 'compare_type', 'element2', 'value']
+    for i in range(idx, count - 1):
+        for k in keys_per_cond:
+            src = f"exit_cond_{i + 1}_{k}"
+            dst = f"exit_cond_{i}_{k}"
+            if src in st.session_state:
+                st.session_state[dst] = st.session_state[src]
+    # Clean up last slot
+    for k in keys_per_cond:
+        st.session_state.pop(f"exit_cond_{count - 1}_{k}", None)
+    st.session_state['exit_conditions_count'] = count - 1
+
+
 def get_compatible_elements(selected_element):
     """Get compatible elements based on selection"""
     if selected_element in RSI_GROUP:
         return RSI_GROUP
     elif selected_element in CMB_GROUP:
         return CMB_GROUP
+    elif selected_element in STOCH_GROUP:
+        return STOCH_GROUP
     else:
         return PRICE_AND_INDICATORS
 
@@ -993,6 +1033,7 @@ def get_compatible_elements(selected_element):
 def load_strategy_for_editing(strategy, strategy_idx):
     """
     """
+    st.session_state['_deselect_strategy'] = True
     st.session_state['_pending_edit_strategy'] = strategy
     st.session_state['_pending_edit_strategy_idx'] = strategy_idx
 
@@ -1183,7 +1224,7 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
         with col1:
             trigger_group = st.selectbox(
                 "Select Group",
-                ["Price & Indicators", "RSI Group", "CMB Group"],
+                ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
                 key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_group1"
             )
 
@@ -1191,8 +1232,10 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
                 available_elements = PRICE_AND_INDICATORS
             elif trigger_group == "RSI Group":
                 available_elements = RSI_GROUP
-            else:
+            elif trigger_group == "CMB Group":
                 available_elements = CMB_GROUP
+            else:
+                available_elements = STOCH_GROUP
 
             trigger_element1 = st.selectbox(
                 "Element 1",
@@ -1292,7 +1335,7 @@ def render_exit_condition(group_idx, exit_type, exit_idx, cond_idx):
     with col1:
         cond_group = st.selectbox(
             "Group",
-            ["Price & Indicators", "RSI Group", "CMB Group"],
+            ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
             key=f"{exit_type}_{group_idx}_{exit_idx}_cond_{cond_idx}_group"
         )
 
@@ -1300,8 +1343,10 @@ def render_exit_condition(group_idx, exit_type, exit_idx, cond_idx):
             cond_available = PRICE_AND_INDICATORS
         elif cond_group == "RSI Group":
             cond_available = RSI_GROUP
-        else:
+        elif cond_group == "CMB Group":
             cond_available = CMB_GROUP
+        else:
+            cond_available = STOCH_GROUP
 
         cond_element1 = st.selectbox(
             "Element 1",

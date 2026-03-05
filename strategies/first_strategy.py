@@ -4,6 +4,11 @@ import pandas as pd
 import numpy as np
 from config.constants import INDICATOR_MAP
 
+# Chikou Span is displaced 26 periods back on the chart.
+# When used in strategy conditions/triggers, both elements must be
+# evaluated at the displaced index to avoid forward-looking bias.
+CHIKOU_DISPLACEMENT = 26
+
 
 def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
     df = df.copy()
@@ -168,14 +173,28 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         element2_name = condition_config.get('element2')
         fixed_value = condition_config.get('value')
 
-        # Get the series for element1
+        # Get the column for element1
         col1 = indicator_map.get(element1_name)
 
         if col1 is None or col1 not in df.columns:
             return False
 
+        # Determine col2 early for Chikou displacement check
+        col2 = None
+        if compare_type != "Fixed Value":
+            col2 = indicator_map.get(element2_name)
+            if col2 is None or col2 not in df.columns:
+                return False
+
+        # Chikou displacement: evaluate 26 bars back to avoid forward-looking bias
+        effective_idx = current_idx
+        if col1 == "chikou" or (col2 is not None and col2 == "chikou"):
+            effective_idx = current_idx - CHIKOU_DISPLACEMENT
+            if effective_idx < 0:
+                return False
+
         series1 = df[col1]
-        value1 = series1.iloc[current_idx]
+        value1 = series1.iloc[effective_idx]
 
         # Determine what to compare against
         if compare_type == "Fixed Value":
@@ -183,14 +202,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 return False
             value2 = fixed_value
         else:
-            # Compare against another indicator
-            col2 = indicator_map.get(element2_name)
-
-            if col2 is None or col2 not in df.columns:
-                return False
-
             series2 = df[col2]
-            value2 = series2.iloc[current_idx]
+            value2 = series2.iloc[effective_idx]
 
         # Check the operator
         if operator == "Above":
@@ -226,15 +239,31 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             return False
 
         series1 = df[col1]
-        value1 = series1.iloc[current_idx]
+
+        # Determine col2 for Chikou displacement check
+        col2 = None
+        if locked_value is None and compare_type != "Fixed Value":
+            col2 = indicator_map.get(element2_name)
+            if col2 is None or col2 not in df.columns:
+                return False
+
+        # Chikou displacement: shift evaluation back 26 bars to avoid forward-looking bias
+        # Not applied when locked_value is used (static stop with fixed price level)
+        effective_idx = current_idx
+        if locked_value is None and (col1 == "chikou" or (col2 is not None and col2 == "chikou")):
+            effective_idx = current_idx - CHIKOU_DISPLACEMENT
+            if effective_idx < 0:
+                return False
+
+        value1 = series1.iloc[effective_idx]
 
         # Determine what to compare against
         if locked_value is not None:
             # Static stop: use locked price from entry time
             value2 = locked_value
 
-            if current_idx > 0:
-                value1_prev = series1.iloc[current_idx - 1]
+            if effective_idx > 0:
+                value1_prev = series1.iloc[effective_idx - 1]
                 value2_prev = locked_value
         elif compare_type == "Fixed Value":
             if fixed_value is None:
@@ -242,36 +271,31 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
             value2 = fixed_value
 
-            if current_idx > 0:
-                value1_prev = series1.iloc[current_idx - 1]
+            if effective_idx > 0:
+                value1_prev = series1.iloc[effective_idx - 1]
                 value2_prev = fixed_value
         else:
             # Compare against another indicator
-            col2 = indicator_map.get(element2_name)
-
-            if col2 is None or col2 not in df.columns:
-                return False
-
             series2 = df[col2]
-            value2 = series2.iloc[current_idx]
+            value2 = series2.iloc[effective_idx]
 
-            if current_idx > 0:
-                value1_prev = series1.iloc[current_idx - 1]
-                value2_prev = series2.iloc[current_idx - 1]
+            if effective_idx > 0:
+                value1_prev = series1.iloc[effective_idx - 1]
+                value2_prev = series2.iloc[effective_idx - 1]
 
         # Check the event type
         if event in ("Cross Above", "Close Above"):
-            if current_idx == 0:
+            if effective_idx == 0:
                 return False
             return (value1 > value2) and (value1_prev <= value2_prev)
 
         elif event in ("Cross Below", "Close Below"):
-            if current_idx == 0:
+            if effective_idx == 0:
                 return False
             return (value1 < value2) and (value1_prev >= value2_prev)
 
         elif event in ("Cross", "Close"):
-            if current_idx == 0:
+            if effective_idx == 0:
                 return False
             cross_above = (value1 > value2) and (value1_prev <= value2_prev)
             cross_below = (value1 < value2) and (value1_prev >= value2_prev)
@@ -288,6 +312,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         - Cross events with Price as element1: use the crossed indicator's value
         - Close events or non-Price triggers: use bar close price
         - If locked_value is provided (static stop), use that as the crossed level
+        - Chikou-involved triggers: use current bar close (displaced evaluation
+          means there's no meaningful crossed level at the current bar)
         """
         event = trigger_config.get('event', '')
         is_cross = event in ('Cross', 'Cross Above', 'Cross Below')
@@ -308,6 +334,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 else:
                     element2 = trigger_config.get('element2')
                     col2 = indicator_map.get(element2)
+                    # Chikou: use current close (no meaningful crossed level)
+                    if col2 == "chikou":
+                        return df['latest'].iloc[current_idx]
                     if col2 and col2 in df.columns:
                         return df[col2].iloc[current_idx]
 
@@ -331,6 +360,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         element2 = stop_config.get('element2')
         col2 = indicator_map.get(element2)
         if col2 and col2 in df.columns:
+            # Chikou: read from displaced index to avoid forward-looking bias
+            if col2 == "chikou":
+                effective_idx = current_idx - CHIKOU_DISPLACEMENT
+                if effective_idx < 0:
+                    return None
+                return df[col2].iloc[effective_idx]
             return df[col2].iloc[current_idx]
         return None
 
@@ -390,8 +425,22 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         if col1 is None or col1 not in df.columns:
             return False
 
+        # Determine col2 for Chikou displacement check
+        col2 = None
+        if compare_type != "Fixed Value":
+            col2 = indicator_map.get(element2_name)
+            if col2 is None or col2 not in df.columns:
+                return False
+
+        # Chikou displacement: evaluate 26 bars back
+        effective_idx = current_idx
+        if col1 == "chikou" or (col2 is not None and col2 == "chikou"):
+            effective_idx = current_idx - CHIKOU_DISPLACEMENT
+            if effective_idx < 0:
+                return False
+
         series1 = df[col1]
-        value1 = series1.iloc[current_idx]
+        value1 = series1.iloc[effective_idx]
 
         # Determine what to compare against
         if compare_type == "Fixed Value":
@@ -399,14 +448,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 return False
             value2 = fixed_value
         else:
-            # Compare against another indicator
-            col2 = indicator_map.get(element2_name)
-
-            if col2 is None or col2 not in df.columns:
-                return False
-
             series2 = df[col2]
-            value2 = series2.iloc[current_idx]
+            value2 = series2.iloc[effective_idx]
 
         # Check if the stop condition is already violated
         # A "Cross Below" stop means we exit when element1 goes below element2
@@ -564,7 +607,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             # Uses locked_stop_value so the stop level stays fixed from entry time
             if initial_stop_config and check_trigger(initial_stop_config, i, locked_value=locked_stop_value):
                 # Initial stop closes ALL remaining position
-                bar_exit_type = "Stop"
+                bar_exit_type = "Initial Stop"
                 exit_triggered = True
                 stop_exit_price = get_trigger_price(initial_stop_config, i, locked_value=locked_stop_value)
 

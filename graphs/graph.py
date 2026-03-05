@@ -16,17 +16,22 @@ def build_main_chart(
     rsi_lower_2: float = 30.0,
     cmb_lines: list = None,
     draw_mode: bool = False,
+    chart_height: int = 920,
     ichi_show_tenkan: bool = True,
     ichi_show_kijun: bool = True,
     ichi_show_senkou_a: bool = True,
     ichi_show_senkou_b: bool = True,
     ichi_show_chikou: bool = True,
+    ichi_show_senkou_a_current: bool = False,
+    ichi_show_senkou_b_current: bool = False,
+    ichi_show_chikou_decision: bool = False,
     bb_show_upper: bool = True,
     bb_show_middle: bool = True,
     bb_show_lower: bool = True,
     kc_show_upper: bool = True,
     kc_show_middle: bool = True,
     kc_show_lower: bool = True,
+    chart_key: str = None,
 ):
     """
     Build main chart using a single x-axis with 4 y-axis domains
@@ -84,13 +89,17 @@ def build_main_chart(
     # -------------------------------------------------
     if show_strategy:
 
+        # Offset to push markers away from price bars for visibility
+        price_range = df_slice["high"].max() - df_slice["low"].min()
+        marker_offset = price_range * 0.03
+
         entries = df_slice[df_slice["entry_signal"]]
 
         if not entries.empty:
             fig.add_trace(
                 go.Scatter(
                     x=entries["x"],
-                    y=entries["low"],
+                    y=entries["low"] - marker_offset,
                     mode="markers",
                     marker=dict(
                         symbol="triangle-up",
@@ -103,15 +112,15 @@ def build_main_chart(
             )
 
         if "exit_type" in df_slice.columns:
+            # Target exits — green
             target_exits = df_slice[
                 (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Target")
             ]
-
             if not target_exits.empty:
                 fig.add_trace(
                     go.Scatter(
                         x=target_exits["x"],
-                        y=target_exits["high"],
+                        y=target_exits["high"] + marker_offset,
                         mode="markers",
                         marker=dict(
                             symbol="triangle-down",
@@ -119,19 +128,39 @@ def build_main_chart(
                             color="green",
                             line=dict(color="white", width=1),
                         ),
-                        name="Exit",
+                        name="Target Exit",
                     )
                 )
 
-            stop_exits = df_slice[
+            # Dynamic stop exits (exit group stops) — orange
+            dynamic_stop_exits = df_slice[
                 (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Stop")
             ]
-
-            if not stop_exits.empty:
+            if not dynamic_stop_exits.empty:
                 fig.add_trace(
                     go.Scatter(
-                        x=stop_exits["x"],
-                        y=stop_exits["high"],
+                        x=dynamic_stop_exits["x"],
+                        y=dynamic_stop_exits["high"] + marker_offset,
+                        mode="markers",
+                        marker=dict(
+                            symbol="triangle-down",
+                            size=12,
+                            color="orange",
+                            line=dict(color="white", width=1),
+                        ),
+                        name="Dynamic Stop Exit",
+                    )
+                )
+
+            # Static/Initial stop exits — red
+            initial_stop_exits = df_slice[
+                (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Initial Stop")
+            ]
+            if not initial_stop_exits.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=initial_stop_exits["x"],
+                        y=initial_stop_exits["high"] + marker_offset,
                         mode="markers",
                         marker=dict(
                             symbol="triangle-down",
@@ -139,7 +168,7 @@ def build_main_chart(
                             color="red",
                             line=dict(color="white", width=1),
                         ),
-                        name="Stop",
+                        name="Static Stop Exit",
                     )
                 )
         else:
@@ -149,7 +178,7 @@ def build_main_chart(
                 fig.add_trace(
                     go.Scatter(
                         x=exits["x"],
-                        y=exits["high"],
+                        y=exits["high"] + marker_offset,
                         mode="markers",
                         marker=dict(
                             symbol="triangle-down",
@@ -216,6 +245,40 @@ def build_main_chart(
                     y=df_slice["chikou"],
                     name="Chikou",
                     line=dict(color="#9932CC", width=1.5),
+                    showlegend=False,
+                )
+            )
+
+        # Decision lines (un-displaced) — independent of original line toggles
+        if ichi_show_senkou_a_current and "senkou_a_current" in df_slice.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=df_slice["x"],
+                    y=df_slice["senkou_a_current"],
+                    name="Senkou A (current)",
+                    line=dict(color="yellow", width=1, dash="dot"),
+                    showlegend=False,
+                )
+            )
+
+        if ichi_show_senkou_b_current and "senkou_b_current" in df_slice.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=df_slice["x"],
+                    y=df_slice["senkou_b_current"],
+                    name="Senkou B (current)",
+                    line=dict(color="green", width=1, dash="dot"),
+                    showlegend=False,
+                )
+            )
+
+        if ichi_show_chikou_decision:
+            fig.add_trace(
+                go.Scatter(
+                    x=df_slice["x"],
+                    y=df_slice["latest"],
+                    name="Chikou (decision)",
+                    line=dict(color="#9932CC", width=1, dash="dot"),
                     showlegend=False,
                 )
             )
@@ -442,8 +505,16 @@ def build_main_chart(
     # -------------------------------------------------
     # Hover & Crosshair
     # -------------------------------------------------
-    fig.update_traces(hoverinfo="none", hovertemplate=None)
-    fig.data[0].hoverinfo = "all"
+    # Price panel: no hover tooltip (just crosshair).
+    # Indicator panels: show name + value.
+    for trace in fig.data:
+        yax = getattr(trace, 'yaxis', None) or 'y'
+        if yax == 'y':
+            trace.hoverinfo = "skip"
+            trace.hovertemplate = None
+        else:
+            trace.hoverinfo = "x+y+name"
+            trace.hovertemplate = "<b>%{fullData.name}</b>: %{y:.2f}<extra></extra>"
 
     # Y-axis spike options (horizontal crosshair per panel)
     spike_y = dict(
@@ -454,17 +525,27 @@ def build_main_chart(
         spikecolor="gray",
         spikesnap="cursor",
     )
+    # Price panel spike: no toaxis label (don't show price value at axis)
+    spike_y_no_label = dict(
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikedash="dot",
+        spikecolor="gray",
+        spikesnap="cursor",
+    )
 
     # -------------------------------------------------
     # Layout — single x-axis, 4 y-axis domains
     # -------------------------------------------------
     layout_kwargs = dict(
-        height=920,
+        height=chart_height,
         template="plotly_dark",
         xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=40, b=10),
-        hovermode="x",
+        hovermode="closest",
         spikedistance=-1,
+        uirevision=chart_key or "constant",
         xaxis=dict(
             anchor="y4",
             domain=[0, 1],
@@ -473,13 +554,13 @@ def build_main_chart(
             tickvals=tickvals,
             ticktext=ticktext,
             showspikes=True,
-            spikemode="across",
+            spikemode="across+toaxis",
             spikethickness=1,
             spikedash="dot",
             spikecolor="gray",
             spikesnap="cursor",
         ),
-        yaxis=dict(domain=price_domain, anchor="free", position=0, **spike_y),
+        yaxis=dict(domain=price_domain, anchor="free", position=0, **spike_y_no_label),
         yaxis2=dict(domain=rsi_domain, anchor="free", position=0,
                     tickmode="array",
                     tickvals=sorted([rsi_lower_2, rsi_lower_1, 50, rsi_upper_2, rsi_upper_1]),
@@ -509,8 +590,9 @@ def build_main_chart(
     if draw_mode:
         layout_kwargs["dragmode"] = "drawrect"
         layout_kwargs["newshape"] = dict(
-            line=dict(color="cyan", width=2),
-            fillcolor="rgba(0, 255, 255, 0.1)",
+            line=dict(width=0),
+            fillcolor="rgba(255, 255, 255, 0.07)",
+            layer="below",
         )
 
     fig.update_layout(**layout_kwargs)
@@ -519,8 +601,8 @@ def build_main_chart(
     # Selected period markers
     # -------------------------------------------------
     if period_start is not None and period_end is not None:
-        x_start = period_start.strftime("%Y-%m-%d %H:%M")
-        x_end = period_end.strftime("%Y-%m-%d %H:%M")
+        x_start = period_start.strftime("%d.%m.%Y_%H:%M")
+        x_end = period_end.strftime("%d.%m.%Y_%H:%M")
 
         fig.add_shape(
             type="line",
@@ -555,6 +637,7 @@ def render_charts(
     show_1h=True,
     chart_key=None,
     draw_mode=False,
+    chart_height=920,
 ):
     """
     Renders charts. Side by side when 1H+15m, full width when 15m only.
@@ -562,8 +645,8 @@ def render_charts(
     rsi_zones_1h = rsi_zones_1h or {}
     rsi_zones_15m = rsi_zones_15m or {}
 
-    # Plotly modebar buttons for drawing tools
-    config = {}
+    # Plotly config: always enable scroll zoom for y-axis stretching
+    config = {"scrollZoom": True}
     if draw_mode:
         config["modeBarButtonsToAdd"] = [
             "drawrect",
@@ -581,11 +664,13 @@ def render_charts(
             show_kc=show_kc,
             show_strategy=show_strategy,
             draw_mode=draw_mode,
+            chart_height=chart_height,
+            chart_key=chart_key,
             **(rsi_zones_1h or {}),
         )
         st.plotly_chart(fig_1h, use_container_width=True,
                         key=f"chart_1h_{chart_key}" if chart_key else None,
-                        config=config if draw_mode else None)
+                        config=config)
     else:
         st.subheader("15m Chart")
         fig_15m = build_main_chart(
@@ -597,8 +682,10 @@ def render_charts(
             show_kc=show_kc,
             show_strategy=show_strategy,
             draw_mode=draw_mode,
+            chart_height=chart_height,
+            chart_key=chart_key,
             **(rsi_zones_15m or {}),
         )
         st.plotly_chart(fig_15m, use_container_width=True,
                         key=f"chart_15m_{chart_key}" if chart_key else None,
-                        config=config if draw_mode else None)
+                        config=config)

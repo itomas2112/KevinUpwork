@@ -40,21 +40,21 @@ def ichimoku(
     # -------------------------------------------------
     # Senkou Span A (Leading Span A)
     # -------------------------------------------------
-    senkou_a = ((tenkan + kijun) / 2).shift(displacement)
+    senkou_a_raw = (tenkan + kijun) / 2
+    senkou_a = senkou_a_raw.shift(displacement)
 
     # -------------------------------------------------
     # Senkou Span B (Leading Span B)
     # -------------------------------------------------
-    senkou_b = (
-        (
-            high.rolling(senkou_b_len).max()
-            + low.rolling(senkou_b_len).min()
-        ) / 2
-    ).shift(displacement)
+    senkou_b_raw = (
+        high.rolling(senkou_b_len).max()
+        + low.rolling(senkou_b_len).min()
+    ) / 2
+    senkou_b = senkou_b_raw.shift(displacement)
 
     # -------------------------------------------------
     # Chikou Span (Lagging Span) — close shifted back
     # -------------------------------------------------
     chikou = close.shift(-displacement) if close is not None else None
 
-    return tenkan, kijun, senkou_a, senkou_b, chikou
+    return tenkan, kijun, senkou_a, senkou_b, chikou, senkou_a_raw, senkou_b_raw

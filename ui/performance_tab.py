@@ -7,7 +7,7 @@ import pandas as pd
 
 from data.loader import parse_drm_periods
 from data.helpers import PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES, expand_selection, selection_label
-from indicators.calculate_indicators import calculate_indicators, slice_for_graph
+from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings
 from strategies.first_strategy import execute_custom_strategy
 from ui.charting_tab import _aggregate_stats
 
@@ -178,9 +178,15 @@ def render_performance_tab(sidebar_config):
     display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2', 'cmb_lines',
                          'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
                          'ichi_show_senkou_b', 'ichi_show_chikou',
+                         'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
+                         'ichi_show_chikou_decision',
                          'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
                          'kc_show_upper', 'kc_show_middle', 'kc_show_lower'}
     indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
+    strategy_settings = selected_strategy.get('indicator_settings')
+    if strategy_settings:
+        strategy_settings = migrate_indicator_settings(strategy_settings)
+        indicator_params.update(strategy_settings)
     df_full = calculate_indicators(df=st.session_state[df_key], **indicator_params)
 
     # --------------------------------------------------

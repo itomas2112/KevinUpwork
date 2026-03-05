@@ -4,7 +4,7 @@ Charting tab (Tab 1) UI and logic
 import streamlit as st
 from data.loader import load_ohlc, load_drm, parse_drm_periods
 from data.helpers import expand_selection
-from indicators.calculate_indicators import calculate_indicators, slice_for_graph
+from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings
 from graphs.graph import render_charts
 from strategies.first_strategy import ichimoku_tenkan_kijun_strategy, execute_custom_strategy
 import pandas as pd
@@ -36,11 +36,27 @@ def render_charting_tab(sidebar_config):
         st.info("Please configure pattern selections in the sidebar to display charts.")
         return
 
+    # Determine if custom strategy is selected (before indicator calc for overrides)
+    show_custom_strategy = False
+    selected_custom_strategy = None
+    strategy_indicator_settings = None
+
+    if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
+        actual_idx = st.session_state.get('selected_custom_strategy_actual_idx')
+        if actual_idx is not None and actual_idx < len(st.session_state['saved_strategies']):
+            show_custom_strategy = True
+            selected_custom_strategy = st.session_state['saved_strategies'][actual_idx]
+            strategy_indicator_settings = selected_custom_strategy.get('indicator_settings')
+            if strategy_indicator_settings:
+                strategy_indicator_settings = migrate_indicator_settings(strategy_indicator_settings)
+
     # Calculate indicators (exclude display-only params: RSI zones and CMB lines)
     display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
                          'cmb_lines',
                          'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
                          'ichi_show_senkou_b', 'ichi_show_chikou',
+                         'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
+                         'ichi_show_chikou_decision',
                          'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
                          'kc_show_upper', 'kc_show_middle', 'kc_show_lower'}
 
@@ -48,27 +64,20 @@ def render_charting_tab(sidebar_config):
     df_features_15m = None
     if show_1h:
         indicator_params_1h = {k: v for k, v in sidebar_config['params_1h'].items() if k not in display_only_keys}
+        if strategy_indicator_settings:
+            indicator_params_1h.update(strategy_indicator_settings)
         df_features_1h = calculate_indicators(
             df=st.session_state["df_1h"],
             **indicator_params_1h
         )
     else:
         indicator_params_15m = {k: v for k, v in sidebar_config['params_15m'].items() if k not in display_only_keys}
+        if strategy_indicator_settings:
+            indicator_params_15m.update(strategy_indicator_settings)
         df_features_15m = calculate_indicators(
             df=st.session_state["df_15m"],
             **indicator_params_15m
         )
-
-    # Determine if custom strategy is selected
-    show_custom_strategy = False
-    selected_custom_strategy = None
-
-    # Use the actual strategy index stored in session state
-    if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
-        actual_idx = st.session_state.get('selected_custom_strategy_actual_idx')
-        if actual_idx is not None and actual_idx < len(st.session_state['saved_strategies']):
-            show_custom_strategy = True
-            selected_custom_strategy = st.session_state['saved_strategies'][actual_idx]
 
     # Collect stats from all periods for global aggregation
     all_stats_1h = []
@@ -245,6 +254,8 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                         'cmb_lines',
                         'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
                         'ichi_show_senkou_b', 'ichi_show_chikou',
+                        'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
+                        'ichi_show_chikou_decision',
                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower']
     rsi_zones_1h = {k: sidebar_config['params_1h'][k] for k in chart_param_keys} if show_1h else None
@@ -271,6 +282,7 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                 show_1h,
                 chart_key=chart_key,
                 draw_mode=draw_mode,
+                chart_height=sidebar_config['chart_height'],
             )
 
         with col_stats:
@@ -289,6 +301,7 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
             show_1h,
             chart_key=chart_key,
             draw_mode=draw_mode,
+            chart_height=sidebar_config['chart_height'],
         )
 
     st.divider()
