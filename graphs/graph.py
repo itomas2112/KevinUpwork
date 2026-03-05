@@ -379,6 +379,7 @@ def build_main_chart(
             line=dict(color="lightblue", width=1),
             showlegend=False,
             yaxis="y2",
+            hoverinfo="skip",
         )
     )
 
@@ -390,6 +391,7 @@ def build_main_chart(
             line=dict(color="yellow", width=1),
             showlegend=False,
             yaxis="y2",
+            hoverinfo="skip",
         )
     )
 
@@ -442,6 +444,7 @@ def build_main_chart(
             line=dict(color="lightblue", width=1),
             showlegend=False,
             yaxis="y3",
+            hoverinfo="skip",
         )
     )
 
@@ -453,6 +456,7 @@ def build_main_chart(
             line=dict(color="yellow", width=1),
             showlegend=False,
             yaxis="y3",
+            hoverinfo="skip",
         )
     )
 
@@ -508,10 +512,17 @@ def build_main_chart(
     # Price panel: no hover tooltip (just crosshair).
     # Indicator panels: show name + value.
     for trace in fig.data:
+        if getattr(trace, 'hoverinfo', None) == 'skip':
+            trace.hovertemplate = None
+            continue
         yax = getattr(trace, 'yaxis', None) or 'y'
         if yax == 'y':
-            trace.hoverinfo = "skip"
-            trace.hovertemplate = None
+            if trace.name == 'Price':
+                trace.hoverinfo = "x+y+name"
+                trace.hovertemplate = "<b>%{fullData.name}</b>: %{y:.2f}<extra></extra>"
+            else:
+                trace.hoverinfo = "skip"
+                trace.hovertemplate = None
         else:
             trace.hoverinfo = "x+y+name"
             trace.hovertemplate = "<b>%{fullData.name}</b>: %{y:.2f}<extra></extra>"
