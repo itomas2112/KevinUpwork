@@ -1,5 +1,6 @@
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as _components
 
 
 def build_main_chart(
@@ -570,14 +571,23 @@ def build_main_chart(
             spikedash="dot",
             spikecolor="gray",
             spikesnap="cursor",
+            gridcolor="rgba(255,255,255,0.08)",
+            griddash="dash",
         ),
-        yaxis=dict(domain=price_domain, anchor="free", position=0, **spike_y_no_label),
+        yaxis=dict(domain=price_domain, anchor="free", position=0,
+                   gridcolor="rgba(255,255,255,0.08)", griddash="dash",
+                   **spike_y_no_label),
         yaxis2=dict(domain=rsi_domain, anchor="free", position=0,
                     tickmode="array",
                     tickvals=sorted([rsi_lower_2, rsi_lower_1, 50, rsi_upper_2, rsi_upper_1]),
+                    gridcolor="rgba(255,255,255,0.08)", griddash="dash",
                     **spike_y),
-        yaxis3=dict(domain=cmb_domain, anchor="free", position=0, **spike_y),
-        yaxis4=dict(domain=stoch_domain, anchor="x", **spike_y),
+        yaxis3=dict(domain=cmb_domain, anchor="free", position=0,
+                    gridcolor="rgba(255,255,255,0.08)", griddash="dash",
+                    **spike_y),
+        yaxis4=dict(domain=stoch_domain, anchor="x",
+                    gridcolor="rgba(255,255,255,0.08)", griddash="dash",
+                    **spike_y),
         annotations=[
             dict(text="Price (High\u2013Low)", x=0.02, y=price_domain[1] + 0.005,
                  xref="paper", yref="paper", showarrow=False,
@@ -603,7 +613,7 @@ def build_main_chart(
         layout_kwargs["newshape"] = dict(
             line=dict(width=0),
             fillcolor="rgba(255, 255, 255, 0.07)",
-            layer="below",
+            layer="above",
         )
 
     fig.update_layout(**layout_kwargs)
@@ -630,6 +640,90 @@ def build_main_chart(
         )
 
     return fig
+
+
+def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
+    """Render a Plotly chart with shape and zoom persistence across reruns.
+
+    Uses ``st.components.v1.html`` so the chart lives inside an iframe where
+    we can attach Plotly JS event listeners.  Drawn shapes (rects) and axis
+    ranges are stored on ``window.parent`` which survives Streamlit reruns.
+    """
+
+    chart_html = fig.to_html(
+        full_html=False,
+        include_plotlyjs="cdn",
+        config=config,
+    )
+
+    safe_key = (chart_key or "default").replace("'", "\\'")
+
+    persistence_js = f"""
+    <script>
+    (function() {{
+        var KEY = '{safe_key}';
+        var P  = window.parent;
+        P.__plotlyPersist = P.__plotlyPersist || {{}};
+
+        function setup() {{
+            var pd = document.querySelector('.js-plotly-plot');
+            if (!pd || !pd._fullLayout) {{ setTimeout(setup, 100); return; }}
+
+            var baseShapes = JSON.parse(JSON.stringify(pd.layout.shapes || []));
+
+            var saved = P.__plotlyPersist[KEY];
+            if (saved) {{
+                var upd = {{}};
+                if (saved.shapes && saved.shapes.length)
+                    upd.shapes = baseShapes.concat(saved.shapes);
+                if (saved.xR)  upd['xaxis.range']   = saved.xR;
+                if (saved.yR)  upd['yaxis.range']    = saved.yR;
+                if (saved.y2R) upd['yaxis2.range']   = saved.y2R;
+                if (saved.y3R) upd['yaxis3.range']   = saved.y3R;
+                if (saved.y4R) upd['yaxis4.range']   = saved.y4R;
+                if (Object.keys(upd).length) Plotly.relayout(pd, upd);
+            }}
+
+            pd.on('plotly_relayout', function(ed) {{
+                var s = P.__plotlyPersist[KEY] || {{}};
+
+                var all = pd.layout.shapes || [];
+                s.shapes = [];
+                for (var i = 0; i < all.length; i++) {{
+                    if (all[i].type === 'rect')
+                        s.shapes.push(JSON.parse(JSON.stringify(all[i])));
+                }}
+
+                if (ed['xaxis.range[0]']  !== undefined) s.xR  = [ed['xaxis.range[0]'],  ed['xaxis.range[1]']];
+                if (ed['yaxis.range[0]']  !== undefined) s.yR  = [ed['yaxis.range[0]'],  ed['yaxis.range[1]']];
+                if (ed['yaxis2.range[0]'] !== undefined) s.y2R = [ed['yaxis2.range[0]'], ed['yaxis2.range[1]']];
+                if (ed['yaxis3.range[0]'] !== undefined) s.y3R = [ed['yaxis3.range[0]'], ed['yaxis3.range[1]']];
+                if (ed['yaxis4.range[0]'] !== undefined) s.y4R = [ed['yaxis4.range[0]'], ed['yaxis4.range[1]']];
+
+                if (ed['xaxis.autorange'])  delete s.xR;
+                if (ed['yaxis.autorange'])  delete s.yR;
+                if (ed['yaxis2.autorange']) delete s.y2R;
+                if (ed['yaxis3.autorange']) delete s.y3R;
+                if (ed['yaxis4.autorange']) delete s.y4R;
+
+                P.__plotlyPersist[KEY] = s;
+            }});
+        }}
+        setup();
+    }})();
+    </script>
+    """
+
+    cursor_css = ".shapelayer path { cursor: pointer !important; }" if draw_mode else ""
+
+    full_html = (
+        "<!DOCTYPE html><html><head>"
+        "<style>body{margin:0;padding:0;background:#111111;overflow:hidden;}"
+        f"{cursor_css}</style></head>"
+        f"<body>{chart_html}{persistence_js}</body></html>"
+    )
+
+    _components.html(full_html, height=height, scrolling=False)
 
 
 def render_charts(
@@ -679,9 +773,9 @@ def render_charts(
             chart_key=chart_key,
             **(rsi_zones_1h or {}),
         )
-        st.plotly_chart(fig_1h, use_container_width=True,
-                        key=f"chart_1h_{chart_key}" if chart_key else None,
-                        config=config)
+        _render_persistent_chart(fig_1h, config,
+                                 f"1h_{chart_key}" if chart_key else "1h",
+                                 chart_height, draw_mode)
     else:
         st.subheader("15m Chart")
         fig_15m = build_main_chart(
@@ -697,6 +791,6 @@ def render_charts(
             chart_key=chart_key,
             **(rsi_zones_15m or {}),
         )
-        st.plotly_chart(fig_15m, use_container_width=True,
-                        key=f"chart_15m_{chart_key}" if chart_key else None,
-                        config=config)
+        _render_persistent_chart(fig_15m, config,
+                                 f"15m_{chart_key}" if chart_key else "15m",
+                                 chart_height, draw_mode)
