@@ -9,13 +9,24 @@ from config.constants import (
     RSI_GROUP,
     CMB_GROUP,
     STOCH_GROUP,
+    ADX_GROUP,
+    MACD_GROUP,
     EVENT_TYPES,
     CONDITION_OPERATORS,
     CONDITION_COMPARE_TYPES,
     EXIT_TYPES,
     STOP_EVENT_TYPES,
+    GROUP_NAMES,
+    get_group_elements,
 )
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
+
+
+def _ema_count():
+    """Get the current number of EMA overlays configured."""
+    analysis_mode = st.session_state.get('analysis_mode', '15m')
+    key_prefix = analysis_mode.lower().replace('h', '_h').replace('m', '_m')
+    return len(st.session_state.get(f'ema_periods_{key_prefix}', []))
 
 
 def render_strategy_builder_tab():
@@ -220,18 +231,11 @@ def render_entry_box():
             # Group selection for element 1
             entry_trigger_group1 = st.selectbox(
                 "Select Group",
-                ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
+                GROUP_NAMES,
                 key="entry_trigger_group1"
             )
 
-            if entry_trigger_group1 == "Price & Indicators":
-                available_elements1 = PRICE_AND_INDICATORS
-            elif entry_trigger_group1 == "RSI Group":
-                available_elements1 = RSI_GROUP
-            elif entry_trigger_group1 == "CMB Group":
-                available_elements1 = CMB_GROUP
-            else:
-                available_elements1 = STOCH_GROUP
+            available_elements1 = get_group_elements(entry_trigger_group1, _ema_count())
 
             entry_trigger_element1 = st.selectbox(
                 "Element 1",
@@ -360,18 +364,11 @@ def render_entry_box():
                         # Group selection for condition element 1
                         cond_group1 = st.selectbox(
                             "Select Group",
-                            ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
+                            GROUP_NAMES,
                             key=f"entry_cond_{i}_group1"
                         )
 
-                        if cond_group1 == "Price & Indicators":
-                            cond_available_elements1 = PRICE_AND_INDICATORS
-                        elif cond_group1 == "RSI Group":
-                            cond_available_elements1 = RSI_GROUP
-                        elif cond_group1 == "CMB Group":
-                            cond_available_elements1 = CMB_GROUP
-                        else:
-                            cond_available_elements1 = STOCH_GROUP
+                        cond_available_elements1 = get_group_elements(cond_group1, _ema_count())
 
                         cond_element1 = st.selectbox(
                             "Element 1",
@@ -431,18 +428,11 @@ def render_exit_box():
             # Group selection for element 1
             exit_trigger_group1 = st.selectbox(
                 "Select Group",
-                ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
+                GROUP_NAMES,
                 key="exit_trigger_group1"
             )
 
-            if exit_trigger_group1 == "Price & Indicators":
-                available_elements1 = PRICE_AND_INDICATORS
-            elif exit_trigger_group1 == "RSI Group":
-                available_elements1 = RSI_GROUP
-            elif exit_trigger_group1 == "CMB Group":
-                available_elements1 = CMB_GROUP
-            else:
-                available_elements1 = STOCH_GROUP
+            available_elements1 = get_group_elements(exit_trigger_group1, _ema_count())
 
             exit_trigger_element1 = st.selectbox(
                 "Element 1",
@@ -529,18 +519,11 @@ def render_exit_box():
                         # Group selection for condition element 1
                         cond_group1 = st.selectbox(
                             "Select Group",
-                            ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
+                            GROUP_NAMES,
                             key=f"exit_cond_{i}_group1"
                         )
 
-                        if cond_group1 == "Price & Indicators":
-                            cond_available_elements1 = PRICE_AND_INDICATORS
-                        elif cond_group1 == "RSI Group":
-                            cond_available_elements1 = RSI_GROUP
-                        elif cond_group1 == "CMB Group":
-                            cond_available_elements1 = CMB_GROUP
-                        else:
-                            cond_available_elements1 = STOCH_GROUP
+                        cond_available_elements1 = get_group_elements(cond_group1, _ema_count())
 
                         cond_element1 = st.selectbox(
                             "Element 1",
@@ -1224,18 +1207,11 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
         with col1:
             trigger_group = st.selectbox(
                 "Select Group",
-                ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
+                GROUP_NAMES,
                 key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_group1"
             )
 
-            if trigger_group == "Price & Indicators":
-                available_elements = PRICE_AND_INDICATORS
-            elif trigger_group == "RSI Group":
-                available_elements = RSI_GROUP
-            elif trigger_group == "CMB Group":
-                available_elements = CMB_GROUP
-            else:
-                available_elements = STOCH_GROUP
+            available_elements = get_group_elements(trigger_group, _ema_count())
 
             trigger_element1 = st.selectbox(
                 "Element 1",
@@ -1335,18 +1311,11 @@ def render_exit_condition(group_idx, exit_type, exit_idx, cond_idx):
     with col1:
         cond_group = st.selectbox(
             "Group",
-            ["Price & Indicators", "RSI Group", "CMB Group", "Stoch Group"],
+            GROUP_NAMES,
             key=f"{exit_type}_{group_idx}_{exit_idx}_cond_{cond_idx}_group"
         )
 
-        if cond_group == "Price & Indicators":
-            cond_available = PRICE_AND_INDICATORS
-        elif cond_group == "RSI Group":
-            cond_available = RSI_GROUP
-        elif cond_group == "CMB Group":
-            cond_available = CMB_GROUP
-        else:
-            cond_available = STOCH_GROUP
+        cond_available = get_group_elements(cond_group, _ema_count())
 
         cond_element1 = st.selectbox(
             "Element 1",

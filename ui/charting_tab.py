@@ -257,7 +257,8 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                         'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
                         'ichi_show_chikou_decision',
                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
-                        'kc_show_upper', 'kc_show_middle', 'kc_show_lower']
+                        'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
+                        'ema_periods']
     rsi_zones_1h = {k: sidebar_config['params_1h'][k] for k in chart_param_keys} if show_1h else None
     rsi_zones_15m = {k: sidebar_config['params_15m'][k] for k in chart_param_keys} if not show_1h else None
 
@@ -265,44 +266,37 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
     draw_mode = sidebar_config.get('draw_mode', False)
     active_stats = stats_1h if show_1h else stats_15m
     show_strategy = show_custom_strategy and active_stats is not None
+
+    panel_kwargs = {k: sidebar_config[k] for k in
+                    ['show_rsi', 'show_cmb', 'show_stoch', 'show_adx', 'show_atr',
+                     'show_macd', 'show_obv', 'show_accdist', 'show_supertrend', 'show_ema']}
+
+    chart_kwargs = dict(
+        df_slice_1h=df_slice_1h, df_slice_15m=df_slice_15m,
+        start_1h=period_start_1h, end_1h=period_end_1h,
+        start_15m=period_start_15m, end_15m=period_end_15m,
+        show_ichimoku=sidebar_config['show_ichimoku'],
+        show_bb=sidebar_config['show_bb'],
+        show_kc=sidebar_config['show_kc'],
+        rsi_zones_1h=rsi_zones_1h,
+        rsi_zones_15m=rsi_zones_15m,
+        show_1h=show_1h,
+        chart_key=chart_key,
+        draw_mode=draw_mode,
+        chart_height=sidebar_config['chart_height'],
+        **panel_kwargs,
+    )
+
     if show_strategy:
         col_charts, col_stats = st.columns([3, 1], gap="medium")
 
         with col_charts:
-            render_charts(
-                df_slice_1h, df_slice_15m,
-                period_start_1h, period_end_1h,
-                period_start_15m, period_end_15m,
-                sidebar_config['show_ichimoku'],
-                sidebar_config['show_bb'],
-                sidebar_config['show_kc'],
-                True,
-                rsi_zones_1h,
-                rsi_zones_15m,
-                show_1h,
-                chart_key=chart_key,
-                draw_mode=draw_mode,
-                chart_height=sidebar_config['chart_height'],
-            )
+            render_charts(show_strategy=True, **chart_kwargs)
 
         with col_stats:
             render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h)
     else:
-        render_charts(
-            df_slice_1h, df_slice_15m,
-            period_start_1h, period_end_1h,
-            period_start_15m, period_end_15m,
-            sidebar_config['show_ichimoku'],
-            sidebar_config['show_bb'],
-            sidebar_config['show_kc'],
-            False,
-            rsi_zones_1h,
-            rsi_zones_15m,
-            show_1h,
-            chart_key=chart_key,
-            draw_mode=draw_mode,
-            chart_height=sidebar_config['chart_height'],
-        )
+        render_charts(show_strategy=False, **chart_kwargs)
 
     st.divider()
 

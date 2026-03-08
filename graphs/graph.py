@@ -2,6 +2,22 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as _components
 
+# EMA colors matching sidebar.py
+EMA_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+              "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9"]
+
+# Panel name → yaxis suffix mapping (y=price, y2..y9=oscillators)
+PANEL_YAXIS = {
+    "rsi": "y2",
+    "cmb": "y3",
+    "stoch": "y4",
+    "adx": "y5",
+    "atr": "y6",
+    "macd": "y7",
+    "obv": "y8",
+    "accdist": "y9",
+}
+
 
 def build_main_chart(
     df_slice,
@@ -33,12 +49,21 @@ def build_main_chart(
     kc_show_middle: bool = True,
     kc_show_lower: bool = True,
     chart_key: str = None,
+    show_rsi: bool = True,
+    show_cmb: bool = True,
+    show_stoch: bool = True,
+    show_adx: bool = False,
+    show_atr: bool = False,
+    show_macd: bool = False,
+    show_obv: bool = False,
+    show_accdist: bool = False,
+    show_supertrend: bool = False,
+    show_ema: bool = False,
+    ema_periods: list = None,
 ):
     """
-    Build main chart using a single x-axis with 4 y-axis domains
+    Build main chart using a single x-axis with dynamic y-axis domains
     so the vertical crosshair spans all panels.
-
-    Panels (top to bottom): Price, RSI, CMB Composite, Stochastic
     """
 
     # -------------------------------------------------
@@ -55,12 +80,43 @@ def build_main_chart(
             prev_date = d
 
     # -------------------------------------------------
-    # Y-axis domains (bottom to top)
+    # Y-axis domains — dynamic based on visible panels
+    # Build list bottom-to-top: first entry = bottommost panel
     # -------------------------------------------------
-    stoch_domain = [0.00, 0.13]
-    cmb_domain   = [0.17, 0.36]
-    rsi_domain   = [0.40, 0.55]
-    price_domain = [0.59, 1.00]
+    visible_panels = []
+    if show_accdist:
+        visible_panels.append("accdist")
+    if show_obv:
+        visible_panels.append("obv")
+    if show_macd:
+        visible_panels.append("macd")
+    if show_atr:
+        visible_panels.append("atr")
+    if show_adx:
+        visible_panels.append("adx")
+    if show_stoch:
+        visible_panels.append("stoch")
+    if show_cmb:
+        visible_panels.append("cmb")
+    if show_rsi:
+        visible_panels.append("rsi")
+
+    if visible_panels:
+        price_domain = [0.59, 1.00]
+        osc_total = 0.55
+        gap = 0.03
+        n = len(visible_panels)
+        usable = osc_total - gap * (n - 1) if n > 1 else osc_total
+        panel_height = usable / n
+
+        domains = {}
+        bottom = 0.0
+        for panel_name in visible_panels:
+            domains[panel_name] = [round(bottom, 4), round(bottom + panel_height, 4)]
+            bottom += panel_height + gap
+    else:
+        price_domain = [0.0, 1.00]
+        domains = {}
 
     fig = go.Figure()
 
@@ -90,7 +146,6 @@ def build_main_chart(
     # -------------------------------------------------
     if show_strategy:
 
-        # Offset to push markers away from price bars for visibility
         price_range = df_slice["high"].max() - df_slice["low"].min()
         marker_offset = price_range * 0.03
 
@@ -113,7 +168,6 @@ def build_main_chart(
             )
 
         if "exit_type" in df_slice.columns:
-            # Target exits — green
             target_exits = df_slice[
                 (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Target")
             ]
@@ -133,7 +187,6 @@ def build_main_chart(
                     )
                 )
 
-            # Dynamic stop exits (exit group stops) — orange
             dynamic_stop_exits = df_slice[
                 (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Stop")
             ]
@@ -153,7 +206,6 @@ def build_main_chart(
                     )
                 )
 
-            # Static/Initial stop exits — red
             initial_stop_exits = df_slice[
                 (df_slice["exit_signal"]) & (df_slice["exit_type"] == "Initial Stop")
             ]
@@ -196,322 +248,225 @@ def build_main_chart(
     # -------------------------------------------------
     if show_ichimoku:
         if ichi_show_tenkan:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["tenkan"],
-                    name="Tenkan",
-                    line=dict(color="red", width=1),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["tenkan"], name="Tenkan",
+                                     line=dict(color="red", width=1), showlegend=False))
         if ichi_show_kijun:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["kijun"],
-                    name="Kijun",
-                    line=dict(color="lightblue", width=1),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["kijun"], name="Kijun",
+                                     line=dict(color="lightblue", width=1), showlegend=False))
         if ichi_show_senkou_a:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["senkou_a"],
-                    name="Senkou A",
-                    line=dict(color="yellow", width=1),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["senkou_a"], name="Senkou A",
+                                     line=dict(color="yellow", width=1), showlegend=False))
         if ichi_show_senkou_b:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["senkou_b"],
-                    name="Senkou B",
-                    line=dict(color="green", width=1),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["senkou_b"], name="Senkou B",
+                                     line=dict(color="green", width=1), showlegend=False))
         if ichi_show_chikou and "chikou" in df_slice.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["chikou"],
-                    name="Chikou",
-                    line=dict(color="#9932CC", width=1.5),
-                    showlegend=False,
-                )
-            )
-
-        # Decision lines (un-displaced) — independent of original line toggles
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["chikou"], name="Chikou",
+                                     line=dict(color="#9932CC", width=1.5), showlegend=False))
         if ichi_show_senkou_a_current and "senkou_a_current" in df_slice.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["senkou_a_current"],
-                    name="Senkou A (current)",
-                    line=dict(color="yellow", width=1, dash="dot"),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["senkou_a_current"],
+                                     name="Senkou A (current)",
+                                     line=dict(color="yellow", width=1, dash="dot"), showlegend=False))
         if ichi_show_senkou_b_current and "senkou_b_current" in df_slice.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["senkou_b_current"],
-                    name="Senkou B (current)",
-                    line=dict(color="green", width=1, dash="dot"),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["senkou_b_current"],
+                                     name="Senkou B (current)",
+                                     line=dict(color="green", width=1, dash="dot"), showlegend=False))
         if ichi_show_chikou_decision:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["latest"],
-                    name="Chikou (decision)",
-                    line=dict(color="#9932CC", width=1, dash="dot"),
-                    showlegend=False,
-                )
-            )
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["latest"],
+                                     name="Chikou (decision)",
+                                     line=dict(color="#9932CC", width=1, dash="dot"), showlegend=False))
 
     # -------------------------------------------------
     # Bollinger Bands  (yaxis="y" — Price panel)
     # -------------------------------------------------
     if show_bb:
         if bb_show_middle:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["bb_mid"],
-                    name="BB Mid",
-                    line=dict(color="gray", width=1, dash="dot"),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["bb_mid"], name="BB Mid",
+                                     line=dict(color="gray", width=1, dash="dot"), showlegend=False))
         if bb_show_upper:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["bb_upper"],
-                    name="BB Upper",
-                    line=dict(color="gray", width=1),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["bb_upper"], name="BB Upper",
+                                     line=dict(color="gray", width=1), showlegend=False))
         if bb_show_lower:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["bb_lower"],
-                    name="BB Lower",
-                    line=dict(color="gray", width=1),
-                    showlegend=False,
-                )
-            )
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["bb_lower"], name="BB Lower",
+                                     line=dict(color="gray", width=1), showlegend=False))
 
     # -------------------------------------------------
     # Keltner Channel  (yaxis="y" — Price panel)
     # -------------------------------------------------
     if show_kc:
         if kc_show_middle:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["kc_mid"],
-                    name="KC Mid",
-                    line=dict(color="orange", width=1, dash="dot"),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["kc_mid"], name="KC Mid",
+                                     line=dict(color="orange", width=1, dash="dot"), showlegend=False))
         if kc_show_upper:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["kc_upper"],
-                    name="KC Upper",
-                    line=dict(color="orange", width=1),
-                    showlegend=False,
-                )
-            )
-
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["kc_upper"], name="KC Upper",
+                                     line=dict(color="orange", width=1), showlegend=False))
         if kc_show_lower:
-            fig.add_trace(
-                go.Scatter(
-                    x=df_slice["x"],
-                    y=df_slice["kc_lower"],
-                    name="KC Lower",
-                    line=dict(color="orange", width=1),
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["kc_lower"], name="KC Lower",
+                                     line=dict(color="orange", width=1), showlegend=False))
+
+    # -------------------------------------------------
+    # Supertrend Overlay  (yaxis="y" — Price panel)
+    # -------------------------------------------------
+    if show_supertrend and "supertrend" in df_slice.columns and "supertrend_dir" in df_slice.columns:
+        st_vals = df_slice["supertrend"]
+        st_dir = df_slice["supertrend_dir"]
+        x_arr = df_slice["x"]
+
+        # Split into up/down segments for coloring
+        up_x, up_y = [], []
+        dn_x, dn_y = [], []
+        for xi, yi, di in zip(x_arr, st_vals, st_dir):
+            if di == 1:
+                up_x.append(xi)
+                up_y.append(yi)
+                if dn_x:
+                    # Connect the transition point
+                    up_x.insert(len(up_x) - 1, xi)
+                    up_y.insert(len(up_y) - 1, yi)
+                    dn_x.append(xi)
+                    dn_y.append(yi)
+                    fig.add_trace(go.Scatter(x=dn_x, y=dn_y, name="Supertrend Down",
+                                             line=dict(color="red", width=2), showlegend=False,
+                                             hoverinfo="skip"))
+                    dn_x, dn_y = [], []
+            else:
+                dn_x.append(xi)
+                dn_y.append(yi)
+                if up_x:
+                    dn_x.insert(len(dn_x) - 1, xi)
+                    dn_y.insert(len(dn_y) - 1, yi)
+                    up_x.append(xi)
+                    up_y.append(yi)
+                    fig.add_trace(go.Scatter(x=up_x, y=up_y, name="Supertrend Up",
+                                             line=dict(color="green", width=2), showlegend=False,
+                                             hoverinfo="skip"))
+                    up_x, up_y = [], []
+
+        # Flush remaining segments
+        if up_x:
+            fig.add_trace(go.Scatter(x=up_x, y=up_y, name="Supertrend Up",
+                                     line=dict(color="green", width=2), showlegend=False,
+                                     hoverinfo="skip"))
+        if dn_x:
+            fig.add_trace(go.Scatter(x=dn_x, y=dn_y, name="Supertrend Down",
+                                     line=dict(color="red", width=2), showlegend=False,
+                                     hoverinfo="skip"))
+
+    # -------------------------------------------------
+    # EMA Overlay  (yaxis="y" — Price panel)
+    # -------------------------------------------------
+    if show_ema and ema_periods:
+        for i, period in enumerate(ema_periods):
+            col = f"ema_{i}"
+            if col in df_slice.columns:
+                color = EMA_COLORS[i % len(EMA_COLORS)]
+                fig.add_trace(go.Scatter(
+                    x=df_slice["x"], y=df_slice[col],
+                    name=f"EMA({int(period)})",
+                    line=dict(color=color, width=1.5),
                     showlegend=False,
-                )
-            )
+                    hoverinfo="skip",
+                ))
 
     # -------------------------------------------------
     # RSI  (yaxis="y2")
     # -------------------------------------------------
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["rsi"],
-            name="RSI",
-            line=dict(color="#9932CC", width=2),
-            showlegend=False,
-            yaxis="y2",
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["rsi_13"],
-            name="RSI 13 SMA",
-            line=dict(color="lightblue", width=1),
-            showlegend=False,
-            yaxis="y2",
-            hoverinfo="skip",
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["rsi_33"],
-            name="RSI 33 SMA",
-            line=dict(color="yellow", width=1),
-            showlegend=False,
-            yaxis="y2",
-            hoverinfo="skip",
-        )
-    )
-
-    # RSI zones (shaded)
-    fig.add_shape(
-        type="rect",
-        x0=0, x1=1, y0=rsi_upper_2, y1=rsi_upper_1,
-        xref="paper", yref="y2",
-        fillcolor="red", opacity=0.3, line_width=0,
-    )
-    fig.add_shape(
-        type="rect",
-        x0=0, x1=1, y0=rsi_lower_2, y1=rsi_lower_1,
-        xref="paper", yref="y2",
-        fillcolor="blue", opacity=0.3, line_width=0,
-    )
-
-    # RSI horizontal reference lines: 50 + 4 zone boundaries
-    fig.add_shape(
-        type="line", x0=0, x1=1, y0=50, y1=50,
-        xref="paper", yref="y2",
-        line=dict(dash="solid", color="gray", width=1),
-    )
-    for rsi_val in [rsi_upper_1, rsi_upper_2, rsi_lower_1, rsi_lower_2]:
-        fig.add_shape(
-            type="line", x0=0, x1=1, y0=rsi_val, y1=rsi_val,
-            xref="paper", yref="y2",
-            line=dict(dash="dot", color="gray", width=1),
-        )
+    if show_rsi:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["rsi"], name="RSI",
+                                 line=dict(color="#9932CC", width=2), showlegend=False, yaxis="y2"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["rsi_13"], name="RSI 13 SMA",
+                                 line=dict(color="lightblue", width=1), showlegend=False, yaxis="y2",
+                                 hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["rsi_33"], name="RSI 33 SMA",
+                                 line=dict(color="yellow", width=1), showlegend=False, yaxis="y2",
+                                 hoverinfo="skip"))
+        fig.add_shape(type="rect", x0=0, x1=1, y0=rsi_upper_2, y1=rsi_upper_1,
+                      xref="paper", yref="y2", fillcolor="red", opacity=0.3, line_width=0)
+        fig.add_shape(type="rect", x0=0, x1=1, y0=rsi_lower_2, y1=rsi_lower_1,
+                      xref="paper", yref="y2", fillcolor="blue", opacity=0.3, line_width=0)
+        fig.add_shape(type="line", x0=0, x1=1, y0=50, y1=50, xref="paper", yref="y2",
+                      line=dict(dash="solid", color="gray", width=1))
+        for rsi_val in [rsi_upper_1, rsi_upper_2, rsi_lower_1, rsi_lower_2]:
+            fig.add_shape(type="line", x0=0, x1=1, y0=rsi_val, y1=rsi_val, xref="paper", yref="y2",
+                          line=dict(dash="dot", color="gray", width=1))
 
     # -------------------------------------------------
     # CMB Composite  (yaxis="y3")
     # -------------------------------------------------
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["ci"],
-            name="CI",
-            line=dict(color="#9932CC", width=2),
-            showlegend=False,
-            yaxis="y3",
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["ci_13"],
-            name="CI 13",
-            line=dict(color="lightblue", width=1),
-            showlegend=False,
-            yaxis="y3",
-            hoverinfo="skip",
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["ci_33"],
-            name="CI 33",
-            line=dict(color="yellow", width=1),
-            showlegend=False,
-            yaxis="y3",
-            hoverinfo="skip",
-        )
-    )
-
-    # CMB horizontal reference lines
-    if cmb_lines:
-        for val in cmb_lines:
-            fig.add_shape(
-                type="line",
-                x0=0, x1=1, y0=val, y1=val,
-                xref="paper", yref="y3",
-                line=dict(dash="dot", color="white", width=1),
-            )
+    if show_cmb:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["ci"], name="CI",
+                                 line=dict(color="#9932CC", width=2), showlegend=False, yaxis="y3"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["ci_13"], name="CI 13",
+                                 line=dict(color="lightblue", width=1), showlegend=False, yaxis="y3",
+                                 hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["ci_33"], name="CI 33",
+                                 line=dict(color="yellow", width=1), showlegend=False, yaxis="y3",
+                                 hoverinfo="skip"))
+        if cmb_lines:
+            for val in cmb_lines:
+                fig.add_shape(type="line", x0=0, x1=1, y0=val, y1=val, xref="paper", yref="y3",
+                              line=dict(dash="dot", color="white", width=1))
 
     # -------------------------------------------------
     # Stochastic  (yaxis="y4")
     # -------------------------------------------------
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["stoch_k"],
-            name="%K",
-            line=dict(color="white", width=1.5),
-            showlegend=False,
-            yaxis="y4",
-        )
-    )
+    if show_stoch:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["stoch_k"], name="%K",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y4"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["stoch_d"], name="%D",
+                                 line=dict(color="red", width=1.5), showlegend=False, yaxis="y4"))
+        for lv, dash in [(80, "solid"), (50, "dot"), (20, "solid")]:
+            fig.add_shape(type="line", x0=0, x1=1, y0=lv, y1=lv, xref="paper", yref="y4",
+                          line=dict(dash=dash, color="gray", width=1))
 
-    fig.add_trace(
-        go.Scatter(
-            x=df_slice["x"],
-            y=df_slice["stoch_d"],
-            name="%D",
-            line=dict(color="red", width=1.5),
-            showlegend=False,
-            yaxis="y4",
-        )
-    )
+    # -------------------------------------------------
+    # ADX  (yaxis="y5")
+    # -------------------------------------------------
+    if show_adx:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["adx"], name="ADX",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y5"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["plus_di"], name="+DI",
+                                 line=dict(color="green", width=1), showlegend=False, yaxis="y5"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["minus_di"], name="-DI",
+                                 line=dict(color="red", width=1), showlegend=False, yaxis="y5"))
 
-    # Stochastic horizontal reference lines
-    fig.add_shape(type="line", x0=0, x1=1, y0=80, y1=80,
-                  xref="paper", yref="y4",
-                  line=dict(dash="solid", color="gray", width=1))
-    fig.add_shape(type="line", x0=0, x1=1, y0=50, y1=50,
-                  xref="paper", yref="y4",
-                  line=dict(dash="dot", color="gray", width=1))
-    fig.add_shape(type="line", x0=0, x1=1, y0=20, y1=20,
-                  xref="paper", yref="y4",
-                  line=dict(dash="solid", color="gray", width=1))
+    # -------------------------------------------------
+    # ATR  (yaxis="y6")
+    # -------------------------------------------------
+    if show_atr:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["atr"], name="ATR",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y6"))
+
+    # -------------------------------------------------
+    # MACD  (yaxis="y7")
+    # -------------------------------------------------
+    if show_macd:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["macd_line"], name="MACD",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y7"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["macd_signal"], name="Signal",
+                                 line=dict(color="red", width=1), showlegend=False, yaxis="y7"))
+        # Histogram as bar chart
+        fig.add_trace(go.Bar(x=df_slice["x"], y=df_slice["macd_hist"], name="Histogram",
+                             marker_color="lightblue", opacity=0.8, showlegend=False, yaxis="y7"))
+        fig.add_shape(type="line", x0=0, x1=1, y0=0, y1=0, xref="paper", yref="y7",
+                      line=dict(dash="solid", color="gray", width=1))
+
+    # -------------------------------------------------
+    # OBV  (yaxis="y8")
+    # -------------------------------------------------
+    if show_obv and "obv" in df_slice.columns and df_slice["obv"].notna().any():
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["obv"], name="OBV",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y8"))
+
+    # -------------------------------------------------
+    # Accumulation/Distribution  (yaxis="y9")
+    # -------------------------------------------------
+    if show_accdist and "acc_dist" in df_slice.columns and df_slice["acc_dist"].notna().any():
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["acc_dist"], name="Acc/Dist",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y9"))
 
     # -------------------------------------------------
     # Hover & Crosshair
     # -------------------------------------------------
-    # Price panel: no hover tooltip (just crosshair).
-    # Indicator panels: show name + value.
     for trace in fig.data:
         if getattr(trace, 'hoverinfo', None) == 'skip':
             trace.hovertemplate = None
@@ -528,27 +483,19 @@ def build_main_chart(
             trace.hoverinfo = "x+y+name"
             trace.hovertemplate = "<b>%{fullData.name}</b>: %{y:.2f}<extra></extra>"
 
-    # Y-axis spike options (horizontal crosshair per panel)
-    spike_y = dict(
-        showspikes=True,
-        spikemode="across+toaxis",
-        spikethickness=1,
-        spikedash="dot",
-        spikecolor="gray",
-        spikesnap="cursor",
-    )
-    # Price panel spike: no toaxis label (don't show price value at axis)
-    spike_y_no_label = dict(
-        showspikes=True,
-        spikemode="across",
-        spikethickness=1,
-        spikedash="dot",
-        spikecolor="gray",
-        spikesnap="cursor",
-    )
+    # Y-axis spike options
+    spike_y = dict(showspikes=True, spikemode="across+toaxis", spikethickness=1,
+                   spikedash="dot", spikecolor="gray", spikesnap="cursor")
+    spike_y_no_label = dict(showspikes=True, spikemode="across", spikethickness=1,
+                            spikedash="dot", spikecolor="gray", spikesnap="cursor")
+    grid_style = dict(gridcolor="rgba(255,255,255,0.08)", griddash="dash")
+
+    # Determine bottommost panel for x-axis anchor
+    bottom_panel = visible_panels[0] if visible_panels else None
+    bottom_yaxis = PANEL_YAXIS.get(bottom_panel, "y") if bottom_panel else "y"
 
     # -------------------------------------------------
-    # Layout — single x-axis, 4 y-axis domains
+    # Layout
     # -------------------------------------------------
     layout_kwargs = dict(
         height=chart_height,
@@ -559,54 +506,67 @@ def build_main_chart(
         spikedistance=-1,
         uirevision=chart_key or "constant",
         xaxis=dict(
-            anchor="y4",
+            anchor=bottom_yaxis,
             domain=[0, 1],
             type="category",
             tickmode="array",
             tickvals=tickvals,
             ticktext=ticktext,
-            showspikes=True,
-            spikemode="across+toaxis",
-            spikethickness=1,
-            spikedash="dot",
-            spikecolor="gray",
-            spikesnap="cursor",
-            gridcolor="rgba(255,255,255,0.08)",
-            griddash="dash",
+            showspikes=True, spikemode="across+toaxis", spikethickness=1,
+            spikedash="dot", spikecolor="gray", spikesnap="cursor",
+            **grid_style,
         ),
-        yaxis=dict(domain=price_domain, anchor="free", position=0,
-                   gridcolor="rgba(255,255,255,0.08)", griddash="dash",
-                   **spike_y_no_label),
-        yaxis2=dict(domain=rsi_domain, anchor="free", position=0,
-                    tickmode="array",
-                    tickvals=sorted([rsi_lower_2, rsi_lower_1, 50, rsi_upper_2, rsi_upper_1]),
-                    gridcolor="rgba(255,255,255,0.08)", griddash="dash",
-                    **spike_y),
-        yaxis3=dict(domain=cmb_domain, anchor="free", position=0,
-                    gridcolor="rgba(255,255,255,0.08)", griddash="dash",
-                    **spike_y),
-        yaxis4=dict(domain=stoch_domain, anchor="x",
-                    gridcolor="rgba(255,255,255,0.08)", griddash="dash",
-                    **spike_y),
-        annotations=[
-            dict(text="Price (High\u2013Low)", x=0.02, y=price_domain[1] + 0.005,
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=13, color="lightgray"),
-                 xanchor="left", yanchor="bottom"),
-            dict(text="RSI", x=0.02, y=rsi_domain[1] + 0.005,
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=13, color="lightgray"),
-                 xanchor="left", yanchor="bottom"),
-            dict(text="CMB Composite", x=0.02, y=cmb_domain[1] + 0.005,
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=13, color="lightgray"),
-                 xanchor="left", yanchor="bottom"),
-            dict(text="Stochastic", x=0.02, y=stoch_domain[1] + 0.005,
-                 xref="paper", yref="paper", showarrow=False,
-                 font=dict(size=13, color="lightgray"),
-                 xanchor="left", yanchor="bottom"),
-        ],
+        yaxis=dict(domain=price_domain,
+                   anchor="x" if not visible_panels else "free", position=0,
+                   **grid_style, **spike_y_no_label),
     )
+
+    # Add y-axes for each panel (visible or not, to keep axis numbering stable)
+    panel_configs = {
+        "rsi":     ("y2", show_rsi, dict(tickmode="array",
+                    tickvals=sorted([rsi_lower_2, rsi_lower_1, 50, rsi_upper_2, rsi_upper_1]))),
+        "cmb":     ("y3", show_cmb, {}),
+        "stoch":   ("y4", show_stoch, {}),
+        "adx":     ("y5", show_adx, {}),
+        "atr":     ("y6", show_atr, {}),
+        "macd":    ("y7", show_macd, {}),
+        "obv":     ("y8", show_obv, {}),
+        "accdist": ("y9", show_accdist, {}),
+    }
+
+    for panel_name, (yax_key, is_visible, extra) in panel_configs.items():
+        domain = domains.get(panel_name, [0, 0])
+        is_bottom = (bottom_panel == panel_name)
+        axis_dict = dict(
+            domain=domain,
+            anchor="x" if is_bottom else "free",
+            position=0,
+            **grid_style,
+            **(spike_y if is_visible else {}),
+            visible=is_visible,
+            **extra,
+        )
+        # yaxis2 -> layout key "yaxis2"
+        layout_kwargs[f"yaxis{yax_key[1:]}"] = axis_dict
+
+    # Annotations for visible panels
+    chart_annotations = [
+        dict(text="Price (High\u2013Low)", x=0.02, y=price_domain[1] + 0.005,
+             xref="paper", yref="paper", showarrow=False,
+             font=dict(size=13, color="lightgray"), xanchor="left", yanchor="bottom"),
+    ]
+    panel_labels = {
+        "rsi": "RSI", "cmb": "CMB Composite", "stoch": "Stochastic",
+        "adx": "ADX", "atr": "ATR", "macd": "MACD",
+        "obv": "OBV", "accdist": "Acc/Dist",
+    }
+    for panel_name in visible_panels:
+        domain = domains[panel_name]
+        chart_annotations.append(
+            dict(text=panel_labels.get(panel_name, panel_name), x=0.02, y=domain[1] + 0.005,
+                 xref="paper", yref="paper", showarrow=False,
+                 font=dict(size=13, color="lightgray"), xanchor="left", yanchor="bottom"))
+    layout_kwargs["annotations"] = chart_annotations
 
     if draw_mode:
         layout_kwargs["dragmode"] = "drawrect"
@@ -625,30 +585,16 @@ def build_main_chart(
         x_start = period_start.strftime("%d.%m.%Y_%H:%M")
         x_end = period_end.strftime("%d.%m.%Y_%H:%M")
 
-        fig.add_shape(
-            type="line",
-            x0=x_start, x1=x_start, y0=0, y1=1,
-            xref="x", yref="paper",
-            line=dict(dash="dash", color="white", width=2),
-        )
-
-        fig.add_shape(
-            type="line",
-            x0=x_end, x1=x_end, y0=0, y1=1,
-            xref="x", yref="paper",
-            line=dict(dash="dash", color="white", width=2),
-        )
+        fig.add_shape(type="line", x0=x_start, x1=x_start, y0=0, y1=1,
+                      xref="x", yref="paper", line=dict(dash="dash", color="white", width=2))
+        fig.add_shape(type="line", x0=x_end, x1=x_end, y0=0, y1=1,
+                      xref="x", yref="paper", line=dict(dash="dash", color="white", width=2))
 
     return fig
 
 
 def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
-    """Render a Plotly chart with shape and zoom persistence across reruns.
-
-    Uses ``st.components.v1.html`` so the chart lives inside an iframe where
-    we can attach Plotly JS event listeners.  Drawn shapes (rects) and axis
-    ranges are stored on ``window.parent`` which survives Streamlit reruns.
-    """
+    """Render a Plotly chart with shape and zoom persistence across reruns."""
 
     chart_html = fig.to_html(
         full_html=False,
@@ -657,6 +603,24 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
     )
 
     safe_key = (chart_key or "default").replace("'", "\\'")
+
+    # Build axis persistence for all y-axes (y through y9)
+    axis_keys = ["yR"] + [f"y{i}R" for i in range(2, 10)]
+    axis_names = ["yaxis"] + [f"yaxis{i}" for i in range(2, 10)]
+
+    save_lines = []
+    restore_lines = []
+    autorange_lines = []
+    for ak, an in zip(axis_keys, axis_names):
+        restore_lines.append(f"if (saved.{ak}) upd['{an}.range'] = saved.{ak};")
+        save_lines.append(
+            f"if (ed['{an}.range[0]'] !== undefined) s.{ak} = [ed['{an}.range[0]'], ed['{an}.range[1]']];"
+        )
+        autorange_lines.append(f"if (ed['{an}.autorange']) delete s.{ak};")
+
+    restore_js = "\n                ".join(restore_lines)
+    save_js = "\n                ".join(save_lines)
+    autorange_js = "\n                ".join(autorange_lines)
 
     persistence_js = f"""
     <script>
@@ -676,11 +640,8 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
                 var upd = {{}};
                 if (saved.shapes && saved.shapes.length)
                     upd.shapes = baseShapes.concat(saved.shapes);
-                if (saved.xR)  upd['xaxis.range']   = saved.xR;
-                if (saved.yR)  upd['yaxis.range']    = saved.yR;
-                if (saved.y2R) upd['yaxis2.range']   = saved.y2R;
-                if (saved.y3R) upd['yaxis3.range']   = saved.y3R;
-                if (saved.y4R) upd['yaxis4.range']   = saved.y4R;
+                if (saved.xR) upd['xaxis.range'] = saved.xR;
+                {restore_js}
                 if (Object.keys(upd).length) Plotly.relayout(pd, upd);
             }}
 
@@ -694,19 +655,26 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
                         s.shapes.push(JSON.parse(JSON.stringify(all[i])));
                 }}
 
-                if (ed['xaxis.range[0]']  !== undefined) s.xR  = [ed['xaxis.range[0]'],  ed['xaxis.range[1]']];
-                if (ed['yaxis.range[0]']  !== undefined) s.yR  = [ed['yaxis.range[0]'],  ed['yaxis.range[1]']];
-                if (ed['yaxis2.range[0]'] !== undefined) s.y2R = [ed['yaxis2.range[0]'], ed['yaxis2.range[1]']];
-                if (ed['yaxis3.range[0]'] !== undefined) s.y3R = [ed['yaxis3.range[0]'], ed['yaxis3.range[1]']];
-                if (ed['yaxis4.range[0]'] !== undefined) s.y4R = [ed['yaxis4.range[0]'], ed['yaxis4.range[1]']];
+                if (ed['xaxis.range[0]'] !== undefined) s.xR = [ed['xaxis.range[0]'], ed['xaxis.range[1]']];
+                {save_js}
 
-                if (ed['xaxis.autorange'])  delete s.xR;
-                if (ed['yaxis.autorange'])  delete s.yR;
-                if (ed['yaxis2.autorange']) delete s.y2R;
-                if (ed['yaxis3.autorange']) delete s.y3R;
-                if (ed['yaxis4.autorange']) delete s.y4R;
+                if (ed['xaxis.autorange']) delete s.xR;
+                {autorange_js}
 
                 P.__plotlyPersist[KEY] = s;
+            }});
+
+            // Delete/Backspace removes the currently selected shape
+            document.addEventListener('keydown', function(e) {{
+                if (e.key === 'Delete' || e.key === 'Backspace') {{
+                    var idx = pd._fullLayout._activeShapeIndex;
+                    if (idx >= 0 && idx !== undefined) {{
+                        var shapes = JSON.parse(JSON.stringify(pd.layout.shapes || []));
+                        shapes.splice(idx, 1);
+                        Plotly.relayout(pd, {{shapes: shapes}});
+                        e.preventDefault();
+                    }}
+                }}
             }});
         }}
         setup();
@@ -743,35 +711,41 @@ def render_charts(
     chart_key=None,
     draw_mode=False,
     chart_height=920,
+    show_rsi=True,
+    show_cmb=True,
+    show_stoch=True,
+    show_adx=False,
+    show_atr=False,
+    show_macd=False,
+    show_obv=False,
+    show_accdist=False,
+    show_supertrend=False,
+    show_ema=False,
+    ema_periods=None,
 ):
-    """
-    Renders charts. Side by side when 1H+15m, full width when 15m only.
-    """
+    """Renders charts."""
     rsi_zones_1h = rsi_zones_1h or {}
     rsi_zones_15m = rsi_zones_15m or {}
 
-    # Plotly config: always enable scroll zoom for y-axis stretching
+    panel_kwargs = dict(
+        show_rsi=show_rsi, show_cmb=show_cmb, show_stoch=show_stoch,
+        show_adx=show_adx, show_atr=show_atr, show_macd=show_macd,
+        show_obv=show_obv, show_accdist=show_accdist,
+        show_supertrend=show_supertrend, show_ema=show_ema,
+    )
+
     config = {"scrollZoom": True}
     if draw_mode:
-        config["modeBarButtonsToAdd"] = [
-            "drawrect",
-            "eraseshape",
-        ]
+        config["modeBarButtonsToAdd"] = ["drawrect", "eraseshape"]
 
     if show_1h:
         st.subheader("1H Chart")
         fig_1h = build_main_chart(
-            df_slice=df_slice_1h,
-            period_start=start_1h,
-            period_end=end_1h,
-            show_ichimoku=show_ichimoku,
-            show_bb=show_bb,
-            show_kc=show_kc,
-            show_strategy=show_strategy,
-            draw_mode=draw_mode,
-            chart_height=chart_height,
-            chart_key=chart_key,
-            **(rsi_zones_1h or {}),
+            df_slice=df_slice_1h, period_start=start_1h, period_end=end_1h,
+            show_ichimoku=show_ichimoku, show_bb=show_bb, show_kc=show_kc,
+            show_strategy=show_strategy, draw_mode=draw_mode,
+            chart_height=chart_height, chart_key=chart_key,
+            **panel_kwargs, **(rsi_zones_1h or {}),
         )
         _render_persistent_chart(fig_1h, config,
                                  f"1h_{chart_key}" if chart_key else "1h",
@@ -779,17 +753,11 @@ def render_charts(
     else:
         st.subheader("15m Chart")
         fig_15m = build_main_chart(
-            df_slice=df_slice_15m,
-            period_start=start_15m,
-            period_end=end_15m,
-            show_ichimoku=show_ichimoku,
-            show_bb=show_bb,
-            show_kc=show_kc,
-            show_strategy=show_strategy,
-            draw_mode=draw_mode,
-            chart_height=chart_height,
-            chart_key=chart_key,
-            **(rsi_zones_15m or {}),
+            df_slice=df_slice_15m, period_start=start_15m, period_end=end_15m,
+            show_ichimoku=show_ichimoku, show_bb=show_bb, show_kc=show_kc,
+            show_strategy=show_strategy, draw_mode=draw_mode,
+            chart_height=chart_height, chart_key=chart_key,
+            **panel_kwargs, **(rsi_zones_15m or {}),
         )
         _render_persistent_chart(fig_15m, config,
                                  f"15m_{chart_key}" if chart_key else "15m",

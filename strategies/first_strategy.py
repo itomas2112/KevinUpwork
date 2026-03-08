@@ -2,7 +2,7 @@
 
 import pandas as pd
 import numpy as np
-from config.constants import INDICATOR_MAP
+from config.constants import get_indicator_map
 
 # Chikou Span is displaced 26 periods back on the chart.
 # When used in strategy conditions/triggers, both elements must be
@@ -160,7 +160,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     # Use global indicator mapping
     # -------------------------------------------------
-    indicator_map = INDICATOR_MAP
+    # Count EMA columns in the DataFrame to build the full indicator map
+    ema_count = 0
+    while f"ema_{ema_count}" in df.columns:
+        ema_count += 1
+    indicator_map = get_indicator_map(ema_count)
 
     # -------------------------------------------------
     # Helper function to check if condition is met

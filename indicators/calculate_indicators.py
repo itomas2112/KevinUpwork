@@ -6,6 +6,13 @@ from indicators.ichimoku import ichimoku
 from indicators.bollinger import bollinger_bands
 from indicators.keltner import keltner_channel
 from indicators.stochastic import stochastic
+from indicators.adx import adx
+from indicators.atr_indicator import atr_indicator
+from indicators.macd import macd
+from indicators.obv import obv
+from indicators.accumulation_distribution import accumulation_distribution
+from indicators.supertrend import supertrend
+from indicators.ema_overlay import ema_overlay
 
 
 def migrate_indicator_settings(settings):
@@ -60,12 +67,20 @@ def calculate_indicators(
     stoch_k_period: int = 14,
     stoch_k_smooth: int = 3,
     stoch_d_smooth: int = 3,
+    adx_period: int = 14,
+    atr_period: int = 14,
+    macd_fast: int = 12,
+    macd_slow: int = 26,
+    macd_signal: int = 9,
+    supertrend_period: int = 7,
+    supertrend_multiplier: float = 3.0,
+    ema_periods: list = None,
 ) -> pd.DataFrame:
     """
-    Calculate all indicators on full data, then slice and clean.
+    Calculate all indicators on full data.
 
     Returns:
-        all features created
+        DataFrame with all features created
     """
 
     df = df.copy()
@@ -148,6 +163,58 @@ def calculate_indicators(
         d_smooth=stoch_d_smooth,
     )
 
+    # -------------------------------------------------
+    # ADX
+    # -------------------------------------------------
+    (
+        df["adx"],
+        df["plus_di"],
+        df["minus_di"],
+    ) = adx(df["high"], df["low"], df["latest"], period=adx_period)
+
+    # -------------------------------------------------
+    # ATR
+    # -------------------------------------------------
+    df["atr"] = atr_indicator(df["high"], df["low"], df["latest"], period=atr_period)
+
+    # -------------------------------------------------
+    # MACD
+    # -------------------------------------------------
+    (
+        df["macd_line"],
+        df["macd_signal"],
+        df["macd_hist"],
+    ) = macd(df["latest"], fast_period=macd_fast, slow_period=macd_slow, signal_period=macd_signal)
+
+    # -------------------------------------------------
+    # OBV & Accumulation/Distribution (require volume)
+    # -------------------------------------------------
+    has_volume = "volume" in df.columns and df["volume"].notna().any()
+    if has_volume:
+        df["obv"] = obv(df["latest"], df["volume"])
+        df["acc_dist"] = accumulation_distribution(df["high"], df["low"], df["latest"], df["volume"])
+    else:
+        df["obv"] = float('nan')
+        df["acc_dist"] = float('nan')
+
+    # -------------------------------------------------
+    # Supertrend
+    # -------------------------------------------------
+    (
+        df["supertrend"],
+        df["supertrend_dir"],
+    ) = supertrend(df["high"], df["low"], df["latest"],
+                   period=supertrend_period, multiplier=supertrend_multiplier)
+
+    # -------------------------------------------------
+    # EMA Overlay
+    # -------------------------------------------------
+    if ema_periods:
+        for i, (period, ema_series) in enumerate(ema_overlay(df["latest"], ema_periods)):
+            df[f"ema_{i}"] = ema_series
+    else:
+        ema_periods = []
+
     return df
 
 def slice_for_graph(
@@ -192,7 +259,8 @@ def slice_for_graph(
     # Drop NaNs only on required cols
     # -------------------------------------------------
     required_cols = ["latest", "rsi", "rsi_13", "rsi_33", "ci", "ci_13", "ci_33",
-                     "stoch_k", "stoch_d"]
+                     "stoch_k", "stoch_d", "adx", "plus_di", "minus_di",
+                     "atr", "macd_line", "macd_signal", "macd_hist"]
 
     if show_ichimoku:
         required_cols += ["tenkan", "kijun", "senkou_a", "senkou_b",

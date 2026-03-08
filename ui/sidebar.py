@@ -14,6 +14,10 @@ CHARTING_MODES = [
     "Secondary Across Primaries",
 ]
 
+# Default EMA colors (cycle through for multiple EMAs)
+EMA_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+              "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9"]
+
 
 def render_sidebar():
     """Render the complete sidebar with all controls"""
@@ -118,11 +122,24 @@ def render_sidebar():
             })
             st.rerun()
 
-    # Indicators
-    with st.sidebar.expander("Indicators"):
+    # Price Overlays
+    with st.sidebar.expander("Price Overlays"):
         show_ichimoku = st.checkbox("Show Ichimoku Cloud", value=False)
         show_bb = st.checkbox("Show Bollinger Bands", value=False)
         show_kc = st.checkbox("Show Keltner Channel", value=False)
+        show_supertrend = st.checkbox("Show Supertrend", value=False)
+        show_ema = st.checkbox("Show EMA Overlay", value=False)
+
+    # Oscillator Panel Toggles
+    with st.sidebar.expander("Oscillator Panels", expanded=True):
+        show_rsi = st.checkbox("Show RSI Panel", value=True, key="show_rsi_panel")
+        show_cmb = st.checkbox("Show CMB Panel", value=True, key="show_cmb_panel")
+        show_stoch = st.checkbox("Show Stochastic Panel", value=True, key="show_stoch_panel")
+        show_adx = st.checkbox("Show ADX Panel", value=False, key="show_adx_panel")
+        show_atr = st.checkbox("Show ATR Panel", value=False, key="show_atr_panel")
+        show_macd = st.checkbox("Show MACD Panel", value=False, key="show_macd_panel")
+        show_obv = st.checkbox("Show OBV Panel", value=False, key="show_obv_panel")
+        show_accdist = st.checkbox("Show Acc/Dist Panel", value=False, key="show_accdist_panel")
 
     # Chart Tools
     draw_mode = st.sidebar.checkbox("Shade Sections on Price Chart", value=False, key="draw_mode")
@@ -215,9 +232,19 @@ def render_sidebar():
                     "stoch_k_period": f"stoch_kp_{key_prefix}",
                     "stoch_k_smooth": f"stoch_ks_{key_prefix}",
                     "stoch_d_smooth": f"stoch_ds_{key_prefix}",
+                    "adx_period": f"adx_p_{key_prefix}",
+                    "atr_period": f"atr_p_{key_prefix}",
+                    "macd_fast": f"macd_fast_{key_prefix}",
+                    "macd_slow": f"macd_slow_{key_prefix}",
+                    "macd_signal": f"macd_sig_{key_prefix}",
+                    "supertrend_period": f"st_p_{key_prefix}",
+                    "supertrend_multiplier": f"st_m_{key_prefix}",
                 }.items():
                     if param in saved_settings:
                         st.session_state[wk] = saved_settings[param]
+                # EMA periods override
+                if 'ema_periods' in saved_settings:
+                    st.session_state[f'ema_periods_{key_prefix}'] = saved_settings['ema_periods']
 
     # Indicator Parameters
     show_1h = analysis_mode == "1H"
@@ -230,6 +257,16 @@ def render_sidebar():
         'show_ichimoku': show_ichimoku,
         'show_bb': show_bb,
         'show_kc': show_kc,
+        'show_supertrend': show_supertrend,
+        'show_ema': show_ema,
+        'show_rsi': show_rsi,
+        'show_cmb': show_cmb,
+        'show_stoch': show_stoch,
+        'show_adx': show_adx,
+        'show_atr': show_atr,
+        'show_macd': show_macd,
+        'show_obv': show_obv,
+        'show_accdist': show_accdist,
         'show_tenkan_kijun': show_tenkan_kijun,
         'draw_mode': draw_mode,
         'chart_height': chart_height,
@@ -320,6 +357,82 @@ def render_timeframe_parameters(timeframe, disabled=False):
             key=f"stoch_ds_{key_prefix}",
             disabled=disabled,
         )
+
+    with st.sidebar.expander("ADX"):
+        params['adx_period'] = st.number_input(
+            "ADX Period", 5, 100, 14, step=1,
+            key=f"adx_p_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("ATR"):
+        params['atr_period'] = st.number_input(
+            "ATR Period", 5, 100, 14, step=1,
+            key=f"atr_p_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("MACD"):
+        params['macd_fast'] = st.number_input(
+            "Fast Period", 2, 100, 12, step=1,
+            key=f"macd_fast_{key_prefix}",
+            disabled=disabled,
+        )
+        params['macd_slow'] = st.number_input(
+            "Slow Period", 2, 200, 26, step=1,
+            key=f"macd_slow_{key_prefix}",
+            disabled=disabled,
+        )
+        params['macd_signal'] = st.number_input(
+            "Signal Period", 2, 100, 9, step=1,
+            key=f"macd_sig_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("Supertrend"):
+        params['supertrend_period'] = st.number_input(
+            "Period", 1, 100, 7, step=1,
+            key=f"st_p_{key_prefix}",
+            disabled=disabled,
+        )
+        params['supertrend_multiplier'] = st.number_input(
+            "Multiplier", 0.5, 10.0, 3.0, step=0.1,
+            key=f"st_m_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("EMA Overlay"):
+        # Dynamic EMA periods: add/remove like CMB lines
+        ema_state_key = f"ema_periods_{key_prefix}"
+        if ema_state_key not in st.session_state:
+            st.session_state[ema_state_key] = []
+
+        emas_to_remove = []
+        for idx, ema_val in enumerate(st.session_state[ema_state_key]):
+            color = EMA_COLORS[idx % len(EMA_COLORS)]
+            line_col, remove_col = st.columns([3, 1])
+            with line_col:
+                new_val = st.number_input(
+                    f"EMA {idx + 1} Period", 2, 500, int(ema_val), step=1,
+                    key=f"ema_p_{key_prefix}_{idx}",
+                    disabled=disabled,
+                )
+                st.session_state[ema_state_key][idx] = new_val
+            with remove_col:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("X", key=f"ema_rm_{key_prefix}_{idx}"):
+                    emas_to_remove.append(idx)
+
+        if emas_to_remove:
+            for idx in sorted(emas_to_remove, reverse=True):
+                st.session_state[ema_state_key].pop(idx)
+            st.rerun()
+
+        if st.button("+ Add EMA", key=f"ema_add_{key_prefix}"):
+            st.session_state[ema_state_key].append(20)
+            st.rerun()
+
+        params['ema_periods'] = list(st.session_state[ema_state_key])
 
     with st.sidebar.expander("Ichimoku"):
         params['ichi_show_tenkan'] = st.checkbox(

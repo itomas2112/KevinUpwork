@@ -63,6 +63,14 @@ def save_strategy_to_session(strategy_name):
         "stoch_k_period": st.session_state.get(f"stoch_kp_{key_prefix}", 14),
         "stoch_k_smooth": st.session_state.get(f"stoch_ks_{key_prefix}", 3),
         "stoch_d_smooth": st.session_state.get(f"stoch_ds_{key_prefix}", 3),
+        "adx_period": st.session_state.get(f"adx_p_{key_prefix}", 14),
+        "atr_period": st.session_state.get(f"atr_p_{key_prefix}", 14),
+        "macd_fast": st.session_state.get(f"macd_fast_{key_prefix}", 12),
+        "macd_slow": st.session_state.get(f"macd_slow_{key_prefix}", 26),
+        "macd_signal": st.session_state.get(f"macd_sig_{key_prefix}", 9),
+        "supertrend_period": st.session_state.get(f"st_p_{key_prefix}", 7),
+        "supertrend_multiplier": st.session_state.get(f"st_m_{key_prefix}", 3.0),
+        "ema_periods": list(st.session_state.get(f"ema_periods_{key_prefix}", [])),
     }
 
     # Collect entry conditions
