@@ -2,9 +2,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as _components
 
-# EMA colors matching sidebar.py
-EMA_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
-              "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9"]
+# Fixed EMA colors: shortest period = red, 2nd = cyan, 2nd longest = yellow, longest = green
+EMA_FIXED_COLORS = ["red", "cyan", "yellow", "green"]
 
 # Panel name → yaxis suffix mapping (y=price, y2..y9=oscillators)
 PANEL_YAXIS = {
@@ -355,10 +354,43 @@ def build_main_chart(
     # EMA Overlay  (yaxis="y" — Price panel)
     # -------------------------------------------------
     if show_ema and ema_periods:
+        # Sort EMAs by period to assign colors: shortest=red, 2nd=lightblue, 2nd longest=yellow, longest=green
+        indexed_periods = [(i, period) for i, period in enumerate(ema_periods)]
+        sorted_by_period = sorted(indexed_periods, key=lambda x: x[1])
+        n_emas = len(sorted_by_period)
+
+        # Assign colors based on sorted position
+        def _ema_color(sorted_pos, total):
+            if total == 1:
+                return "red"
+            elif total == 2:
+                return ["red", "green"][sorted_pos]
+            elif total == 3:
+                return ["red", "cyan", "green"][sorted_pos]
+            elif total == 4:
+                return EMA_FIXED_COLORS[sorted_pos]
+            else:
+                # For 5+: red for shortest, green for longest, distribute middle colors
+                if sorted_pos == 0:
+                    return "red"
+                elif sorted_pos == total - 1:
+                    return "green"
+                elif sorted_pos == 1:
+                    return "cyan"
+                elif sorted_pos == total - 2:
+                    return "yellow"
+                else:
+                    return "white"
+
+        # Build color map: original index -> color
+        color_map = {}
+        for sorted_pos, (orig_idx, _) in enumerate(sorted_by_period):
+            color_map[orig_idx] = _ema_color(sorted_pos, n_emas)
+
         for i, period in enumerate(ema_periods):
             col = f"ema_{i}"
             if col in df_slice.columns:
-                color = EMA_COLORS[i % len(EMA_COLORS)]
+                color = color_map.get(i, "white")
                 fig.add_trace(go.Scatter(
                     x=df_slice["x"], y=df_slice[col],
                     name=f"EMA({int(period)})",
@@ -612,7 +644,7 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
     restore_lines = []
     autorange_lines = []
     for ak, an in zip(axis_keys, axis_names):
-        restore_lines.append(f"if (saved.{ak}) upd['{an}.range'] = saved.{ak};")
+        restore_lines.append(f"if (saved.{ak}) {{ upd['{an}.range'] = saved.{ak}; upd['{an}.autorange'] = false; }}")
         save_lines.append(
             f"if (ed['{an}.range[0]'] !== undefined) s.{ak} = [ed['{an}.range[0]'], ed['{an}.range[1]']];"
         )
@@ -640,7 +672,10 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
                 var upd = {{}};
                 if (saved.shapes && saved.shapes.length)
                     upd.shapes = baseShapes.concat(saved.shapes);
-                if (saved.xR) upd['xaxis.range'] = saved.xR;
+                if (saved.xR) {{
+                    upd['xaxis.range'] = saved.xR;
+                    upd['xaxis.autorange'] = false;
+                }}
                 {restore_js}
                 if (Object.keys(upd).length) Plotly.relayout(pd, upd);
             }}
@@ -651,7 +686,8 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
                 var all = pd.layout.shapes || [];
                 s.shapes = [];
                 for (var i = 0; i < all.length; i++) {{
-                    if (all[i].type === 'rect')
+                    // Only persist user-drawn shading rectangles (not RSI/indicator zone bands)
+                    if (all[i].type === 'rect' && all[i].fillcolor && all[i].fillcolor.indexOf('255, 255, 255') !== -1)
                         s.shapes.push(JSON.parse(JSON.stringify(all[i])));
                 }}
 

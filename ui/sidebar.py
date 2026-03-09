@@ -6,17 +6,12 @@ from data.helpers import (
     PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
     expand_selection,
 )
-from indicators.calculate_indicators import migrate_indicator_settings
 
 CHARTING_MODES = [
     "Specified Primary",
     "Specified Secondary",
     "Secondary Across Primaries",
 ]
-
-# Default EMA colors (cycle through for multiple EMAs)
-EMA_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
-              "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9"]
 
 
 def render_sidebar():
@@ -206,47 +201,17 @@ def render_sidebar():
                         st.session_state['selected_custom_strategy_actual_idx'] = None
                     st.rerun()
 
-    # Detect active strategy and override indicator widget values
+    # Detect if a strategy is actively selected (for disabling sidebar indicator settings)
     strategy_active = False
     if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
         actual_idx = st.session_state.get('selected_custom_strategy_actual_idx')
         if actual_idx is not None and actual_idx < len(st.session_state['saved_strategies']):
             saved_settings = st.session_state['saved_strategies'][actual_idx].get('indicator_settings')
             if saved_settings:
-                saved_settings = migrate_indicator_settings(saved_settings)
                 strategy_active = True
-                key_prefix = analysis_mode.lower().replace('h', '_h').replace('m', '_m')
-                for param, wk in {
-                    "rsi_window": f"rsi_{key_prefix}",
-                    "bb_upper_period": f"bb_up_p_{key_prefix}",
-                    "bb_upper_stdev": f"bb_up_s_{key_prefix}",
-                    "bb_mid_period": f"bb_mid_p_{key_prefix}",
-                    "bb_lower_period": f"bb_lo_p_{key_prefix}",
-                    "bb_lower_stdev": f"bb_lo_s_{key_prefix}",
-                    "kc_upper_ema": f"kc_up_ema_{key_prefix}",
-                    "kc_upper_mult": f"kc_up_mult_{key_prefix}",
-                    "kc_mid_ema": f"kc_mid_ema_{key_prefix}",
-                    "kc_lower_ema": f"kc_lo_ema_{key_prefix}",
-                    "kc_lower_mult": f"kc_lo_mult_{key_prefix}",
-                    "kc_atr_period": f"kc_atr_{key_prefix}",
-                    "stoch_k_period": f"stoch_kp_{key_prefix}",
-                    "stoch_k_smooth": f"stoch_ks_{key_prefix}",
-                    "stoch_d_smooth": f"stoch_ds_{key_prefix}",
-                    "adx_period": f"adx_p_{key_prefix}",
-                    "atr_period": f"atr_p_{key_prefix}",
-                    "macd_fast": f"macd_fast_{key_prefix}",
-                    "macd_slow": f"macd_slow_{key_prefix}",
-                    "macd_signal": f"macd_sig_{key_prefix}",
-                    "supertrend_period": f"st_p_{key_prefix}",
-                    "supertrend_multiplier": f"st_m_{key_prefix}",
-                }.items():
-                    if param in saved_settings:
-                        st.session_state[wk] = saved_settings[param]
-                # EMA periods override
-                if 'ema_periods' in saved_settings:
-                    st.session_state[f'ema_periods_{key_prefix}'] = saved_settings['ema_periods']
 
     # Indicator Parameters
+    # In strategy mode, sidebar settings are disabled — strategy's saved settings are used
     show_1h = analysis_mode == "1H"
     params_1h = render_timeframe_parameters("1H", disabled=strategy_active) if show_1h else None
     params_15m = render_timeframe_parameters("15m", disabled=strategy_active) if not show_1h else None
@@ -276,9 +241,11 @@ def render_sidebar():
 
 def render_timeframe_parameters(timeframe, disabled=False):
     """Render indicator parameters for a specific timeframe"""
-    st.sidebar.header("Indicator Settings")
     if disabled:
-        st.sidebar.caption("*Indicator settings locked by active strategy*")
+        st.sidebar.header("Indicator Settings (Strategy Mode)")
+        st.sidebar.caption("*Using indicator settings saved with the strategy. These controls are locked. Switch to viewing mode (deselect strategy) to change.*")
+    else:
+        st.sidebar.header("Indicator Settings (Viewing Mode)")
 
     key_prefix = timeframe.lower().replace('h', '_h').replace('m', '_m')
 
@@ -409,7 +376,6 @@ def render_timeframe_parameters(timeframe, disabled=False):
 
         emas_to_remove = []
         for idx, ema_val in enumerate(st.session_state[ema_state_key]):
-            color = EMA_COLORS[idx % len(EMA_COLORS)]
             line_col, remove_col = st.columns([3, 1])
             with line_col:
                 new_val = st.number_input(

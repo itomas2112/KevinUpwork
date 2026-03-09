@@ -11,22 +11,22 @@ from config.constants import (
     STOCH_GROUP,
     ADX_GROUP,
     MACD_GROUP,
+    ATR_VOLUME_GROUP,
     EVENT_TYPES,
     CONDITION_OPERATORS,
     CONDITION_COMPARE_TYPES,
     EXIT_TYPES,
     STOP_EVENT_TYPES,
     GROUP_NAMES,
+    GROUP_MAP,
     get_group_elements,
 )
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
 
 
 def _ema_count():
-    """Get the current number of EMA overlays configured."""
-    analysis_mode = st.session_state.get('analysis_mode', '15m')
-    key_prefix = analysis_mode.lower().replace('h', '_h').replace('m', '_m')
-    return len(st.session_state.get(f'ema_periods_{key_prefix}', []))
+    """Get the current number of EMA overlays configured in strategy builder."""
+    return len(st.session_state.get('sb_ema_periods', []))
 
 
 def render_strategy_builder_tab():
@@ -110,6 +110,26 @@ def _apply_pending_edit():
         initial = st.session_state['initial_stop']
         st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
         st.session_state['initial_stop_element2'] = initial.get('element2')
+
+    # Load indicator settings into strategy builder's own keys (sb_ prefix)
+    ind_settings = strategy.get('indicator_settings', {})
+    if ind_settings:
+        from indicators.calculate_indicators import migrate_indicator_settings
+        ind_settings = migrate_indicator_settings(ind_settings)
+        pfx = "sb_"
+        setting_keys = [
+            'rsi_window', 'bb_upper_period', 'bb_upper_stdev', 'bb_mid_period',
+            'bb_lower_period', 'bb_lower_stdev', 'kc_upper_ema', 'kc_upper_mult',
+            'kc_mid_ema', 'kc_lower_ema', 'kc_lower_mult', 'kc_atr_period',
+            'stoch_k_period', 'stoch_k_smooth', 'stoch_d_smooth', 'adx_period',
+            'atr_period', 'macd_fast', 'macd_slow', 'macd_signal',
+            'supertrend_period', 'supertrend_multiplier',
+        ]
+        for key in setting_keys:
+            if key in ind_settings:
+                st.session_state[f'{pfx}{key}'] = ind_settings[key]
+        if 'ema_periods' in ind_settings:
+            st.session_state[f'{pfx}ema_periods'] = list(ind_settings['ema_periods'])
 
     # Load exit groups
     saved_groups = strategy.get('exit_groups', [])
@@ -204,6 +224,10 @@ def render_strategy_form():
 
     st.divider()
 
+    # Indicator Settings (strategy-specific, independent from charting sidebar)
+    render_strategy_indicator_settings()
+    st.divider()
+
     # Entry box (includes Static Stop)
     render_entry_box()
     st.divider()
@@ -214,6 +238,174 @@ def render_strategy_form():
 
     # Validation and Save button
     render_save_button(strategy_name_input)
+
+
+def render_strategy_indicator_settings():
+    """Render indicator settings that are saved with the strategy (independent from sidebar)."""
+    st.subheader("Indicator Settings")
+    st.caption("These settings are saved with the strategy and used during backtesting. They are independent from the charting sidebar settings.")
+
+    pfx = "sb_"  # strategy builder prefix to avoid collision with sidebar widget keys
+
+    with st.expander("RSI", expanded=False):
+        st.session_state[f'{pfx}rsi_window'] = st.number_input(
+            "RSI Period", 5, 50,
+            value=int(st.session_state.get(f'{pfx}rsi_window', 14)),
+            step=1, key=f"{pfx}rsi_w"
+        )
+
+    with st.expander("Bollinger Bands", expanded=False):
+        st.caption("**Upper Band**")
+        st.session_state[f'{pfx}bb_upper_period'] = st.number_input(
+            "Upper Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}bb_upper_period', 20)),
+            step=1, key=f"{pfx}bb_up_p"
+        )
+        st.session_state[f'{pfx}bb_upper_stdev'] = st.number_input(
+            "Upper StdDev", 0.5, 5.0,
+            value=float(st.session_state.get(f'{pfx}bb_upper_stdev', 2.0)),
+            step=0.1, key=f"{pfx}bb_up_s"
+        )
+        st.caption("**Middle Band**")
+        st.session_state[f'{pfx}bb_mid_period'] = st.number_input(
+            "Middle Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}bb_mid_period', 20)),
+            step=1, key=f"{pfx}bb_mid_p"
+        )
+        st.caption("**Lower Band**")
+        st.session_state[f'{pfx}bb_lower_period'] = st.number_input(
+            "Lower Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}bb_lower_period', 20)),
+            step=1, key=f"{pfx}bb_lo_p"
+        )
+        st.session_state[f'{pfx}bb_lower_stdev'] = st.number_input(
+            "Lower StdDev", 0.5, 5.0,
+            value=float(st.session_state.get(f'{pfx}bb_lower_stdev', 2.0)),
+            step=0.1, key=f"{pfx}bb_lo_s"
+        )
+
+    with st.expander("Keltner Channel", expanded=False):
+        st.session_state[f'{pfx}kc_atr_period'] = st.number_input(
+            "ATR Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}kc_atr_period', 10)),
+            step=1, key=f"{pfx}kc_atr"
+        )
+        st.caption("**Upper Band**")
+        st.session_state[f'{pfx}kc_upper_ema'] = st.number_input(
+            "Upper EMA Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}kc_upper_ema', 20)),
+            step=1, key=f"{pfx}kc_up_ema"
+        )
+        st.session_state[f'{pfx}kc_upper_mult'] = st.number_input(
+            "Upper ATR Mult", 0.5, 5.0,
+            value=float(st.session_state.get(f'{pfx}kc_upper_mult', 2.0)),
+            step=0.1, key=f"{pfx}kc_up_m"
+        )
+        st.caption("**Middle Band**")
+        st.session_state[f'{pfx}kc_mid_ema'] = st.number_input(
+            "Middle EMA Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}kc_mid_ema', 20)),
+            step=1, key=f"{pfx}kc_mid_e"
+        )
+        st.caption("**Lower Band**")
+        st.session_state[f'{pfx}kc_lower_ema'] = st.number_input(
+            "Lower EMA Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}kc_lower_ema', 20)),
+            step=1, key=f"{pfx}kc_lo_ema"
+        )
+        st.session_state[f'{pfx}kc_lower_mult'] = st.number_input(
+            "Lower ATR Mult", 0.5, 5.0,
+            value=float(st.session_state.get(f'{pfx}kc_lower_mult', 2.0)),
+            step=0.1, key=f"{pfx}kc_lo_m"
+        )
+
+    with st.expander("Stochastic", expanded=False):
+        st.session_state[f'{pfx}stoch_k_period'] = st.number_input(
+            "%K Period", 1, 100,
+            value=int(st.session_state.get(f'{pfx}stoch_k_period', 14)),
+            step=1, key=f"{pfx}stoch_kp"
+        )
+        st.session_state[f'{pfx}stoch_k_smooth'] = st.number_input(
+            "%K Smoothing", 1, 50,
+            value=int(st.session_state.get(f'{pfx}stoch_k_smooth', 3)),
+            step=1, key=f"{pfx}stoch_ks"
+        )
+        st.session_state[f'{pfx}stoch_d_smooth'] = st.number_input(
+            "%D Smoothing", 1, 50,
+            value=int(st.session_state.get(f'{pfx}stoch_d_smooth', 3)),
+            step=1, key=f"{pfx}stoch_ds"
+        )
+
+    with st.expander("ADX", expanded=False):
+        st.session_state[f'{pfx}adx_period'] = st.number_input(
+            "ADX Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}adx_period', 14)),
+            step=1, key=f"{pfx}adx_p"
+        )
+
+    with st.expander("ATR", expanded=False):
+        st.session_state[f'{pfx}atr_period'] = st.number_input(
+            "ATR Period", 5, 100,
+            value=int(st.session_state.get(f'{pfx}atr_period', 14)),
+            step=1, key=f"{pfx}atr_p"
+        )
+
+    with st.expander("MACD", expanded=False):
+        st.session_state[f'{pfx}macd_fast'] = st.number_input(
+            "Fast Period", 2, 100,
+            value=int(st.session_state.get(f'{pfx}macd_fast', 12)),
+            step=1, key=f"{pfx}macd_f"
+        )
+        st.session_state[f'{pfx}macd_slow'] = st.number_input(
+            "Slow Period", 2, 200,
+            value=int(st.session_state.get(f'{pfx}macd_slow', 26)),
+            step=1, key=f"{pfx}macd_sl"
+        )
+        st.session_state[f'{pfx}macd_signal'] = st.number_input(
+            "Signal Period", 2, 100,
+            value=int(st.session_state.get(f'{pfx}macd_signal', 9)),
+            step=1, key=f"{pfx}macd_sg"
+        )
+
+    with st.expander("Supertrend", expanded=False):
+        st.session_state[f'{pfx}supertrend_period'] = st.number_input(
+            "Period", 1, 100,
+            value=int(st.session_state.get(f'{pfx}supertrend_period', 7)),
+            step=1, key=f"{pfx}st_p"
+        )
+        st.session_state[f'{pfx}supertrend_multiplier'] = st.number_input(
+            "Multiplier", 0.5, 10.0,
+            value=float(st.session_state.get(f'{pfx}supertrend_multiplier', 3.0)),
+            step=0.1, key=f"{pfx}st_m"
+        )
+
+    with st.expander("EMA Overlay", expanded=False):
+        ema_state_key = f'{pfx}ema_periods'
+        if ema_state_key not in st.session_state:
+            st.session_state[ema_state_key] = []
+
+        emas_to_remove = []
+        for idx, ema_val in enumerate(st.session_state[ema_state_key]):
+            line_col, remove_col = st.columns([3, 1])
+            with line_col:
+                new_val = st.number_input(
+                    f"EMA {idx + 1} Period", 2, 500, int(ema_val), step=1,
+                    key=f"{pfx}ema_p_{idx}",
+                )
+                st.session_state[ema_state_key][idx] = new_val
+            with remove_col:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("X", key=f"{pfx}ema_rm_{idx}"):
+                    emas_to_remove.append(idx)
+
+        if emas_to_remove:
+            for idx in sorted(emas_to_remove, reverse=True):
+                st.session_state[ema_state_key].pop(idx)
+            st.rerun()
+
+        if st.button("+ Add EMA", key=f"{pfx}ema_add"):
+            st.session_state[ema_state_key].append(20)
+            st.rerun()
 
 
 def render_entry_box():
@@ -1003,14 +1195,16 @@ def _remove_exit_condition(idx):
 
 def get_compatible_elements(selected_element):
     """Get compatible elements based on selection"""
-    if selected_element in RSI_GROUP:
-        return RSI_GROUP
-    elif selected_element in CMB_GROUP:
-        return CMB_GROUP
-    elif selected_element in STOCH_GROUP:
-        return STOCH_GROUP
-    else:
-        return PRICE_AND_INDICATORS
+    for group_name, group_list in GROUP_MAP.items():
+        if selected_element in group_list:
+            if group_name == "Price & Indicators":
+                # Include dynamic EMAs
+                return get_group_elements(group_name, _ema_count())
+            return group_list
+    # Fallback: check dynamic EMA names
+    if selected_element and selected_element.startswith("EMA "):
+        return get_group_elements("Price & Indicators", _ema_count())
+    return PRICE_AND_INDICATORS
 
 
 def load_strategy_for_editing(strategy, strategy_idx):
@@ -1363,4 +1557,14 @@ def reset_strategy_builder():
     st.session_state['strategy_name_input'] = ""
     st.session_state['editing_strategy'] = False
     st.session_state['editing_strategy_idx'] = None
+    # Reset strategy builder indicator settings to defaults
+    pfx = "sb_"
+    for key in ['rsi_window', 'bb_upper_period', 'bb_upper_stdev', 'bb_mid_period',
+                'bb_lower_period', 'bb_lower_stdev', 'kc_upper_ema', 'kc_upper_mult',
+                'kc_mid_ema', 'kc_lower_ema', 'kc_lower_mult', 'kc_atr_period',
+                'stoch_k_period', 'stoch_k_smooth', 'stoch_d_smooth', 'adx_period',
+                'atr_period', 'macd_fast', 'macd_slow', 'macd_signal',
+                'supertrend_period', 'supertrend_multiplier']:
+        st.session_state.pop(f'{pfx}{key}', None)
+    st.session_state.pop(f'{pfx}ema_periods', None)
     st.rerun()

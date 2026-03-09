@@ -19,6 +19,9 @@ PRICE_AND_INDICATORS = [
     "Senkou B",
     "Chikou",
     "Supertrend",
+]
+
+ATR_VOLUME_GROUP = [
     "ATR",
     "OBV",
     "Acc/Dist",
@@ -94,6 +97,7 @@ GROUP_NAMES = [
     "Stoch Group",
     "ADX Group",
     "MACD Group",
+    "ATR / Volume Group",
 ]
 
 # Group name -> element list mapping
@@ -104,6 +108,7 @@ GROUP_MAP = {
     "Stoch Group": STOCH_GROUP,
     "ADX Group": ADX_GROUP,
     "MACD Group": MACD_GROUP,
+    "ATR / Volume Group": ATR_VOLUME_GROUP,
 }
 
 
