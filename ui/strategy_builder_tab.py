@@ -370,7 +370,7 @@ def render_strategy_indicator_settings():
     with st.expander("Supertrend", expanded=False):
         st.session_state[f'{pfx}supertrend_period'] = st.number_input(
             "Period", 1, 100,
-            value=int(st.session_state.get(f'{pfx}supertrend_period', 7)),
+            value=int(st.session_state.get(f'{pfx}supertrend_period', 10)),
             step=1, key=f"{pfx}st_p"
         )
         st.session_state[f'{pfx}supertrend_multiplier'] = st.number_input(

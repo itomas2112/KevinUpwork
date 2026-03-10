@@ -72,7 +72,7 @@ def calculate_indicators(
     macd_fast: int = 12,
     macd_slow: int = 26,
     macd_signal: int = 9,
-    supertrend_period: int = 7,
+    supertrend_period: int = 10,
     supertrend_multiplier: float = 3.0,
     ema_periods: list = None,
 ) -> pd.DataFrame:

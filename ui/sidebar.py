@@ -358,7 +358,7 @@ def render_timeframe_parameters(timeframe, disabled=False):
 
     with st.sidebar.expander("Supertrend"):
         params['supertrend_period'] = st.number_input(
-            "Period", 1, 100, 7, step=1,
+            "Period", 1, 100, 10, step=1,
             key=f"st_p_{key_prefix}",
             disabled=disabled,
         )

@@ -67,7 +67,7 @@ def save_strategy_to_session(strategy_name):
         "macd_fast": st.session_state.get(f"{pfx}macd_fast", 12),
         "macd_slow": st.session_state.get(f"{pfx}macd_slow", 26),
         "macd_signal": st.session_state.get(f"{pfx}macd_signal", 9),
-        "supertrend_period": st.session_state.get(f"{pfx}supertrend_period", 7),
+        "supertrend_period": st.session_state.get(f"{pfx}supertrend_period", 10),
         "supertrend_multiplier": st.session_state.get(f"{pfx}supertrend_multiplier", 3.0),
         "ema_periods": list(st.session_state.get(f"{pfx}ema_periods", [])),
     }
