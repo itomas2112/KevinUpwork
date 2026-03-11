@@ -19,6 +19,7 @@ from config.constants import (
     STOP_EVENT_TYPES,
     GROUP_NAMES,
     GROUP_MAP,
+    R_PROFIT_LOSS_ELEMENTS,
     get_group_elements,
 )
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
@@ -1085,6 +1086,9 @@ def render_strategy_management():
 
                                         if t_ctype == "Fixed Value":
                                             t_el2 = t_trigger.get('value', 'N/A')
+                                            # Add R suffix for R Profit/R Loss
+                                            if t_el1 in ("R Profit", "R Loss"):
+                                                t_el2 = f"{t_el2}R"
                                         else:
                                             t_el2 = t_trigger.get('element2', 'N/A')
 
@@ -1112,6 +1116,8 @@ def render_strategy_management():
 
                                         if s_ctype == "Fixed Value":
                                             s_el2 = s_trigger.get('value', 'N/A')
+                                            if s_el1 in ("R Profit", "R Loss"):
+                                                s_el2 = f"{s_el2}R"
                                         else:
                                             s_el2 = s_trigger.get('element2', 'N/A')
 
@@ -1396,56 +1402,93 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
 
         # Trigger
         st.markdown("**Trigger**")
+
+        prefix = f"{exit_type}_{group_idx}_{exit_idx}"
+        exit_group_options = ["R Profit / R Loss"] + GROUP_NAMES
+
         col1, col2, col3 = st.columns([2, 1, 2])
 
         with col1:
+            # Default to "Price & Indicators" (index 1) for new exits
+            group_key = f"{prefix}_trigger_group1"
+            if group_key not in st.session_state:
+                st.session_state[group_key] = "Price & Indicators"
+
             trigger_group = st.selectbox(
                 "Select Group",
-                GROUP_NAMES,
-                key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_group1"
+                exit_group_options,
+                key=group_key
             )
 
-            available_elements = get_group_elements(trigger_group, _ema_count())
+            if trigger_group == "R Profit / R Loss":
+                available_elements = R_PROFIT_LOSS_ELEMENTS
+            else:
+                available_elements = get_group_elements(trigger_group, _ema_count())
 
             trigger_element1 = st.selectbox(
                 "Element 1",
                 available_elements,
-                key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_element1"
+                key=f"{prefix}_trigger_element1"
             )
+
+        is_r_element = trigger_element1 in R_PROFIT_LOSS_ELEMENTS
 
         with col2:
             event_options = STOP_EVENT_TYPES if exit_type == "Stop" else EVENT_TYPES
             trigger_event = st.selectbox(
                 "Event",
                 event_options,
-                key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_event"
+                key=f"{prefix}_trigger_event"
             )
 
         with col3:
-            trigger_compare_type = st.radio(
-                "Compare to",
-                CONDITION_COMPARE_TYPES,
-                key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_compare_type",
-                horizontal=True
-            )
-
-            if trigger_compare_type == "Indicator":
-                compatible_elements = get_compatible_elements(trigger_element1)
-                trigger_element2 = st.selectbox(
-                    "Element 2",
-                    [e for e in compatible_elements if e != trigger_element1],
-                    key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_element2"
+            if is_r_element:
+                # R Profit/R Loss: always Fixed Value, no indicator comparison
+                # Force compare type to Fixed Value if switching from indicator mode
+                if st.session_state.get(f"{prefix}_trigger_compare_type") != "Fixed Value":
+                    st.session_state[f"{prefix}_trigger_compare_type"] = "Fixed Value"
+                st.radio(
+                    "Compare to",
+                    ["Fixed Value"],
+                    key=f"{prefix}_trigger_compare_type",
+                    horizontal=True
                 )
-            else:
+                r_label = "R" if trigger_element1 == "R Profit" else "R"
                 trigger_value = st.number_input(
-                    "Value/Level",
-                    value=50.0,
-                    key=f"{exit_type}_{group_idx}_{exit_idx}_trigger_value"
+                    f"Value ({r_label})",
+                    value=0.5,
+                    min_value=0.0,
+                    step=0.1,
+                    format="%.2f",
+                    key=f"{prefix}_trigger_value",
+                    help=f"e.g., 0.7 means 0.7R {'profit' if trigger_element1 == 'R Profit' else 'loss'}"
                 )
+                st.caption(f"{trigger_element1} {trigger_event} {trigger_value}R")
+            else:
+                trigger_compare_type = st.radio(
+                    "Compare to",
+                    CONDITION_COMPARE_TYPES,
+                    key=f"{prefix}_trigger_compare_type",
+                    horizontal=True
+                )
+
+                if trigger_compare_type == "Indicator":
+                    compatible_elements = get_compatible_elements(trigger_element1)
+                    trigger_element2 = st.selectbox(
+                        "Element 2",
+                        [e for e in compatible_elements if e != trigger_element1],
+                        key=f"{prefix}_trigger_element2"
+                    )
+                else:
+                    trigger_value = st.number_input(
+                        "Value/Level",
+                        value=50.0,
+                        key=f"{prefix}_trigger_value"
+                    )
 
         # Conditions (optional)
         st.markdown("**Conditions (Optional)**")
-        conditions_key = f"{exit_type}_{group_idx}_{exit_idx}_conditions_count"
+        conditions_key = f"{prefix}_conditions_count"
 
         if conditions_key not in st.session_state:
             st.session_state[conditions_key] = 0
@@ -1471,8 +1514,15 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
     prefix = f"{exit_type}_{group_idx}_{exit_idx}"
 
     trigger = exit_config.get('trigger', {})
-    st.session_state[f'{prefix}_trigger_group1'] = trigger.get('group', 'Price & Indicators')
-    st.session_state[f'{prefix}_trigger_element1'] = trigger.get('element1')
+    element1 = trigger.get('element1')
+
+    # R Profit/R Loss use special group name
+    if element1 in R_PROFIT_LOSS_ELEMENTS:
+        st.session_state[f'{prefix}_trigger_group1'] = 'R Profit / R Loss'
+    else:
+        st.session_state[f'{prefix}_trigger_group1'] = trigger.get('group', 'Price & Indicators')
+
+    st.session_state[f'{prefix}_trigger_element1'] = element1
     st.session_state[f'{prefix}_trigger_event'] = trigger.get('event')
     st.session_state[f'{prefix}_trigger_compare_type'] = trigger.get('compare_type', 'Indicator')
 

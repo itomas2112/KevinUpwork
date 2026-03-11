@@ -218,6 +218,74 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         return False
 
     # -------------------------------------------------
+    # Helper: check R Profit / R Loss trigger
+    # -------------------------------------------------
+    def check_r_trigger(trigger_config, current_idx):
+        """
+        Check if an R Profit or R Loss trigger event occurred.
+        R Profit = unrealized profit in R terms (positive when profitable).
+        R Loss = unrealized loss in R terms (positive when losing).
+        Only valid while in a position.
+        """
+        if current_entry_price is None or current_r_distance <= 0:
+            return False
+
+        element1_name = trigger_config.get('element1')
+        event = trigger_config.get('event')
+        fixed_value = trigger_config.get('value')
+
+        if fixed_value is None:
+            return False
+
+        price = df['latest'].iloc[current_idx]
+
+        # Calculate directional price move
+        if strategy_direction == 'Long':
+            price_move = price - current_entry_price
+        else:
+            price_move = current_entry_price - price
+
+        # R Profit: positive when in profit, negative when in loss
+        # R Loss: positive when in loss, negative when in profit
+        if element1_name == "R Profit":
+            r_value = price_move / current_r_distance
+        else:  # R Loss
+            r_value = -price_move / current_r_distance
+
+        # Need previous bar for cross detection
+        if current_idx > 0:
+            prev_price = df['latest'].iloc[current_idx - 1]
+            if strategy_direction == 'Long':
+                prev_move = prev_price - current_entry_price
+            else:
+                prev_move = current_entry_price - prev_price
+
+            if element1_name == "R Profit":
+                prev_r_value = prev_move / current_r_distance
+            else:
+                prev_r_value = -prev_move / current_r_distance
+        else:
+            return False
+
+        # Check event type
+        if event in ("Cross Above", "Close Above"):
+            return (r_value > fixed_value) and (prev_r_value <= fixed_value)
+        elif event in ("Cross Below", "Close Below"):
+            return (r_value < fixed_value) and (prev_r_value >= fixed_value)
+        elif event in ("Cross", "Close"):
+            cross_above = (r_value > fixed_value) and (prev_r_value <= fixed_value)
+            cross_below = (r_value < fixed_value) and (prev_r_value >= fixed_value)
+            return cross_above or cross_below
+        elif event == "At Level":
+            return abs(r_value - fixed_value) < 0.01
+
+        return False
+
+    def get_r_trigger_price(current_idx):
+        """For R Profit/R Loss triggers, exit at the bar's close price."""
+        return df['latest'].iloc[current_idx]
+
+    # -------------------------------------------------
     # Helper function to check trigger events
     # -------------------------------------------------
     def check_trigger(trigger_config, current_idx, locked_value=None):
@@ -398,6 +466,18 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         """Check if an exit signal (target or stop) is triggered"""
         trigger = exit_config.get('trigger', {})
         conditions = exit_config.get('conditions', [])
+
+        # R Profit / R Loss triggers use special handler
+        element1 = trigger.get('element1', '')
+        if element1 in ("R Profit", "R Loss"):
+            if not check_r_trigger(trigger, current_idx):
+                return False
+            # Still check conditions
+            for condition in conditions:
+                if not check_condition(condition, current_idx):
+                    return False
+            return True
+
         return check_trigger_and_conditions(trigger, conditions, current_idx)
 
     # -------------------------------------------------
@@ -418,6 +498,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         This prevents entries when the stop would be immediately triggered.
         """
         element1_name = trigger_config.get('element1')
+
+        # R Profit/R Loss can't be evaluated before entry (no position exists yet)
+        if element1_name in ("R Profit", "R Loss"):
+            return False
         event = trigger_config.get('event')
         compare_type = trigger_config.get('compare_type', 'Indicator')
         element2_name = trigger_config.get('element2')
@@ -649,9 +733,13 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
                             # Record trade
                             target_trigger = target.get('trigger', {})
+                            t_el1 = target_trigger.get('element1', '')
+                            t_exit_price = (get_r_trigger_price(i)
+                                            if t_el1 in ("R Profit", "R Loss")
+                                            else get_trigger_price(target_trigger, i))
                             all_trades.append({
                                 'entry_price': current_entry_price,
-                                'exit_price': get_trigger_price(target_trigger, i),
+                                'exit_price': t_exit_price,
                                 'allocation_pct': alloc_pct,
                                 'r_distance': current_r_distance,
                                 'entry_r': entry_r,
@@ -673,9 +761,13 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
                                 # Record trade
                                 stop_trigger = stop.get('trigger', {})
+                                s_el1 = stop_trigger.get('element1', '')
+                                s_exit_price = (get_r_trigger_price(i)
+                                                if s_el1 in ("R Profit", "R Loss")
+                                                else get_trigger_price(stop_trigger, i))
                                 all_trades.append({
                                     'entry_price': current_entry_price,
-                                    'exit_price': get_trigger_price(stop_trigger, i),
+                                    'exit_price': s_exit_price,
                                     'allocation_pct': alloc_pct,
                                     'r_distance': current_r_distance,
                                     'entry_r': entry_r,

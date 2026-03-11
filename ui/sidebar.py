@@ -159,16 +159,20 @@ def render_sidebar():
         if 'custom_strategy_radio' in st.session_state:
             st.session_state['custom_strategy_radio'] = 0
 
-    if st.session_state['saved_strategies'] and all_pattern_strings:
+    if st.session_state['saved_strategies']:
         # Filter strategies that apply to any selected pattern
-        filtered_strategies = [
-            (idx, strategy)
-            for idx, strategy in enumerate(st.session_state['saved_strategies'])
-            if not strategy.get('patterns') or any(
-                pat in all_pattern_strings
-                for pat in strategy.get('patterns', [])
-            )
-        ]
+        # If no patterns are expanded yet (no DRM uploaded), show all strategies
+        if all_pattern_strings:
+            filtered_strategies = [
+                (idx, strategy)
+                for idx, strategy in enumerate(st.session_state['saved_strategies'])
+                if not strategy.get('patterns') or any(
+                    pat in all_pattern_strings
+                    for pat in strategy.get('patterns', [])
+                )
+            ]
+        else:
+            filtered_strategies = list(enumerate(st.session_state['saved_strategies']))
 
         if filtered_strategies:
             with st.sidebar.expander("Custom Strategies", expanded=True):
@@ -183,11 +187,18 @@ def render_sidebar():
                 if 'selected_custom_strategy_idx' not in st.session_state:
                     st.session_state['selected_custom_strategy_idx'] = 0
 
+                # Clamp index to valid range (filtered list may have shrunk)
+                current_idx = st.session_state['selected_custom_strategy_idx']
+                if current_idx >= len(strategy_options):
+                    current_idx = 0
+                    st.session_state['selected_custom_strategy_idx'] = 0
+                    st.session_state['selected_custom_strategy_actual_idx'] = None
+
                 selected_option = st.radio(
                     "Select one strategy:",
                     options=range(len(strategy_options)),
                     format_func=lambda x: strategy_options[x],
-                    index=st.session_state['selected_custom_strategy_idx'],
+                    index=current_idx,
                     key="custom_strategy_radio"
                 )
 
@@ -200,6 +211,13 @@ def render_sidebar():
                     else:
                         st.session_state['selected_custom_strategy_actual_idx'] = None
                     st.rerun()
+        else:
+            # No strategies match current patterns — reset selection to avoid being stuck
+            if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
+                st.session_state['selected_custom_strategy_idx'] = 0
+                st.session_state['selected_custom_strategy_actual_idx'] = None
+                if 'custom_strategy_radio' in st.session_state:
+                    st.session_state['custom_strategy_radio'] = 0
 
     # Detect if a strategy is actively selected (for disabling sidebar indicator settings)
     strategy_active = False
@@ -286,7 +304,7 @@ def render_timeframe_parameters(timeframe, disabled=False):
             line_col, remove_col = st.columns([3, 1])
             with line_col:
                 new_val = st.number_input(
-                    f"Line {idx + 1}", 0.0, 200.0, float(line_val), step=1.0,
+                    f"Line {idx + 1}", -200.0, 200.0, float(line_val), step=1.0,
                     key=f"cmb_line_{key_prefix}_{idx}"
                 )
                 st.session_state[cmb_state_key][idx] = new_val

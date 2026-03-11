@@ -56,6 +56,12 @@ MACD_GROUP = [
     "MACD Histogram",
 ]
 
+# Special exit-only elements (computed at runtime from entry price and R distance)
+R_PROFIT_LOSS_ELEMENTS = [
+    "R Profit",
+    "R Loss",
+]
+
 EVENT_TYPES = [
     "Cross",
     "Cross Above",
