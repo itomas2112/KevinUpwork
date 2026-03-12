@@ -59,6 +59,11 @@ def build_main_chart(
     show_supertrend: bool = False,
     show_ema: bool = False,
     ema_periods: list = None,
+    show_donchian: bool = False,
+    dc_show_upper: bool = True,
+    dc_show_middle: bool = True,
+    dc_show_lower: bool = True,
+    show_psar: bool = False,
 ):
     """
     Build main chart using a single x-axis with dynamic y-axis domains
@@ -364,9 +369,9 @@ def build_main_chart(
             if total == 1:
                 return "red"
             elif total == 2:
-                return ["red", "green"][sorted_pos]
+                return ["red", "cyan"][sorted_pos]
             elif total == 3:
-                return ["red", "cyan", "green"][sorted_pos]
+                return ["red", "cyan", "yellow"][sorted_pos]
             elif total == 4:
                 return EMA_FIXED_COLORS[sorted_pos]
             else:
@@ -398,6 +403,50 @@ def build_main_chart(
                     showlegend=False,
                     hoverinfo="skip",
                 ))
+
+    # -------------------------------------------------
+    # Donchian Channel  (yaxis="y" — Price panel)
+    # -------------------------------------------------
+    if show_donchian:
+        if dc_show_middle and "dc_mid" in df_slice.columns:
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["dc_mid"], name="DC Mid",
+                                     line=dict(color="cyan", width=1, dash="dot"), showlegend=False))
+        if dc_show_upper and "dc_upper" in df_slice.columns:
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["dc_upper"], name="DC Upper",
+                                     line=dict(color="cyan", width=1), showlegend=False))
+        if dc_show_lower and "dc_lower" in df_slice.columns:
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["dc_lower"], name="DC Lower",
+                                     line=dict(color="cyan", width=1), showlegend=False))
+
+    # -------------------------------------------------
+    # Parabolic SAR  (yaxis="y" — Price panel)
+    # -------------------------------------------------
+    if show_psar and "psar" in df_slice.columns and "psar_dir" in df_slice.columns:
+        psar_vals = df_slice["psar"]
+        psar_dirs = df_slice["psar_dir"]
+        x_arr = df_slice["x"]
+
+        # Color dots by direction: green (uptrend/SAR below) and red (downtrend/SAR above)
+        up_x, up_y = [], []
+        dn_x, dn_y = [], []
+        for xi, yi, di in zip(x_arr, psar_vals, psar_dirs):
+            if di == 1:
+                up_x.append(xi)
+                up_y.append(yi)
+            else:
+                dn_x.append(xi)
+                dn_y.append(yi)
+
+        if up_x:
+            fig.add_trace(go.Scatter(
+                x=up_x, y=up_y, mode="markers", name="PSAR Up",
+                marker=dict(color="green", size=3, symbol="circle"),
+                showlegend=False, hoverinfo="skip"))
+        if dn_x:
+            fig.add_trace(go.Scatter(
+                x=dn_x, y=dn_y, mode="markers", name="PSAR Down",
+                marker=dict(color="red", size=3, symbol="circle"),
+                showlegend=False, hoverinfo="skip"))
 
     # -------------------------------------------------
     # RSI  (yaxis="y2")
@@ -758,6 +807,8 @@ def render_charts(
     show_supertrend=False,
     show_ema=False,
     ema_periods=None,
+    show_donchian=False,
+    show_psar=False,
 ):
     """Renders charts."""
     rsi_zones_1h = rsi_zones_1h or {}
@@ -768,6 +819,7 @@ def render_charts(
         show_adx=show_adx, show_atr=show_atr, show_macd=show_macd,
         show_obv=show_obv, show_accdist=show_accdist,
         show_supertrend=show_supertrend, show_ema=show_ema,
+        show_donchian=show_donchian, show_psar=show_psar,
     )
 
     config = {"scrollZoom": True}

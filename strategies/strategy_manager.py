@@ -70,6 +70,13 @@ def save_strategy_to_session(strategy_name):
         "supertrend_period": st.session_state.get(f"{pfx}supertrend_period", 10),
         "supertrend_multiplier": st.session_state.get(f"{pfx}supertrend_multiplier", 3.0),
         "ema_periods": list(st.session_state.get(f"{pfx}ema_periods", [])),
+        "dc_upper_period": st.session_state.get(f"{pfx}dc_upper_period", 20),
+        "dc_mid_period": st.session_state.get(f"{pfx}dc_mid_period", 20),
+        "dc_lower_period": st.session_state.get(f"{pfx}dc_lower_period", 20),
+        "dc_offset": st.session_state.get(f"{pfx}dc_offset", 0),
+        "psar_af_start": st.session_state.get(f"{pfx}psar_af_start", 0.02),
+        "psar_af_increment": st.session_state.get(f"{pfx}psar_af_increment", 0.02),
+        "psar_af_max": st.session_state.get(f"{pfx}psar_af_max", 0.20),
     }
 
     # Collect entry conditions

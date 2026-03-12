@@ -2,6 +2,7 @@
 Sidebar UI components
 """
 import streamlit as st
+from datetime import date
 from data.helpers import (
     PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
     expand_selection,
@@ -26,8 +27,31 @@ def render_sidebar():
         horizontal=True,
     )
 
+    # Global Date Range — required before any calculations
+    with st.sidebar.expander("Date Range Filter", expanded=False):
+        date_col1, date_col2 = st.columns(2)
+        with date_col1:
+            global_start_date = st.date_input(
+                "Start Date",
+                value=st.session_state.get("global_start_date"),
+                key="global_start_date",
+            )
+        with date_col2:
+            global_end_date = st.date_input(
+                "End Date",
+                value=st.session_state.get("global_end_date"),
+                key="global_end_date",
+            )
+        if st.button("Apply Date Range", key="apply_date_range", type="primary"):
+            st.session_state['date_range_applied'] = True
+            st.rerun()
+        if st.session_state.get('date_range_applied'):
+            st.success(f"{global_start_date} → {global_end_date}")
+        else:
+            st.warning("Set dates and click Apply to proceed.")
+
     # Pattern Parameters — multi-row selection
-    with st.sidebar.expander("Pattern Parameters", expanded=True):
+    with st.sidebar.expander("Pattern Parameters", expanded=False):
         selections = st.session_state['charting_selections']
 
         rows_to_remove = []
@@ -119,22 +143,39 @@ def render_sidebar():
 
     # Price Overlays
     with st.sidebar.expander("Price Overlays"):
-        show_ichimoku = st.checkbox("Show Ichimoku Cloud", value=False)
-        show_bb = st.checkbox("Show Bollinger Bands", value=False)
-        show_kc = st.checkbox("Show Keltner Channel", value=False)
-        show_supertrend = st.checkbox("Show Supertrend", value=False)
-        show_ema = st.checkbox("Show EMA Overlay", value=False)
+        show_ichimoku = st.checkbox("Show Ichimoku Cloud",
+            value=st.session_state.get("overlay_ichimoku", False), key="overlay_ichimoku")
+        show_bb = st.checkbox("Show Bollinger Bands",
+            value=st.session_state.get("overlay_bb", False), key="overlay_bb")
+        show_kc = st.checkbox("Show Keltner Channel",
+            value=st.session_state.get("overlay_kc", False), key="overlay_kc")
+        show_supertrend = st.checkbox("Show Supertrend",
+            value=st.session_state.get("overlay_supertrend", False), key="overlay_supertrend")
+        show_ema = st.checkbox("Show EMA Overlay",
+            value=st.session_state.get("overlay_ema", False), key="overlay_ema")
+        show_donchian = st.checkbox("Show Donchian Channel",
+            value=st.session_state.get("overlay_donchian", False), key="overlay_donchian")
+        show_psar = st.checkbox("Show Parabolic SAR",
+            value=st.session_state.get("overlay_psar", False), key="overlay_psar")
 
     # Oscillator Panel Toggles
-    with st.sidebar.expander("Oscillator Panels", expanded=True):
-        show_rsi = st.checkbox("Show RSI Panel", value=True, key="show_rsi_panel")
-        show_cmb = st.checkbox("Show CMB Panel", value=True, key="show_cmb_panel")
-        show_stoch = st.checkbox("Show Stochastic Panel", value=True, key="show_stoch_panel")
-        show_adx = st.checkbox("Show ADX Panel", value=False, key="show_adx_panel")
-        show_atr = st.checkbox("Show ATR Panel", value=False, key="show_atr_panel")
-        show_macd = st.checkbox("Show MACD Panel", value=False, key="show_macd_panel")
-        show_obv = st.checkbox("Show OBV Panel", value=False, key="show_obv_panel")
-        show_accdist = st.checkbox("Show Acc/Dist Panel", value=False, key="show_accdist_panel")
+    with st.sidebar.expander("Oscillator Panels", expanded=False):
+        show_rsi = st.checkbox("Show RSI Panel",
+            value=st.session_state.get("show_rsi_panel", True), key="show_rsi_panel")
+        show_cmb = st.checkbox("Show CMB Panel",
+            value=st.session_state.get("show_cmb_panel", True), key="show_cmb_panel")
+        show_stoch = st.checkbox("Show Stochastic Panel",
+            value=st.session_state.get("show_stoch_panel", True), key="show_stoch_panel")
+        show_adx = st.checkbox("Show ADX Panel",
+            value=st.session_state.get("show_adx_panel", False), key="show_adx_panel")
+        show_atr = st.checkbox("Show ATR Panel",
+            value=st.session_state.get("show_atr_panel", False), key="show_atr_panel")
+        show_macd = st.checkbox("Show MACD Panel",
+            value=st.session_state.get("show_macd_panel", False), key="show_macd_panel")
+        show_obv = st.checkbox("Show OBV Panel",
+            value=st.session_state.get("show_obv_panel", False), key="show_obv_panel")
+        show_accdist = st.checkbox("Show Acc/Dist Panel",
+            value=st.session_state.get("show_accdist_panel", False), key="show_accdist_panel")
 
     # Chart Tools
     draw_mode = st.sidebar.checkbox("Shade Sections on Price Chart", value=False, key="draw_mode")
@@ -175,7 +216,7 @@ def render_sidebar():
             filtered_strategies = list(enumerate(st.session_state['saved_strategies']))
 
         if filtered_strategies:
-            with st.sidebar.expander("Custom Strategies", expanded=True):
+            with st.sidebar.expander("Custom Strategies", expanded=False):
                 strategy_options = ["None"] + [
                     strategy.get('strategy_name', f'Strategy_{idx + 1}')
                     for idx, strategy in filtered_strategies
@@ -210,7 +251,6 @@ def render_sidebar():
                         st.session_state['selected_custom_strategy_actual_idx'] = strategy_index_map[selected_option]
                     else:
                         st.session_state['selected_custom_strategy_actual_idx'] = None
-                    st.rerun()
         else:
             # No strategies match current patterns — reset selection to avoid being stuck
             if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
@@ -236,12 +276,17 @@ def render_sidebar():
 
     return {
         'analysis_mode': analysis_mode,
+        'global_start_date': global_start_date,
+        'global_end_date': global_end_date,
+        'date_range_applied': st.session_state.get('date_range_applied', False),
         'charting_selections': charting_selections,
         'show_ichimoku': show_ichimoku,
         'show_bb': show_bb,
         'show_kc': show_kc,
         'show_supertrend': show_supertrend,
         'show_ema': show_ema,
+        'show_donchian': show_donchian,
+        'show_psar': show_psar,
         'show_rsi': show_rsi,
         'show_cmb': show_cmb,
         'show_stoch': show_stoch,
@@ -420,41 +465,63 @@ def render_timeframe_parameters(timeframe, disabled=False):
 
     with st.sidebar.expander("Ichimoku"):
         params['ichi_show_tenkan'] = st.checkbox(
-            "Show Tenkan", value=True, key=f"ichi_tenkan_{key_prefix}"
+            "Show Tenkan",
+            value=st.session_state.get(f"ichi_tenkan_{key_prefix}", True),
+            key=f"ichi_tenkan_{key_prefix}"
         )
         params['ichi_show_kijun'] = st.checkbox(
-            "Show Kijun", value=True, key=f"ichi_kijun_{key_prefix}"
+            "Show Kijun",
+            value=st.session_state.get(f"ichi_kijun_{key_prefix}", True),
+            key=f"ichi_kijun_{key_prefix}"
         )
         params['ichi_show_senkou_a'] = st.checkbox(
-            "Show Senkou A", value=True, key=f"ichi_senkou_a_{key_prefix}"
+            "Show Senkou A",
+            value=st.session_state.get(f"ichi_senkou_a_{key_prefix}", True),
+            key=f"ichi_senkou_a_{key_prefix}"
         )
         params['ichi_show_senkou_b'] = st.checkbox(
-            "Show Senkou B", value=True, key=f"ichi_senkou_b_{key_prefix}"
+            "Show Senkou B",
+            value=st.session_state.get(f"ichi_senkou_b_{key_prefix}", True),
+            key=f"ichi_senkou_b_{key_prefix}"
         )
         params['ichi_show_chikou'] = st.checkbox(
-            "Show Chikou", value=True, key=f"ichi_chikou_{key_prefix}"
+            "Show Chikou",
+            value=st.session_state.get(f"ichi_chikou_{key_prefix}", True),
+            key=f"ichi_chikou_{key_prefix}"
         )
         st.divider()
         st.caption("Strategy decision lines (un-displaced)")
         params['ichi_show_senkou_a_current'] = st.checkbox(
-            "Show Senkou A (current)", value=False, key=f"ichi_senkou_a_current_{key_prefix}"
+            "Show Senkou A (current)",
+            value=st.session_state.get(f"ichi_senkou_a_current_{key_prefix}", False),
+            key=f"ichi_senkou_a_current_{key_prefix}"
         )
         params['ichi_show_senkou_b_current'] = st.checkbox(
-            "Show Senkou B (current)", value=False, key=f"ichi_senkou_b_current_{key_prefix}"
+            "Show Senkou B (current)",
+            value=st.session_state.get(f"ichi_senkou_b_current_{key_prefix}", False),
+            key=f"ichi_senkou_b_current_{key_prefix}"
         )
         params['ichi_show_chikou_decision'] = st.checkbox(
-            "Show Chikou (decision)", value=False, key=f"ichi_chikou_decision_{key_prefix}"
+            "Show Chikou (decision)",
+            value=st.session_state.get(f"ichi_chikou_decision_{key_prefix}", False),
+            key=f"ichi_chikou_decision_{key_prefix}"
         )
 
     with st.sidebar.expander("Bollinger Bands"):
         params['bb_show_upper'] = st.checkbox(
-            "Show Upper Band", value=True, key=f"bb_upper_{key_prefix}"
+            "Show Upper Band",
+            value=st.session_state.get(f"bb_upper_{key_prefix}", True),
+            key=f"bb_upper_{key_prefix}"
         )
         params['bb_show_middle'] = st.checkbox(
-            "Show Middle Band", value=True, key=f"bb_mid_{key_prefix}"
+            "Show Middle Band",
+            value=st.session_state.get(f"bb_mid_{key_prefix}", True),
+            key=f"bb_mid_{key_prefix}"
         )
         params['bb_show_lower'] = st.checkbox(
-            "Show Lower Band", value=True, key=f"bb_lower_{key_prefix}"
+            "Show Lower Band",
+            value=st.session_state.get(f"bb_lower_{key_prefix}", True),
+            key=f"bb_lower_{key_prefix}"
         )
         st.divider()
         st.caption("**Upper Band**")
@@ -488,13 +555,19 @@ def render_timeframe_parameters(timeframe, disabled=False):
 
     with st.sidebar.expander("Keltner Channel"):
         params['kc_show_upper'] = st.checkbox(
-            "Show Upper Band", value=True, key=f"kc_upper_{key_prefix}"
+            "Show Upper Band",
+            value=st.session_state.get(f"kc_upper_{key_prefix}", True),
+            key=f"kc_upper_{key_prefix}"
         )
         params['kc_show_middle'] = st.checkbox(
-            "Show Middle Band", value=True, key=f"kc_mid_{key_prefix}"
+            "Show Middle Band",
+            value=st.session_state.get(f"kc_mid_{key_prefix}", True),
+            key=f"kc_mid_{key_prefix}"
         )
         params['kc_show_lower'] = st.checkbox(
-            "Show Lower Band", value=True, key=f"kc_lower_{key_prefix}"
+            "Show Lower Band",
+            value=st.session_state.get(f"kc_lower_{key_prefix}", True),
+            key=f"kc_lower_{key_prefix}"
         )
         st.divider()
         params['kc_atr_period'] = st.number_input(
@@ -528,6 +601,65 @@ def render_timeframe_parameters(timeframe, disabled=False):
         params['kc_lower_mult'] = st.number_input(
             "Lower ATR Mult", 0.5, 5.0, 2.0, step=0.1,
             key=f"kc_lo_mult_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("Donchian Channel"):
+        params['dc_show_upper'] = st.checkbox(
+            "Show Upper Band",
+            value=st.session_state.get(f"dc_upper_{key_prefix}", True),
+            key=f"dc_upper_{key_prefix}"
+        )
+        params['dc_show_middle'] = st.checkbox(
+            "Show Middle Band",
+            value=st.session_state.get(f"dc_mid_{key_prefix}", True),
+            key=f"dc_mid_{key_prefix}"
+        )
+        params['dc_show_lower'] = st.checkbox(
+            "Show Lower Band",
+            value=st.session_state.get(f"dc_lower_{key_prefix}", True),
+            key=f"dc_lower_{key_prefix}"
+        )
+        st.divider()
+        st.caption("**Upper Band**")
+        params['dc_upper_period'] = st.number_input(
+            "Upper Period", 5, 200, 20, step=1,
+            key=f"dc_up_p_{key_prefix}",
+            disabled=disabled,
+        )
+        st.caption("**Middle Band**")
+        params['dc_mid_period'] = st.number_input(
+            "Middle Period", 5, 200, 20, step=1,
+            key=f"dc_mid_p_{key_prefix}",
+            disabled=disabled,
+        )
+        st.caption("**Lower Band**")
+        params['dc_lower_period'] = st.number_input(
+            "Lower Period", 5, 200, 20, step=1,
+            key=f"dc_lo_p_{key_prefix}",
+            disabled=disabled,
+        )
+        st.divider()
+        params['dc_offset'] = st.number_input(
+            "Offset / Shift", -50, 50, 0, step=1,
+            key=f"dc_off_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("Parabolic SAR"):
+        params['psar_af_start'] = st.number_input(
+            "AF Start", 0.001, 0.5, 0.02, step=0.01, format="%.3f",
+            key=f"psar_afs_{key_prefix}",
+            disabled=disabled,
+        )
+        params['psar_af_increment'] = st.number_input(
+            "AF Increment", 0.001, 0.5, 0.02, step=0.01, format="%.3f",
+            key=f"psar_afi_{key_prefix}",
+            disabled=disabled,
+        )
+        params['psar_af_max'] = st.number_input(
+            "AF Maximum", 0.01, 1.0, 0.20, step=0.01, format="%.2f",
+            key=f"psar_afm_{key_prefix}",
             disabled=disabled,
         )
 

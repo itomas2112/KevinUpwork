@@ -125,6 +125,8 @@ def _apply_pending_edit():
             'stoch_k_period', 'stoch_k_smooth', 'stoch_d_smooth', 'adx_period',
             'atr_period', 'macd_fast', 'macd_slow', 'macd_signal',
             'supertrend_period', 'supertrend_multiplier',
+            'dc_upper_period', 'dc_mid_period', 'dc_lower_period', 'dc_offset',
+            'psar_af_start', 'psar_af_increment', 'psar_af_max',
         ]
         for key in setting_keys:
             if key in ind_settings:
@@ -219,9 +221,18 @@ def render_strategy_form():
     # Store in session state
     st.session_state['strategy_patterns'] = selected_patterns
 
-    # Reset button
-    if st.button("🔄 Reset Strategy", type="secondary"):
-        reset_strategy_builder()
+    # Reset / Cancel buttons
+    if st.session_state.get('editing_strategy'):
+        col_reset, col_cancel = st.columns(2)
+        with col_reset:
+            if st.button("🔄 Reset Strategy", type="secondary", use_container_width=True):
+                reset_strategy_builder()
+        with col_cancel:
+            if st.button("✖ Cancel Edit", type="secondary", use_container_width=True):
+                reset_strategy_builder()
+    else:
+        if st.button("🔄 Reset Strategy", type="secondary"):
+            reset_strategy_builder()
 
     st.divider()
 
@@ -408,9 +419,95 @@ def render_strategy_indicator_settings():
             st.session_state[ema_state_key].append(20)
             st.rerun()
 
+    with st.expander("Donchian Channel", expanded=False):
+        st.caption("**Upper Band**")
+        st.session_state[f'{pfx}dc_upper_period'] = st.number_input(
+            "Upper Period", 5, 200,
+            value=int(st.session_state.get(f'{pfx}dc_upper_period', 20)),
+            step=1, key=f"{pfx}dc_up_p"
+        )
+        st.caption("**Middle Band**")
+        st.session_state[f'{pfx}dc_mid_period'] = st.number_input(
+            "Middle Period", 5, 200,
+            value=int(st.session_state.get(f'{pfx}dc_mid_period', 20)),
+            step=1, key=f"{pfx}dc_mid_p"
+        )
+        st.caption("**Lower Band**")
+        st.session_state[f'{pfx}dc_lower_period'] = st.number_input(
+            "Lower Period", 5, 200,
+            value=int(st.session_state.get(f'{pfx}dc_lower_period', 20)),
+            step=1, key=f"{pfx}dc_lo_p"
+        )
+        st.divider()
+        st.session_state[f'{pfx}dc_offset'] = st.number_input(
+            "Offset / Shift", -50, 50,
+            value=int(st.session_state.get(f'{pfx}dc_offset', 0)),
+            step=1, key=f"{pfx}dc_off"
+        )
+
+    with st.expander("Parabolic SAR", expanded=False):
+        st.session_state[f'{pfx}psar_af_start'] = st.number_input(
+            "AF Start", 0.001, 0.5,
+            value=float(st.session_state.get(f'{pfx}psar_af_start', 0.02)),
+            step=0.01, format="%.3f", key=f"{pfx}psar_afs"
+        )
+        st.session_state[f'{pfx}psar_af_increment'] = st.number_input(
+            "AF Increment", 0.001, 0.5,
+            value=float(st.session_state.get(f'{pfx}psar_af_increment', 0.02)),
+            step=0.01, format="%.3f", key=f"{pfx}psar_afi"
+        )
+        st.session_state[f'{pfx}psar_af_max'] = st.number_input(
+            "AF Maximum", 0.01, 1.0,
+            value=float(st.session_state.get(f'{pfx}psar_af_max', 0.20)),
+            step=0.01, format="%.2f", key=f"{pfx}psar_afm"
+        )
+
+
+def _restore_entry_keys_if_needed():
+    """Re-populate entry widget keys from editing state if they were cleaned up by a rerun."""
+    if 'editing_strategy' not in st.session_state or not st.session_state['editing_strategy']:
+        return
+    idx = st.session_state.get('editing_strategy_idx')
+    if idx is None or idx >= len(st.session_state.get('saved_strategies', [])):
+        return
+    if 'entry_trigger_group1' in st.session_state:
+        return  # Keys still exist, no need to restore
+
+    strategy = st.session_state['saved_strategies'][idx]
+    entry = strategy.get('entry', {})
+    entry_trigger = entry.get('trigger', {})
+    st.session_state['entry_trigger_group1'] = entry_trigger.get('group', 'Price & Indicators')
+    st.session_state['entry_trigger_element1'] = entry_trigger.get('element1')
+    st.session_state['entry_trigger_event'] = entry_trigger.get('event')
+    st.session_state['entry_trigger_compare_type'] = entry_trigger.get('compare_type', 'Indicator')
+    if entry_trigger.get('compare_type') == 'Indicator':
+        st.session_state['entry_trigger_element2'] = entry_trigger.get('element2')
+    else:
+        st.session_state['entry_trigger_value'] = entry_trigger.get('value', 50.0)
+    st.session_state['entry_position_size'] = entry.get('position_size', 1.0)
+    st.session_state['entry_conditions_count'] = len(entry.get('conditions', []))
+    for i, cond in enumerate(entry.get('conditions', [])):
+        st.session_state[f'entry_cond_{i}_group1'] = cond.get('group', 'Price & Indicators')
+        st.session_state[f'entry_cond_{i}_element1'] = cond.get('element1')
+        st.session_state[f'entry_cond_{i}_operator'] = cond.get('operator')
+        st.session_state[f'entry_cond_{i}_compare_type'] = cond.get('compare_type', 'Indicator')
+        if cond.get('compare_type') == 'Indicator':
+            st.session_state[f'entry_cond_{i}_element2'] = cond.get('element2')
+        else:
+            st.session_state[f'entry_cond_{i}_value'] = cond.get('value', 50.0)
+
+    # Restore initial stop
+    st.session_state['initial_stop'] = strategy.get('initial_stop', None)
+    if st.session_state['initial_stop']:
+        initial = st.session_state['initial_stop']
+        st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
+        st.session_state['initial_stop_element2'] = initial.get('element2')
+
 
 def render_entry_box():
     """Render entry strategy configuration box"""
+    _restore_entry_keys_if_needed()
+
     st.subheader("Entry Strategy")
 
     with st.container(border=True):
@@ -1391,6 +1488,13 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
     """Render a single exit (target or stop) configuration"""
     icon = "" if exit_type == "Target" else ""
 
+    prefix = f"{exit_type}_{group_idx}_{exit_idx}"
+
+    # Re-populate widget keys from exit_config if they were cleaned up by a rerun
+    # (happens when st.rerun() fires in entry/indicator sections before exit widgets render)
+    if f"{prefix}_trigger_group1" not in st.session_state:
+        _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config)
+
     with st.expander(f"{icon} {exit_type} {exit_idx + 1}", expanded=True):
         col_delete = st.columns([10, 1])
 
@@ -1402,8 +1506,6 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
 
         # Trigger
         st.markdown("**Trigger**")
-
-        prefix = f"{exit_type}_{group_idx}_{exit_idx}"
         exit_group_options = ["R Profit / R Loss"] + GROUP_NAMES
 
         col1, col2, col3 = st.columns([2, 1, 2])
@@ -1614,7 +1716,9 @@ def reset_strategy_builder():
                 'kc_mid_ema', 'kc_lower_ema', 'kc_lower_mult', 'kc_atr_period',
                 'stoch_k_period', 'stoch_k_smooth', 'stoch_d_smooth', 'adx_period',
                 'atr_period', 'macd_fast', 'macd_slow', 'macd_signal',
-                'supertrend_period', 'supertrend_multiplier']:
+                'supertrend_period', 'supertrend_multiplier',
+                'dc_upper_period', 'dc_mid_period', 'dc_lower_period', 'dc_offset',
+                'psar_af_start', 'psar_af_increment', 'psar_af_max']:
         st.session_state.pop(f'{pfx}{key}', None)
     st.session_state.pop(f'{pfx}ema_periods', None)
     st.rerun()

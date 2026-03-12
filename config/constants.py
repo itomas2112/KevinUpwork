@@ -19,6 +19,10 @@ PRICE_AND_INDICATORS = [
     "Senkou B",
     "Chikou",
     "Supertrend",
+    "DC Upper Band",
+    "DC Middle Band",
+    "DC Lower Band",
+    "PSAR",
 ]
 
 ATR_VOLUME_GROUP = [
@@ -141,8 +145,8 @@ INDICATOR_MAP = {
     "KC Lower Band": "kc_lower",
     "Tenkan": "tenkan",
     "Kijun": "kijun",
-    "Senkou A": "senkou_a_current",
-    "Senkou B": "senkou_b_current",
+    "Senkou A": "senkou_a",
+    "Senkou B": "senkou_b",
     "RSI": "rsi",
     "RSI 13 SMA": "rsi_13",
     "RSI 33 SMA": "rsi_33",
@@ -162,6 +166,10 @@ INDICATOR_MAP = {
     "OBV": "obv",
     "Acc/Dist": "acc_dist",
     "Supertrend": "supertrend",
+    "DC Upper Band": "dc_upper",
+    "DC Middle Band": "dc_mid",
+    "DC Lower Band": "dc_lower",
+    "PSAR": "psar",
 }
 
 

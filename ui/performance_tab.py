@@ -60,6 +60,10 @@ def render_performance_tab(sidebar_config):
         st.info("Please upload a DRM file in the Charting tab first.")
         return
 
+    if not sidebar_config.get('date_range_applied', False):
+        st.info("Please set a date range in the sidebar and click **Apply Date Range** to proceed.")
+        return
+
     # --------------------------------------------------
     # Selection UI — dynamic rows with add/remove
     # --------------------------------------------------
@@ -182,13 +186,18 @@ def render_performance_tab(sidebar_config):
                              'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
                              'ichi_show_chikou_decision',
                              'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
-                             'kc_show_upper', 'kc_show_middle', 'kc_show_lower'}
+                             'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
+                             'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
         indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
         strategy_settings = selected_strategy.get('indicator_settings')
         if strategy_settings:
             strategy_settings = migrate_indicator_settings(strategy_settings)
             indicator_params.update(strategy_settings)
-        df_full = calculate_indicators(df=st.session_state[df_key], **indicator_params)
+        from ui.charting_tab import _get_or_calculate
+        g_start = sidebar_config.get('global_start_date')
+        g_end = sidebar_config.get('global_end_date')
+        df_full = _get_or_calculate(df_key, f"_perf_{df_key}_features", f"_perf_{df_key}_params", indicator_params,
+                                    global_start_date=g_start, global_end_date=g_end)
 
         # --------------------------------------------------
         # Run backtest for each selection
@@ -256,6 +265,8 @@ def render_performance_tab(sidebar_config):
                         show_ichimoku=sidebar_config['show_ichimoku'],
                         show_bb=sidebar_config['show_bb'],
                         show_kc=sidebar_config['show_kc'],
+                        show_donchian=sidebar_config.get('show_donchian', False),
+                        show_psar=sidebar_config.get('show_psar', False),
                     )
                     if df_slice.empty:
                         continue
@@ -331,6 +342,9 @@ def _build_metrics_table(results_dict):
         "Expected Value",
         "Target Exit %",
         "Stop Exit %",
+        "Sharpe Ratio",
+        "Max Drawdown",
+        "MAR Ratio",
     ]
 
     table_data = {}
@@ -345,6 +359,9 @@ def _build_metrics_table(results_dict):
             f"{agg['expected_value']:.2f}R",
             f"{agg['target_exit_pct']:.0f}%",
             f"{agg['stop_exit_pct']:.0f}%",
+            f"{agg['sharpe_ratio']:.2f}",
+            f"{agg['max_drawdown']:.2f}R",
+            f"{agg['mar_ratio']:.2f}",
         ]
 
     return pd.DataFrame(table_data, index=metric_names)
@@ -362,4 +379,7 @@ def _empty_agg():
         'expected_value': 0.0,
         'target_exit_pct': 0.0,
         'stop_exit_pct': 0.0,
+        'sharpe_ratio': 0.0,
+        'max_drawdown': 0.0,
+        'mar_ratio': 0.0,
     }

@@ -4,10 +4,72 @@ Charting tab (Tab 1) UI and logic
 import streamlit as st
 from data.loader import load_ohlc, load_drm, parse_drm_periods
 from data.helpers import expand_selection
-from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings
+from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings, changed_groups, recalculate_groups
 from graphs.graph import render_charts
 from strategies.first_strategy import ichimoku_tenkan_kijun_strategy, execute_custom_strategy
 import pandas as pd
+import json
+
+
+def _backtest_fingerprint(strategy, indicator_params, **overlay_flags):
+    """Build a hashable fingerprint for backtest cache invalidation."""
+    strat_str = json.dumps(strategy, sort_keys=True, default=str) if strategy else ""
+    params_str = json.dumps(indicator_params, sort_keys=True, default=str)
+    flags = tuple(sorted(overlay_flags.items()))
+    return hash((strat_str, params_str, flags))
+
+
+def _get_or_calculate(raw_df_key, features_key, params_key, current_params,
+                      global_start_date=None, global_end_date=None):
+    """
+    Return cached df_features from session_state if params and raw data are unchanged.
+    If only some indicator params changed, incrementally recalculate just those indicators.
+    Otherwise do a full recalculation.
+
+    global_start_date / global_end_date trim the raw data before any calculation.
+    """
+    raw_df = st.session_state[raw_df_key]
+
+    # Apply global date range filter
+    if global_start_date is not None:
+        raw_df = raw_df[raw_df.index >= pd.Timestamp(global_start_date)]
+    if global_end_date is not None:
+        raw_df = raw_df[raw_df.index < pd.Timestamp(global_end_date) + pd.Timedelta(days=1)]
+
+    if raw_df.empty:
+        return raw_df
+
+    data_fingerprint = (len(raw_df), raw_df.index[0], raw_df.index[-1])
+
+    stored_params = st.session_state.get(params_key)
+    stored_fingerprint = st.session_state.get(f"{params_key}_data_fp")
+    stored_features = st.session_state.get(features_key)
+
+    # Exact match — return cached
+    if (stored_features is not None
+            and stored_params == current_params
+            and stored_fingerprint == data_fingerprint):
+        return stored_features
+
+    # If raw data is the same but only some indicator params changed,
+    # do an incremental recalculation on the existing DataFrame.
+    if (stored_features is not None
+            and stored_params is not None
+            and stored_fingerprint == data_fingerprint):
+        groups = changed_groups(stored_params, current_params)
+        if groups:
+            df_features = stored_features.copy()
+            recalculate_groups(df_features, groups, **current_params)
+            st.session_state[features_key] = df_features
+            st.session_state[params_key] = current_params.copy()
+            return df_features
+
+    # Full recalculation (new data or first run)
+    df_features = calculate_indicators(df=raw_df, **current_params)
+    st.session_state[features_key] = df_features
+    st.session_state[params_key] = current_params.copy()
+    st.session_state[f"{params_key}_data_fp"] = data_fingerprint
+    return df_features
 
 
 def render_charting_tab(sidebar_config):
@@ -20,6 +82,11 @@ def render_charting_tab(sidebar_config):
 
     # Check if data is loaded
     if not check_data_loaded(show_1h):
+        return
+
+    # Require date range before proceeding
+    if not sidebar_config.get('date_range_applied', False):
+        st.info("Please set a date range in the sidebar and click **Apply Date Range** to proceed.")
         return
 
     # Expand all charting selections into (pattern_type, primary, secondary) combos
@@ -51,6 +118,7 @@ def render_charting_tab(sidebar_config):
                 strategy_indicator_settings = migrate_indicator_settings(strategy_indicator_settings)
 
     # Calculate indicators (exclude display-only params: RSI zones and CMB lines)
+    # Results are stored in session_state and only recalculated when params or data change.
     display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
                          'cmb_lines',
                          'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
@@ -58,25 +126,30 @@ def render_charting_tab(sidebar_config):
                          'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
                          'ichi_show_chikou_decision',
                          'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
-                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower'}
+                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
+                         'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
 
     df_features_1h = None
     df_features_15m = None
+    indicator_params_1h = None
+    indicator_params_15m = None
+    g_start = sidebar_config.get('global_start_date')
+    g_end = sidebar_config.get('global_end_date')
     if show_1h:
         indicator_params_1h = {k: v for k, v in sidebar_config['params_1h'].items() if k not in display_only_keys}
         if strategy_indicator_settings:
             indicator_params_1h.update(strategy_indicator_settings)
-        df_features_1h = calculate_indicators(
-            df=st.session_state["df_1h"],
-            **indicator_params_1h
+        df_features_1h = _get_or_calculate(
+            "df_1h", "df_features_1h", "_indicator_params_1h", indicator_params_1h,
+            global_start_date=g_start, global_end_date=g_end,
         )
     else:
         indicator_params_15m = {k: v for k, v in sidebar_config['params_15m'].items() if k not in display_only_keys}
         if strategy_indicator_settings:
             indicator_params_15m.update(strategy_indicator_settings)
-        df_features_15m = calculate_indicators(
-            df=st.session_state["df_15m"],
-            **indicator_params_15m
+        df_features_15m = _get_or_calculate(
+            "df_15m", "df_features_15m", "_indicator_params_15m", indicator_params_15m,
+            global_start_date=g_start, global_end_date=g_end,
         )
 
     # Collect stats from all periods for global aggregation
@@ -84,6 +157,21 @@ def render_charting_tab(sidebar_config):
     all_stats_15m = []
     strategy_label = None
     total_periods = 0
+
+    # Build backtest cache fingerprint — invalidate when strategy or params change
+    active_indicator_params = indicator_params_1h if show_1h else indicator_params_15m
+    bt_fingerprint = _backtest_fingerprint(
+        selected_custom_strategy, active_indicator_params,
+        show_ichimoku=sidebar_config['show_ichimoku'],
+        show_bb=sidebar_config['show_bb'],
+        show_kc=sidebar_config['show_kc'],
+        show_donchian=sidebar_config.get('show_donchian', False),
+        show_psar=sidebar_config.get('show_psar', False),
+    )
+    # Invalidate cache if fingerprint changed
+    if st.session_state.get('_bt_fingerprint') != bt_fingerprint:
+        st.session_state['_bt_cache'] = {}
+        st.session_state['_bt_fingerprint'] = bt_fingerprint
 
     # Reserve a container at the top for the global performance summary
     global_perf_container = st.container()
@@ -223,14 +311,18 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
             df=df_features_1h, start_date=start_dt, end_date=end_dt,
             show_ichimoku=sidebar_config['show_ichimoku'],
             show_bb=sidebar_config['show_bb'],
-            show_kc=sidebar_config['show_kc']
+            show_kc=sidebar_config['show_kc'],
+            show_donchian=sidebar_config.get('show_donchian', False),
+            show_psar=sidebar_config.get('show_psar', False),
         )
     else:
         df_slice_15m, period_start_15m, period_end_15m = slice_for_graph(
             df=df_features_15m, start_date=start_dt, end_date=end_dt,
             show_ichimoku=sidebar_config['show_ichimoku'],
             show_bb=sidebar_config['show_bb'],
-            show_kc=sidebar_config['show_kc']
+            show_kc=sidebar_config['show_kc'],
+            show_donchian=sidebar_config.get('show_donchian', False),
+            show_psar=sidebar_config.get('show_psar', False),
         )
 
     active_slice = df_slice_1h if show_1h else df_slice_15m
@@ -238,15 +330,31 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
         st.info("No data for this period.")
         return None, None
 
-    # Execute strategies
+    # Execute strategies (with caching)
     stats_1h, stats_15m = None, None
     strategy_label = None
 
     if show_custom_strategy and selected_custom_strategy is not None:
-        if show_1h:
-            df_slice_1h, stats_1h = execute_custom_strategy(df_slice_1h, selected_custom_strategy, period_start_1h, period_end_1h)
+        bt_cache = st.session_state.get('_bt_cache', {})
+        cache_hit = chart_key in bt_cache
+
+        if cache_hit:
+            # Use cached backtest results
+            cached_df, cached_stats = bt_cache[chart_key]
+            if show_1h:
+                df_slice_1h, stats_1h = cached_df, cached_stats
+            else:
+                df_slice_15m, stats_15m = cached_df, cached_stats
         else:
-            df_slice_15m, stats_15m = execute_custom_strategy(df_slice_15m, selected_custom_strategy, period_start_15m, period_end_15m)
+            # Run backtest and cache results
+            if show_1h:
+                df_slice_1h, stats_1h = execute_custom_strategy(df_slice_1h, selected_custom_strategy, period_start_1h, period_end_1h)
+                bt_cache[chart_key] = (df_slice_1h, stats_1h)
+            else:
+                df_slice_15m, stats_15m = execute_custom_strategy(df_slice_15m, selected_custom_strategy, period_start_15m, period_end_15m)
+                bt_cache[chart_key] = (df_slice_15m, stats_15m)
+            st.session_state['_bt_cache'] = bt_cache
+
         strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
 
     # RSI zone and CMB line parameters per timeframe
@@ -258,6 +366,7 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                         'ichi_show_chikou_decision',
                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
+                        'dc_show_upper', 'dc_show_middle', 'dc_show_lower',
                         'ema_periods']
     rsi_zones_1h = {k: sidebar_config['params_1h'][k] for k in chart_param_keys} if show_1h else None
     rsi_zones_15m = {k: sidebar_config['params_15m'][k] for k in chart_param_keys} if not show_1h else None
@@ -269,7 +378,8 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
 
     panel_kwargs = {k: sidebar_config[k] for k in
                     ['show_rsi', 'show_cmb', 'show_stoch', 'show_adx', 'show_atr',
-                     'show_macd', 'show_obv', 'show_accdist', 'show_supertrend', 'show_ema']}
+                     'show_macd', 'show_obv', 'show_accdist', 'show_supertrend', 'show_ema',
+                     'show_donchian', 'show_psar']}
 
     chart_kwargs = dict(
         df_slice_1h=df_slice_1h, df_slice_15m=df_slice_15m,
@@ -328,6 +438,9 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
             f"{stats.loc['Total P&L (R)', 'value']:.2f}R",
             f"{round(stats.loc['Target exit (%)', 'value']):.0f}%",
             f"{round(stats.loc['Stop exit (%)', 'value']):.0f}%",
+            f"{stats.loc['Sharpe Ratio', 'value']:.2f}",
+            f"{stats.loc['Max Drawdown (R)', 'value']:.2f}R",
+            f"{stats.loc['MAR Ratio', 'value']:.2f}",
         ]
 
     if show_1h:
@@ -346,6 +459,9 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
             "Total P&L",
             "Target Exit %",
             "Stop Exit %",
+            "Sharpe Ratio",
+            "Max Drawdown",
+            "MAR Ratio",
         ],
     )
     st.table(stats_table)
@@ -361,13 +477,17 @@ def _aggregate_stats(all_stats):
         Winning trades P&L (R), Losing trades P&L (R)
 
     We sum the raw counts and dollars, then recompute rates.
+    Sharpe, MaxDD, and MAR are computed from pooled individual trade R P&Ls.
     """
+    import numpy as np
+
     total_trades = 0
     total_wins = 0
     total_win_pnl = 0.0
     total_lose_pnl = 0.0
     total_target_exits = 0
     total_stop_exits = 0
+    all_trade_pnls = []  # pooled individual trade R P&Ls
 
     for stats_df in all_stats:
         n = int(stats_df.loc['Number of trades', 'value'])
@@ -381,6 +501,10 @@ def _aggregate_stats(all_stats):
         total_lose_pnl += stats_df.loc['Losing trades P&L (R)', 'value']
         total_target_exits += round(n * stats_df.loc['Target exit (%)', 'value'] / 100.0)
         total_stop_exits += round(n * stats_df.loc['Stop exit (%)', 'value'] / 100.0)
+
+        # Collect individual trade R P&Ls for pooled metric computation
+        trade_pnls = getattr(stats_df, 'attrs', {}).get('trade_pnls_r', [])
+        all_trade_pnls.extend(trade_pnls)
 
     total_losses = total_trades - total_wins
     total_pnl = total_win_pnl + total_lose_pnl
@@ -396,6 +520,25 @@ def _aggregate_stats(all_stats):
 
         # Expected Value = (Win% x Avg Profit) - (Lose% x Avg Loss)
         expected_value = (win_pct / 100 * avg_win_pnl) + (lose_pct / 100 * avg_lose_pnl)
+
+        # Sharpe Ratio from pooled trades
+        if len(all_trade_pnls) >= 2:
+            pnl_std = np.std(all_trade_pnls, ddof=1)
+            sharpe_ratio = (np.mean(all_trade_pnls) / pnl_std) if pnl_std > 0 else 0.0
+        else:
+            sharpe_ratio = 0.0
+
+        # Max Drawdown from pooled cumulative R equity curve
+        if all_trade_pnls:
+            cumulative = np.cumsum(all_trade_pnls)
+            peak = np.maximum.accumulate(cumulative)
+            drawdowns = cumulative - peak
+            max_drawdown = abs(drawdowns.min())
+        else:
+            max_drawdown = 0.0
+
+        # MAR Ratio
+        mar_ratio = (total_pnl / max_drawdown) if max_drawdown > 0 else 0.0
     else:
         win_pct = 0.0
         lose_pct = 0.0
@@ -405,6 +548,9 @@ def _aggregate_stats(all_stats):
         expected_value = 0.0
         target_exit_pct = 0.0
         stop_exit_pct = 0.0
+        sharpe_ratio = 0.0
+        max_drawdown = 0.0
+        mar_ratio = 0.0
 
     return {
         'num_trades': total_trades,
@@ -416,6 +562,9 @@ def _aggregate_stats(all_stats):
         'expected_value': expected_value,
         'target_exit_pct': target_exit_pct,
         'stop_exit_pct': stop_exit_pct,
+        'sharpe_ratio': sharpe_ratio,
+        'max_drawdown': max_drawdown,
+        'mar_ratio': mar_ratio,
     }
 
 
@@ -440,6 +589,9 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             f"{agg['expected_value']:.2f}R",
             f"{agg['target_exit_pct']:.0f}%",
             f"{agg['stop_exit_pct']:.0f}%",
+            f"{agg['sharpe_ratio']:.2f}",
+            f"{agg['max_drawdown']:.2f}R",
+            f"{agg['mar_ratio']:.2f}",
         ]
 
     if show_1h:
@@ -461,6 +613,9 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             "Expected Value",
             "Target Exit %",
             "Stop Exit %",
+            "Sharpe Ratio",
+            "Max Drawdown",
+            "MAR Ratio",
         ],
     )
 
