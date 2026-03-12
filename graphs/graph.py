@@ -656,6 +656,8 @@ def build_main_chart(
             fillcolor="rgba(255, 255, 255, 0.07)",
             layer="above",
         )
+    else:
+        layout_kwargs["dragmode"] = "pan"
 
     fig.update_layout(**layout_kwargs)
 

@@ -902,6 +902,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         # MAR Ratio: Total P&L (R) / Max Drawdown (R)
         mar_ratio = (total_pnl / max_drawdown) if max_drawdown > 0 else 0.0
+
+        # SQN (System Quality Number): sqrt(N) * mean(R P&Ls) / stdev(R P&Ls)
+        if num_trades >= 2 and pnl_std > 0:
+            sqn = (np.mean(trade_pnls_r) / pnl_std) * np.sqrt(num_trades)
+        else:
+            sqn = 0.0
     else:
         win_rate = 0.0
         loss_rate = 0.0
@@ -915,6 +921,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         sharpe_ratio = 0.0
         max_drawdown = 0.0
         mar_ratio = 0.0
+        sqn = 0.0
 
     stats_df = pd.DataFrame(
         {
@@ -932,6 +939,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 sharpe_ratio,
                 max_drawdown,
                 mar_ratio,
+                sqn,
             ]
         },
         index=[
@@ -948,6 +956,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             "Sharpe Ratio",
             "Max Drawdown (R)",
             "MAR Ratio",
+            "SQN",
         ],
     )
 

@@ -441,6 +441,7 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
             f"{stats.loc['Sharpe Ratio', 'value']:.2f}",
             f"{stats.loc['Max Drawdown (R)', 'value']:.2f}R",
             f"{stats.loc['MAR Ratio', 'value']:.2f}",
+            f"{stats.loc['SQN', 'value']:.2f}",
         ]
 
     if show_1h:
@@ -462,6 +463,7 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
             "Sharpe Ratio",
             "Max Drawdown",
             "MAR Ratio",
+            "SQN",
         ],
     )
     st.table(stats_table)
@@ -539,6 +541,13 @@ def _aggregate_stats(all_stats):
 
         # MAR Ratio
         mar_ratio = (total_pnl / max_drawdown) if max_drawdown > 0 else 0.0
+
+        # SQN: sqrt(N) * mean(R P&Ls) / stdev(R P&Ls)
+        if len(all_trade_pnls) >= 2:
+            pnl_std = np.std(all_trade_pnls, ddof=1)
+            sqn = (np.mean(all_trade_pnls) / pnl_std * np.sqrt(len(all_trade_pnls))) if pnl_std > 0 else 0.0
+        else:
+            sqn = 0.0
     else:
         win_pct = 0.0
         lose_pct = 0.0
@@ -551,6 +560,7 @@ def _aggregate_stats(all_stats):
         sharpe_ratio = 0.0
         max_drawdown = 0.0
         mar_ratio = 0.0
+        sqn = 0.0
 
     return {
         'num_trades': total_trades,
@@ -565,6 +575,7 @@ def _aggregate_stats(all_stats):
         'sharpe_ratio': sharpe_ratio,
         'max_drawdown': max_drawdown,
         'mar_ratio': mar_ratio,
+        'sqn': sqn,
     }
 
 
@@ -592,6 +603,7 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             f"{agg['sharpe_ratio']:.2f}",
             f"{agg['max_drawdown']:.2f}R",
             f"{agg['mar_ratio']:.2f}",
+            f"{agg['sqn']:.2f}",
         ]
 
     if show_1h:
@@ -616,6 +628,7 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             "Sharpe Ratio",
             "Max Drawdown",
             "MAR Ratio",
+            "SQN",
         ],
     )
 

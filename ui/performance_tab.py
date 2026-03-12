@@ -345,6 +345,7 @@ def _build_metrics_table(results_dict):
         "Sharpe Ratio",
         "Max Drawdown",
         "MAR Ratio",
+        "SQN",
     ]
 
     table_data = {}
@@ -362,6 +363,7 @@ def _build_metrics_table(results_dict):
             f"{agg['sharpe_ratio']:.2f}",
             f"{agg['max_drawdown']:.2f}R",
             f"{agg['mar_ratio']:.2f}",
+            f"{agg['sqn']:.2f}",
         ]
 
     return pd.DataFrame(table_data, index=metric_names)
@@ -382,4 +384,5 @@ def _empty_agg():
         'sharpe_ratio': 0.0,
         'max_drawdown': 0.0,
         'mar_ratio': 0.0,
+        'sqn': 0.0,
     }
