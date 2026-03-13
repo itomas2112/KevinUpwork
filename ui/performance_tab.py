@@ -177,153 +177,142 @@ def render_performance_tab(sidebar_config):
     st.markdown("---")
 
     # --------------------------------------------------
-    # Calculate button (prevents auto-calculate on every widget change)
+    # Auto-calculate backtest
     # --------------------------------------------------
-    if st.button("Calculate", key="perf_calculate_btn", type="primary"):
-        display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2', 'cmb_lines',
-                             'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
-                             'ichi_show_senkou_b', 'ichi_show_chikou',
-                             'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
-                             'ichi_show_chikou_decision',
-                             'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
-                             'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
-                             'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
-        indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
-        strategy_settings = selected_strategy.get('indicator_settings')
-        if strategy_settings:
-            strategy_settings = migrate_indicator_settings(strategy_settings)
-            indicator_params.update(strategy_settings)
-        from ui.charting_tab import _get_or_calculate
-        g_start = sidebar_config.get('global_start_date')
-        g_end = sidebar_config.get('global_end_date')
-        df_full = _get_or_calculate(df_key, f"_perf_{df_key}_features", f"_perf_{df_key}_params", indicator_params,
-                                    global_start_date=g_start, global_end_date=g_end)
+    display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2', 'cmb_lines',
+                         'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
+                         'ichi_show_senkou_b', 'ichi_show_chikou',
+                         'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
+                         'ichi_show_chikou_decision',
+                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
+                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
+                         'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
+    indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
+    strategy_settings = selected_strategy.get('indicator_settings')
+    if strategy_settings:
+        strategy_settings = migrate_indicator_settings(strategy_settings)
+        indicator_params.update(strategy_settings)
+    from ui.charting_tab import _get_or_calculate
+    g_start = sidebar_config.get('global_start_date')
+    g_end = sidebar_config.get('global_end_date')
+    df_full = _get_or_calculate(df_key, f"_perf_{df_key}_features", f"_perf_{df_key}_params", indicator_params,
+                                global_start_date=g_start, global_end_date=g_end)
 
-        # --------------------------------------------------
-        # Run backtest for each selection
-        # --------------------------------------------------
-        results = {}  # selection_label -> aggregated dict
-        global_stats = []  # deduplicated stats for global metrics
-        global_seen_combos = set()  # track (pattern_type, primary, secondary) already counted globally
+    # --------------------------------------------------
+    # Run backtest for each selection
+    # --------------------------------------------------
+    results = {}  # selection_label -> aggregated dict
+    global_stats = []  # deduplicated stats for global metrics
+    global_seen_combos = set()  # track (pattern_type, primary, secondary) already counted globally
 
-        # Cache backtest results per combo to avoid re-running identical combos
-        combo_cache = {}  # (pattern_type, primary, secondary) -> list of stats
+    # Cache backtest results per combo to avoid re-running identical combos
+    combo_cache = {}  # (pattern_type, primary, secondary) -> list of stats
 
-        # Count total combos for progress bar
-        total_combos = 0
-        expanded_per_selection = []
-        for sel in selections:
-            combos = expand_selection(sel)
-            expanded_per_selection.append(combos)
-            total_combos += len(combos)
+    # Count total combos for progress bar
+    total_combos = 0
+    expanded_per_selection = []
+    for sel in selections:
+        combos = expand_selection(sel)
+        expanded_per_selection.append(combos)
+        total_combos += len(combos)
 
-        progress_bar = st.progress(0)
-        combo_counter = 0
+    progress_bar = st.progress(0)
+    combo_counter = 0
 
-        for sel, combos in zip(selections, expanded_per_selection):
-            label = selection_label(sel)
-            # Ensure unique column labels when duplicate selections exist
-            if label in results:
-                n = 2
-                while f"{label} ({n})" in results:
-                    n += 1
-                label = f"{label} ({n})"
+    for sel, combos in zip(selections, expanded_per_selection):
+        label = selection_label(sel)
+        # Ensure unique column labels when duplicate selections exist
+        if label in results:
+            n = 2
+            while f"{label} ({n})" in results:
+                n += 1
+            label = f"{label} ({n})"
 
-            if not combos:
-                results[label] = _empty_agg()
-                continue
+        if not combos:
+            results[label] = _empty_agg()
+            continue
 
-            selection_stats = []
-            for pattern_type, primary, secondary in combos:
-                combo_key = (pattern_type, primary, secondary)
+        selection_stats = []
+        for pattern_type, primary, secondary in combos:
+            combo_key = (pattern_type, primary, secondary)
 
-                # Use cached results if this combo was already computed
-                if combo_key in combo_cache:
-                    selection_stats.extend(combo_cache[combo_key])
-                    if combo_key not in global_seen_combos:
-                        global_seen_combos.add(combo_key)
-                        global_stats.extend(combo_cache[combo_key])
-                    combo_counter += 1
-                    if total_combos > 0:
-                        progress_bar.progress(combo_counter / total_combos)
-                    continue
-
-                drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
-                if drm_df is None:
-                    combo_cache[combo_key] = []
-                    combo_counter += 1
-                    if total_combos > 0:
-                        progress_bar.progress(combo_counter / total_combos)
-                    continue
-
-                periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
-
-                combo_stats = []
-                for start_dt, end_dt in periods:
-                    df_slice, period_start, period_end = slice_for_graph(
-                        df=df_full, start_date=start_dt, end_date=end_dt,
-                        show_ichimoku=sidebar_config['show_ichimoku'],
-                        show_bb=sidebar_config['show_bb'],
-                        show_kc=sidebar_config['show_kc'],
-                        show_donchian=sidebar_config.get('show_donchian', False),
-                        show_psar=sidebar_config.get('show_psar', False),
-                    )
-                    if df_slice.empty:
-                        continue
-
-                    _, stats = execute_custom_strategy(df_slice, selected_strategy, period_start, period_end)
-                    combo_stats.append(stats)
-
-                combo_cache[combo_key] = combo_stats
-                selection_stats.extend(combo_stats)
-
-                # Only add to global stats once per unique combo
+            # Use cached results if this combo was already computed
+            if combo_key in combo_cache:
+                selection_stats.extend(combo_cache[combo_key])
                 if combo_key not in global_seen_combos:
                     global_seen_combos.add(combo_key)
-                    global_stats.extend(combo_stats)
-
+                    global_stats.extend(combo_cache[combo_key])
                 combo_counter += 1
                 if total_combos > 0:
                     progress_bar.progress(combo_counter / total_combos)
+                continue
 
-            if selection_stats:
-                results[label] = _aggregate_stats(selection_stats)
-            else:
-                results[label] = _empty_agg()
+            drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
+            if drm_df is None:
+                combo_cache[combo_key] = []
+                combo_counter += 1
+                if total_combos > 0:
+                    progress_bar.progress(combo_counter / total_combos)
+                continue
 
-        progress_bar.empty()
+            periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
 
-        # Store results in session state so they persist across reruns
-        st.session_state['perf_cached_results'] = results
-        st.session_state['perf_cached_global_stats'] = global_stats
-        st.session_state['perf_cached_strategy_name'] = selected_strategy.get('strategy_name', 'Custom')
+            combo_stats = []
+            for start_dt, end_dt in periods:
+                df_slice, period_start, period_end = slice_for_graph(
+                    df=df_full, start_date=start_dt, end_date=end_dt,
+                    show_ichimoku=sidebar_config['show_ichimoku'],
+                    show_bb=sidebar_config['show_bb'],
+                    show_kc=sidebar_config['show_kc'],
+                    show_donchian=sidebar_config.get('show_donchian', False),
+                    show_psar=sidebar_config.get('show_psar', False),
+                )
+                if df_slice.empty:
+                    continue
 
-    # --------------------------------------------------
-    # Display results (from session state cache)
-    # --------------------------------------------------
-    cached_results = st.session_state.get('perf_cached_results')
-    cached_global_stats = st.session_state.get('perf_cached_global_stats')
-    cached_strategy_name = st.session_state.get('perf_cached_strategy_name', '')
+                _, stats = execute_custom_strategy(df_slice, selected_strategy, period_start, period_end)
+                combo_stats.append(stats)
 
-    if cached_results is not None:
-        # Global Performance Metrics
-        st.subheader("Global Performance Metrics")
-        st.caption(f"Strategy: **{cached_strategy_name}**")
-        if cached_global_stats:
-            global_agg = _aggregate_stats(cached_global_stats)
+            combo_cache[combo_key] = combo_stats
+            selection_stats.extend(combo_stats)
+
+            # Only add to global stats once per unique combo
+            if combo_key not in global_seen_combos:
+                global_seen_combos.add(combo_key)
+                global_stats.extend(combo_stats)
+
+            combo_counter += 1
+            if total_combos > 0:
+                progress_bar.progress(combo_counter / total_combos)
+
+        if selection_stats:
+            results[label] = _aggregate_stats(selection_stats)
         else:
-            global_agg = _empty_agg()
+            results[label] = _empty_agg()
 
-        global_table = _build_metrics_table({"Global": global_agg})
-        st.table(global_table)
+    progress_bar.empty()
 
-        # Per-selection results table
-        if cached_results:
-            st.subheader("Performance by Selection")
-            perf_table = _build_metrics_table(cached_results)
-            st.table(perf_table)
+    # --------------------------------------------------
+    # Display results
+    # --------------------------------------------------
+    strategy_name = selected_strategy.get('strategy_name', 'Custom')
+
+    # Global Performance Metrics
+    st.subheader("Global Performance Metrics")
+    st.caption(f"Strategy: **{strategy_name}**")
+    if global_stats:
+        global_agg = _aggregate_stats(global_stats)
     else:
-        st.info("Configure your pattern selections above, then click **Calculate** to run the backtest.")
+        global_agg = _empty_agg()
+
+    global_table = _build_metrics_table({"Global": global_agg})
+    st.table(global_table)
+
+    # Per-selection results table
+    if results:
+        st.subheader("Performance by Selection")
+        perf_table = _build_metrics_table(results)
+        st.table(perf_table)
 
 
 # ------------------------------------------------------------------

@@ -9,12 +9,15 @@ def donchian_channel(high: pd.Series, low: pd.Series,
 
     Returns (dc_upper, dc_mid, dc_lower) as pandas Series.
     """
-    dc_upper = high.rolling(window=upper_period).max()
-    dc_lower = low.rolling(window=lower_period).min()
+    # Shift by 1 so each bar shows the channel from the PREVIOUS N periods
+    # (excluding the current bar). Without this, DC Upper = highest high including
+    # the current bar, making "Price Cross Above DC Upper" impossible.
+    dc_upper = high.rolling(window=upper_period).max().shift(1)
+    dc_lower = low.rolling(window=lower_period).min().shift(1)
 
     # Midline uses average of its own upper/lower computed from mid_period
-    mid_high = high.rolling(window=mid_period).max()
-    mid_low = low.rolling(window=mid_period).min()
+    mid_high = high.rolling(window=mid_period).max().shift(1)
+    mid_low = low.rolling(window=mid_period).min().shift(1)
     dc_mid = (mid_high + mid_low) / 2
 
     if offset != 0:

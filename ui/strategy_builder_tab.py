@@ -635,7 +635,6 @@ def render_entry_box():
         if st.button("➕ Add Condition", key="add_entry_condition"):
             if st.session_state['entry_conditions_count'] < 10:
                 st.session_state['entry_conditions_count'] += 1
-                st.rerun()
 
         # Display conditions
         if st.session_state['entry_conditions_count'] > 0:
@@ -1130,7 +1129,7 @@ def render_strategy_management():
 
                         # Conditions
                         st.markdown("#### Conditions")
-                        conditions_count = entry.get('conditions_count', 0)
+                        conditions_count = len(entry.get('conditions', []))
 
                         if conditions_count > 0:
                             st.markdown(f"**{conditions_count} condition(s) must be met:**")
@@ -1357,6 +1356,11 @@ def add_exit_group():
 def remove_exit_group(group_idx):
     """Remove an exit group"""
     if 'exit_groups' in st.session_state and 0 <= group_idx < len(st.session_state['exit_groups']):
+        total = len(st.session_state['exit_groups'])
+        # Clear stale widget keys for this and all subsequent groups
+        # (indices shift down after pop, so old keys become misaligned)
+        for idx in range(group_idx, total):
+            _clear_exit_group_widget_keys(idx)
         st.session_state['exit_groups'].pop(group_idx)
 
 
@@ -1378,18 +1382,32 @@ def add_exit_to_group(group_idx, exit_type):
             st.session_state['exit_groups'][group_idx]['stops'].append(exit_config)
 
 
+def _clear_exit_group_widget_keys(group_idx):
+    """Clear all widget keys for an exit group so they get re-populated from data."""
+    prefixes = (f"Target_{group_idx}_", f"Stop_{group_idx}_", f"exit_group_{group_idx}_")
+    for k in list(st.session_state.keys()):
+        if any(k.startswith(p) for p in prefixes):
+            del st.session_state[k]
+
+
 def remove_exit_from_group(group_idx, exit_type, exit_idx):
     """Remove a specific exit from a group"""
     if 'exit_groups' not in st.session_state:
         return
 
     if 0 <= group_idx < len(st.session_state['exit_groups']):
-        if exit_type == 'Target':
-            if 0 <= exit_idx < len(st.session_state['exit_groups'][group_idx]['targets']):
-                st.session_state['exit_groups'][group_idx]['targets'].pop(exit_idx)
-        else:  # Stop
-            if 0 <= exit_idx < len(st.session_state['exit_groups'][group_idx]['stops']):
-                st.session_state['exit_groups'][group_idx]['stops'].pop(exit_idx)
+        list_key = 'targets' if exit_type == 'Target' else 'stops'
+        items = st.session_state['exit_groups'][group_idx].get(list_key, [])
+        if 0 <= exit_idx < len(items):
+            total = len(items)
+            # Clear stale widget keys from removed index onward
+            # (indices shift down after pop, so old keys become misaligned)
+            for idx in range(exit_idx, total):
+                prefix = f"{exit_type}_{group_idx}_{idx}"
+                for k in list(st.session_state.keys()):
+                    if k.startswith(prefix):
+                        del st.session_state[k]
+            items.pop(exit_idx)
 
 
 def render_exit_groups():
@@ -1600,12 +1618,10 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
             if st.button("➕ Add Condition", key=f"add_cond_{exit_type}_{group_idx}_{exit_idx}"):
                 if st.session_state[conditions_key] < 5:  # Limit to 5 conditions per exit
                     st.session_state[conditions_key] += 1
-                    st.rerun()
         with col2:
             if st.button("➖ Remove", key=f"rem_cond_{exit_type}_{group_idx}_{exit_idx}"):
                 if st.session_state[conditions_key] > 0:
                     st.session_state[conditions_key] -= 1
-                    st.rerun()
 
         # Render conditions
         for cond_idx in range(st.session_state.get(conditions_key, 0)):
