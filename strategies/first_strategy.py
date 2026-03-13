@@ -3,6 +3,7 @@
 import pandas as pd
 import numpy as np
 from config.constants import get_indicator_map
+from indicators.atr_indicator import atr_indicator
 
 def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
     df = df.copy()
@@ -435,14 +436,32 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     # Helper: get the static stop indicator value at a bar
     # -------------------------------------------------
-    def get_static_stop_price(stop_config, current_idx):
+    def get_static_stop_price(stop_config, current_idx, entry_price=None):
         """
-        Return the indicator value used by the initial (static) stop at a given bar.
-        The static stop is always Price × Indicator, so we return the indicator's value.
+        Return the stop price used by the initial (static) stop at a given bar.
+        For Indicator mode: returns the indicator's value (locked at entry time).
+        For ATR mode: returns entry_price ± ATR × multiplier based on direction.
         """
         if not stop_config:
             return None
 
+        stop_type = stop_config.get('stop_type', 'Indicator')
+
+        if stop_type == 'ATR':
+            if entry_price is None:
+                return None
+            atr_mult = stop_config.get('atr_multiplier', 1.5)
+            # Use pre-computed ATR series
+            atr_val = atr_stop_series.iloc[current_idx] if atr_stop_series is not None else None
+            if pd.isna(atr_val):
+                return None
+            # Long: stop below entry, Short: stop above entry
+            if strategy_direction == 'Long':
+                return entry_price - atr_val * atr_mult
+            else:
+                return entry_price + atr_val * atr_mult
+
+        # Indicator mode
         compare_type = stop_config.get('compare_type', 'Indicator')
         if compare_type == 'Fixed Value':
             return stop_config.get('value')
@@ -514,6 +533,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         # R Profit/R Loss can't be evaluated before entry (no position exists yet)
         if element1_name in ("R Profit", "R Loss"):
             return False
+
+        # ATR stops can't be evaluated before entry (stop level depends on entry price)
+        if trigger_config.get('stop_type') == 'ATR':
+            return False
+
         event = trigger_config.get('event')
         compare_type = trigger_config.get('compare_type', 'Indicator')
         element2_name = trigger_config.get('element2')
@@ -591,6 +615,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # Extract initial stop (shared across all exit groups)
     # -------------------------------------------------
     initial_stop_config = strategy_config.get('initial_stop') or None
+
+    # Pre-compute ATR series if using ATR-based static stop (avoids recalc per entry)
+    atr_stop_series = None
+    if initial_stop_config and initial_stop_config.get('stop_type') == 'ATR':
+        atr_period = initial_stop_config.get('atr_period', 14)
+        atr_stop_series = atr_indicator(df['high'], df['low'], df['latest'], period=atr_period)
 
     # -------------------------------------------------
     # Extract exit groups
@@ -672,7 +702,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 current_entry_price = get_trigger_price(entry_trigger, i)
 
                 # Lock the static stop price at entry time
-                locked_stop_value = get_static_stop_price(initial_stop_config, i)
+                locked_stop_value = get_static_stop_price(initial_stop_config, i, entry_price=current_entry_price)
 
                 # Calculate R-distance from static stop
                 if locked_stop_value is not None:

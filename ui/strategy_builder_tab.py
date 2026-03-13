@@ -109,8 +109,13 @@ def _apply_pending_edit():
 
     if st.session_state['initial_stop']:
         initial = st.session_state['initial_stop']
+        st.session_state['initial_stop_type'] = initial.get('stop_type', 'Indicator')
         st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
-        st.session_state['initial_stop_element2'] = initial.get('element2')
+        if initial.get('stop_type') == 'ATR':
+            st.session_state['initial_stop_atr_period'] = initial.get('atr_period', 14)
+            st.session_state['initial_stop_atr_multiplier'] = initial.get('atr_multiplier', 1.5)
+        else:
+            st.session_state['initial_stop_element2'] = initial.get('element2')
 
     # Load indicator settings into strategy builder's own keys (sb_ prefix)
     ind_settings = strategy.get('indicator_settings', {})
@@ -500,8 +505,13 @@ def _restore_entry_keys_if_needed():
     st.session_state['initial_stop'] = strategy.get('initial_stop', None)
     if st.session_state['initial_stop']:
         initial = st.session_state['initial_stop']
+        st.session_state['initial_stop_type'] = initial.get('stop_type', 'Indicator')
         st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
-        st.session_state['initial_stop_element2'] = initial.get('element2')
+        if initial.get('stop_type') == 'ATR':
+            st.session_state['initial_stop_atr_period'] = initial.get('atr_period', 14)
+            st.session_state['initial_stop_atr_multiplier'] = initial.get('atr_multiplier', 1.5)
+        else:
+            st.session_state['initial_stop_element2'] = initial.get('element2')
 
 
 def render_entry_box():
@@ -586,8 +596,14 @@ def render_entry_box():
 
         # STATIC STOP (Required) - Defines 1R
         st.markdown("#### Static Stop (Required)")
-        st.caption("Defines 1R — must be a Price × Indicator event")
-        st.warning("⚠️ The distance between entry price and this indicator at entry bar = 1R")
+        st.caption("Defines 1R — distance between entry price and stop level at entry bar")
+
+        initial_stop_type = st.radio(
+            "Stop Type",
+            ["Indicator", "ATR"],
+            key="initial_stop_type",
+            horizontal=True
+        )
 
         sc1, sc2, sc3 = st.columns([2, 1, 2])
 
@@ -602,27 +618,55 @@ def render_entry_box():
             )
 
         with sc3:
-            st.radio(
-                "Compare to",
-                ["Indicator"],
-                key="initial_stop_compare_type",
-                horizontal=True
-            )
+            if initial_stop_type == "Indicator":
+                st.radio(
+                    "Compare to",
+                    ["Indicator"],
+                    key="initial_stop_compare_type",
+                    horizontal=True
+                )
 
-            initial_stop_element2 = st.selectbox(
-                "Indicator",
-                PRICE_AND_INDICATORS[1:],
-                key="initial_stop_element2"
-            )
-            st.caption(f"Example: Price {initial_stop_event} {initial_stop_element2}")
+                initial_stop_element2 = st.selectbox(
+                    "Indicator",
+                    PRICE_AND_INDICATORS[1:],
+                    key="initial_stop_element2"
+                )
+                st.caption(f"Price {initial_stop_event} {initial_stop_element2}")
+            else:  # ATR
+                initial_stop_atr_period = st.number_input(
+                    "ATR Period",
+                    min_value=1,
+                    value=14,
+                    step=1,
+                    key="initial_stop_atr_period"
+                )
+                initial_stop_atr_mult = st.number_input(
+                    "ATR Multiplier",
+                    min_value=0.1,
+                    value=1.5,
+                    step=0.1,
+                    format="%.1f",
+                    key="initial_stop_atr_multiplier"
+                )
+                st.caption(f"Stop = Entry ± ATR({initial_stop_atr_period}) × {initial_stop_atr_mult}")
 
         # Store initial stop in session state
-        st.session_state['initial_stop'] = {
-            'element1': 'Price',
-            'event': initial_stop_event,
-            'compare_type': 'Indicator',
-            'element2': initial_stop_element2
-        }
+        if initial_stop_type == "Indicator":
+            st.session_state['initial_stop'] = {
+                'element1': 'Price',
+                'stop_type': 'Indicator',
+                'event': initial_stop_event,
+                'compare_type': 'Indicator',
+                'element2': initial_stop_element2
+            }
+        else:  # ATR
+            st.session_state['initial_stop'] = {
+                'element1': 'Price',
+                'stop_type': 'ATR',
+                'event': initial_stop_event,
+                'atr_period': initial_stop_atr_period,
+                'atr_multiplier': initial_stop_atr_mult,
+            }
 
         st.divider()
 
@@ -1157,10 +1201,15 @@ def render_strategy_management():
                     if initial_stop and initial_stop.get('element1'):
                         with st.container(border=True):
                             st.markdown("#### 🛑 Static Stop (defines 1R, closes all remaining position)")
-                            stop_el1 = initial_stop.get('element1', 'N/A')
-                            stop_event = initial_stop.get('event', 'N/A')
-                            stop_el2 = initial_stop.get('element2', 'N/A')
-                            st.info(f"**{stop_el1}** {stop_event} **{stop_el2}**")
+                            if initial_stop.get('stop_type') == 'ATR':
+                                atr_p = initial_stop.get('atr_period', 14)
+                                atr_m = initial_stop.get('atr_multiplier', 1.5)
+                                st.info(f"**ATR Stop** — Entry ± ATR({atr_p}) × {atr_m}")
+                            else:
+                                stop_el1 = initial_stop.get('element1', 'N/A')
+                                stop_event = initial_stop.get('event', 'N/A')
+                                stop_el2 = initial_stop.get('element2', 'N/A')
+                                st.info(f"**{stop_el1}** {stop_event} **{stop_el2}**")
 
                     # Exit Groups
                     exit_groups = strategy.get('exit_groups', [])
@@ -1482,8 +1531,13 @@ def render_exit_groups():
             # Show static stop reference (always present)
             if st.session_state.get('initial_stop'):
                 initial = st.session_state['initial_stop']
-                st.info(
-                    f"🔒 Static Stop: {initial['element1']} {initial['event']} {initial['element2']} (auto-included)")
+                if initial.get('stop_type') == 'ATR':
+                    atr_p = initial.get('atr_period', 14)
+                    atr_m = initial.get('atr_multiplier', 1.5)
+                    st.info(f"🔒 Static Stop: ATR({atr_p}) × {atr_m} (auto-included)")
+                else:
+                    st.info(
+                        f"🔒 Static Stop: {initial['element1']} {initial['event']} {initial.get('element2', 'N/A')} (auto-included)")
 
             if len(stops) == 0:
                 st.info("No dynamic stops added")
@@ -1722,6 +1776,9 @@ def reset_strategy_builder():
     st.session_state['entry_conditions_count'] = 0
     st.session_state['exit_groups'] = []
     st.session_state['initial_stop'] = None
+    st.session_state.pop('initial_stop_type', None)
+    st.session_state.pop('initial_stop_atr_period', None)
+    st.session_state.pop('initial_stop_atr_multiplier', None)
     st.session_state['strategy_name_input'] = ""
     st.session_state['editing_strategy'] = False
     st.session_state['editing_strategy_idx'] = None
