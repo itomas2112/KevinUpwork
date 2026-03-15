@@ -46,9 +46,9 @@ def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
         if not e1:
             return
 
-        # Chikou with Fixed Value — only element1 needs shifting
+        # Chikou with Fixed Value — Chikou becomes current price, fixed value stays
         if e1 == 'Chikou' and compare_type == 'Fixed Value':
-            config[key1] = _ensure_shifted('latest', _ICHIMOKU_DISPLACEMENT)
+            config[key1] = 'Price'
             return
 
         if not e2 or compare_type == 'Fixed Value':
@@ -58,10 +58,11 @@ def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
         senkou_vs_senkou = (e1 in _SENKOU_ELEMENTS and e2 in _SENKOU_ELEMENTS)
 
         if chikou_involved:
-            # Rule 1: shift both series by +26 (look 26 bars back)
+            # Rule 1: Price[t] vs Indicator[t-26]
+            # Chikou → current price (latest), other → shifted back by 26
             for key, elem in [(key1, e1), (key2, e2)]:
                 if elem == 'Chikou':
-                    config[key] = _ensure_shifted('latest', _ICHIMOKU_DISPLACEMENT)
+                    config[key] = 'Price'
                 else:
                     orig_col = indicator_map.get(elem)
                     if orig_col and orig_col in df.columns:
