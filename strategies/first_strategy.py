@@ -928,11 +928,15 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                     positions_to_remove.append(pos_idx)
 
         # Remove fully closed positions (reverse order to preserve indices)
+        any_position_closed = len(positions_to_remove) > 0
         for pos_idx in sorted(positions_to_remove, reverse=True):
             open_positions.pop(pos_idx)
 
         # ----- STEP 2: Check entry -----
-        can_enter = max_positions is None or len(open_positions) < max_positions
+        # Block entry on any bar where a position just fully closed
+        # (matches original if/elif behavior: exit and entry can't happen on the same bar)
+        can_enter = (not any_position_closed
+                     and (max_positions is None or len(open_positions) < max_positions))
 
         if can_enter:
             bar_time = df.index[i]
