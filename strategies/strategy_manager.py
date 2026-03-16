@@ -20,10 +20,18 @@ def save_strategy_to_session(strategy_name):
     selected_patterns = st.session_state.get('strategy_patterns', [])
 
     # Collect all strategy data
+    # Max positions: None = unlimited, integer >= 1
+    max_pos_unlimited = st.session_state.get('max_positions_unlimited', False)
+    if max_pos_unlimited:
+        max_positions = None
+    else:
+        max_positions = st.session_state.get('max_positions_count', 1)
+
     strategy_data = {
         "strategy_name": final_strategy_name,
         "direction": st.session_state['strategy_direction'],
         "patterns": selected_patterns,
+        "max_positions": max_positions,
         "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
         "entry": {
             "trigger": {

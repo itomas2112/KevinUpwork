@@ -321,7 +321,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     # Helper: check R Profit / R Loss trigger
     # -------------------------------------------------
-    def check_r_trigger(trigger_config, current_idx):
+    def check_r_trigger(trigger_config, current_idx, pos_entry_price, pos_r_distance):
         """
         Check if an R Profit or R Loss trigger event occurred.
         R Profit = unrealized profit in R terms (positive when profitable).
@@ -331,7 +331,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         Uses high/low prices for current bar detection (like regular Cross events)
         and close price for previous bar state.
         """
-        if current_entry_price is None or current_r_distance <= 0:
+        if pos_entry_price is None or pos_r_distance <= 0:
             return False
 
         element1_name = trigger_config.get('element1')
@@ -359,29 +359,29 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         # Calculate directional price move for current bar
         if strategy_direction == 'Long':
-            price_move = price - current_entry_price
+            price_move = price - pos_entry_price
         else:
-            price_move = current_entry_price - price
+            price_move = pos_entry_price - price
 
         # R Profit: positive when in profit, negative when in loss
         # R Loss: positive when in loss, negative when in profit
         if element1_name == "R Profit":
-            r_value = price_move / current_r_distance
+            r_value = price_move / pos_r_distance
         else:  # R Loss
-            r_value = -price_move / current_r_distance
+            r_value = -price_move / pos_r_distance
 
         # Previous bar uses close price (same pattern as regular Cross events)
         if current_idx > 0:
             prev_price = df['latest'].iloc[current_idx - 1]
             if strategy_direction == 'Long':
-                prev_move = prev_price - current_entry_price
+                prev_move = prev_price - pos_entry_price
             else:
-                prev_move = current_entry_price - prev_price
+                prev_move = pos_entry_price - prev_price
 
             if element1_name == "R Profit":
-                prev_r_value = prev_move / current_r_distance
+                prev_r_value = prev_move / pos_r_distance
             else:
-                prev_r_value = -prev_move / current_r_distance
+                prev_r_value = -prev_move / pos_r_distance
         else:
             return False
 
@@ -399,12 +399,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         return False
 
-    def get_r_trigger_price(trigger_config, current_idx):
+    def get_r_trigger_price(trigger_config, current_idx, pos_entry_price, pos_r_distance):
         """
         Compute the exact price at the target R level rather than using
         the bar's close (which may overshoot).
         """
-        if current_entry_price is None or current_r_distance <= 0:
+        if pos_entry_price is None or pos_r_distance <= 0:
             return df['latest'].iloc[current_idx]
 
         element1_name = trigger_config.get('element1')
@@ -414,14 +414,14 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         if element1_name == "R Profit":
             if strategy_direction == 'Long':
-                return current_entry_price + fixed_value * current_r_distance
+                return pos_entry_price + fixed_value * pos_r_distance
             else:
-                return current_entry_price - fixed_value * current_r_distance
+                return pos_entry_price - fixed_value * pos_r_distance
         else:  # R Loss
             if strategy_direction == 'Long':
-                return current_entry_price - fixed_value * current_r_distance
+                return pos_entry_price - fixed_value * pos_r_distance
             else:
-                return current_entry_price + fixed_value * current_r_distance
+                return pos_entry_price + fixed_value * pos_r_distance
 
     # -------------------------------------------------
     # Helper function to check trigger events
@@ -647,7 +647,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     # Helper function to check exit (target or stop)
     # -------------------------------------------------
-    def check_exit_signal(exit_config, current_idx):
+    def check_exit_signal(exit_config, current_idx, pos_entry_price=None, pos_r_distance=0.0):
         """Check if an exit signal (target or stop) is triggered"""
         trigger = exit_config.get('trigger', {})
         conditions = exit_config.get('conditions', [])
@@ -655,7 +655,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         # R Profit / R Loss triggers use special handler
         element1 = trigger.get('element1', '')
         if element1 in ("R Profit", "R Loss"):
-            if not check_r_trigger(trigger, current_idx):
+            if not check_r_trigger(trigger, current_idx, pos_entry_price, pos_r_distance):
                 return False
             # Still check conditions
             for condition in conditions:
@@ -804,31 +804,137 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # Get strategy direction
     strategy_direction = strategy_config.get('direction', 'Long')
 
+    # Max positions: None = unlimited, integer >= 1 (default 1 for backward compat)
+    max_positions = strategy_config.get('max_positions', 1)
+
     # -------------------------------------------------
-    # Signal generation with multiple exits (OCO logic)
+    # Signal generation with multiple positions + OCO exits
     # -------------------------------------------------
-    in_position = False
     entry_signal = []
     exit_signal = []
     exit_type_series = []  # Track exit type per bar: None, "Target", "Stop", "Initial Stop"
 
-    # Track which exit groups are still active (not yet closed)
-    active_exit_groups = set()
-
     # Trade tracking for P&L (R-based)
     all_trades = []  # List of dicts: {trade_id, entry_price, exit_price, allocation_pct, r_distance, entry_r, exit_type}
-    trade_counter = 0  # Unique ID per entry, safe for future multi-trade support
-    current_trade_id = None
-    current_entry_price = None
-    current_r_distance = 0.0  # abs(entry_price - static_stop_value)
-    locked_stop_value = None  # Static stop price locked at entry time
+    trade_counter = 0  # Unique ID per entry
+
+    # Multi-position tracking: list of open position dicts
+    # Each: {trade_id, entry_price, r_distance, locked_stop_value, entry_r, active_exit_groups, entry_bar_idx}
+    open_positions = []
 
     for i in range(len(df)):
-        price = df["latest"].iloc[i]
+        bar_entry = False
+        bar_exit = False
+        bar_exit_type = None
 
-        # Check entry conditions (only if no position)
-        if not in_position:
-            # Block entries outside the DRM date range
+        # ----- STEP 1: Check exits for ALL open positions -----
+        positions_to_remove = []
+        for pos_idx, pos in enumerate(open_positions):
+            # Skip exit checks on the entry bar itself
+            if pos['entry_bar_idx'] == i:
+                continue
+
+            pos_exit_triggered = False
+            pos_exit_type = None
+
+            # Check initial stop (applies to ALL active groups in this position)
+            if initial_stop_config and check_trigger(initial_stop_config, i, locked_value=pos['locked_stop_value']):
+                pos_exit_type = "Initial Stop"
+                pos_exit_triggered = True
+                stop_exit_price = get_trigger_price(initial_stop_config, i, locked_value=pos['locked_stop_value'])
+
+                for group_idx in pos['active_exit_groups']:
+                    alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
+                    all_trades.append({
+                        'trade_id': pos['trade_id'],
+                        'entry_price': pos['entry_price'],
+                        'exit_price': stop_exit_price,
+                        'allocation_pct': alloc_pct,
+                        'r_distance': pos['r_distance'],
+                        'entry_r': pos['entry_r'],
+                        'exit_type': 'Initial Stop'
+                    })
+                pos['active_exit_groups'] = set()
+
+            # If initial stop didn't trigger, check each active exit group
+            if not pos_exit_triggered:
+                groups_to_close = []
+
+                for group_idx in list(pos['active_exit_groups']):
+                    group = exit_groups[group_idx]
+                    alloc_pct = group.get('allocation_pct', 100.0)
+
+                    # Check targets
+                    for target in group.get('targets', []):
+                        if check_exit_signal(target, i, pos['entry_price'], pos['r_distance']):
+                            pos_exit_triggered = True
+                            if pos_exit_type is None:
+                                pos_exit_type = "Target"
+
+                            target_trigger = target.get('trigger', {})
+                            t_el1 = target_trigger.get('element1', '')
+                            t_exit_price = (get_r_trigger_price(target_trigger, i, pos['entry_price'], pos['r_distance'])
+                                            if t_el1 in ("R Profit", "R Loss")
+                                            else get_trigger_price(target_trigger, i))
+                            all_trades.append({
+                                'trade_id': pos['trade_id'],
+                                'entry_price': pos['entry_price'],
+                                'exit_price': t_exit_price,
+                                'allocation_pct': alloc_pct,
+                                'r_distance': pos['r_distance'],
+                                'entry_r': pos['entry_r'],
+                                'exit_type': 'Target'
+                            })
+                            groups_to_close.append(group_idx)
+                            break
+
+                    # If no target hit, check stops
+                    if group_idx not in groups_to_close:
+                        for stop in group.get('stops', []):
+                            if check_exit_signal(stop, i, pos['entry_price'], pos['r_distance']):
+                                pos_exit_triggered = True
+                                pos_exit_type = "Stop"
+
+                                stop_trigger = stop.get('trigger', {})
+                                s_el1 = stop_trigger.get('element1', '')
+                                s_exit_price = (get_r_trigger_price(stop_trigger, i, pos['entry_price'], pos['r_distance'])
+                                                if s_el1 in ("R Profit", "R Loss")
+                                                else get_trigger_price(stop_trigger, i))
+                                all_trades.append({
+                                    'trade_id': pos['trade_id'],
+                                    'entry_price': pos['entry_price'],
+                                    'exit_price': s_exit_price,
+                                    'allocation_pct': alloc_pct,
+                                    'r_distance': pos['r_distance'],
+                                    'entry_r': pos['entry_r'],
+                                    'exit_type': 'Stop'
+                                })
+                                groups_to_close.append(group_idx)
+                                break
+
+                for group_idx in groups_to_close:
+                    pos['active_exit_groups'].discard(group_idx)
+
+            # If any exit happened for this position
+            if pos_exit_triggered:
+                bar_exit = True
+                # Keep highest-priority exit type across all positions on this bar
+                exit_type_priority = {'Initial Stop': 0, 'Stop': 1, 'Target': 2}
+                if bar_exit_type is None or exit_type_priority.get(pos_exit_type, 99) < exit_type_priority.get(bar_exit_type, 99):
+                    bar_exit_type = pos_exit_type
+
+                # If all groups closed, mark position for removal
+                if not pos['active_exit_groups']:
+                    positions_to_remove.append(pos_idx)
+
+        # Remove fully closed positions (reverse order to preserve indices)
+        for pos_idx in sorted(positions_to_remove, reverse=True):
+            open_positions.pop(pos_idx)
+
+        # ----- STEP 2: Check entry -----
+        can_enter = max_positions is None or len(open_positions) < max_positions
+
+        if can_enter:
             bar_time = df.index[i]
             in_date_range = True
             if period_start is not None and bar_time < period_start:
@@ -836,181 +942,55 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             if period_end is not None and bar_time > period_end:
                 in_date_range = False
 
-            # First check if entry trigger and conditions are met
             entry_triggered = in_date_range and check_trigger_and_conditions(entry_trigger, entry_conditions, i)
 
-            # If entry would trigger, also check that stops are not already violated
             if entry_triggered:
                 stops_violated = are_any_stops_already_violated(
                     initial_stop_config, exit_groups, i, strategy_direction
                 )
                 if stops_violated:
-                    # Block entry - stop condition already violated
                     entry_triggered = False
 
             if entry_triggered:
-                # ---- Entry
-                entry_signal.append(True)
-                exit_signal.append(False)
-                exit_type_series.append(None)
-
-                in_position = True
+                bar_entry = True
                 trade_counter += 1
-                current_trade_id = trade_counter
-                current_entry_price = get_trigger_price(entry_trigger, i)
+                new_entry_price = get_trigger_price(entry_trigger, i)
+                new_locked_stop = get_static_stop_price(initial_stop_config, i, entry_price=new_entry_price)
 
-                # Lock the static stop price at entry time
-                locked_stop_value = get_static_stop_price(initial_stop_config, i, entry_price=current_entry_price)
-
-                # Calculate R-distance from static stop
-                if locked_stop_value is not None:
-                    current_r_distance = abs(current_entry_price - locked_stop_value)
+                if new_locked_stop is not None:
+                    new_r_distance = abs(new_entry_price - new_locked_stop)
                 else:
-                    current_r_distance = 0.0
+                    new_r_distance = 0.0
 
-                # Activate all exit groups
-                active_exit_groups = set(range(len(exit_groups)))
-            else:
-                entry_signal.append(False)
-                exit_signal.append(False)
-                exit_type_series.append(None)
+                open_positions.append({
+                    'trade_id': trade_counter,
+                    'entry_price': new_entry_price,
+                    'r_distance': new_r_distance,
+                    'locked_stop_value': new_locked_stop,
+                    'entry_r': entry_r,
+                    'active_exit_groups': set(range(len(exit_groups))),
+                    'entry_bar_idx': i,
+                })
 
-        # Check exit conditions (only if in position)
-        elif in_position:
-            exit_triggered = False
-            bar_exit_type = None  # Track the exit type for THIS bar
-
-            # First, check initial stop (applies to ALL active groups)
-            # Uses locked_stop_value so the stop level stays fixed from entry time
-            if initial_stop_config and check_trigger(initial_stop_config, i, locked_value=locked_stop_value):
-                # Initial stop closes ALL remaining position
-                bar_exit_type = "Initial Stop"
-                exit_triggered = True
-                stop_exit_price = get_trigger_price(initial_stop_config, i, locked_value=locked_stop_value)
-
-                # Record trade for all active groups
-                for group_idx in active_exit_groups:
-                    alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
-                    all_trades.append({
-                        'trade_id': current_trade_id,
-                        'entry_price': current_entry_price,
-                        'exit_price': stop_exit_price,
-                        'allocation_pct': alloc_pct,
-                        'r_distance': current_r_distance,
-                        'entry_r': entry_r,
-                        'exit_type': 'Initial Stop'
-                    })
-
-                # Close all groups
-                active_exit_groups.clear()
-
-            # If initial stop didn't trigger, check each active exit group
-            if not exit_triggered:
-                groups_to_close = []
-
-                for group_idx in list(active_exit_groups):
-                    group = exit_groups[group_idx]
-                    alloc_pct = group.get('allocation_pct', 100.0)
-
-                    # Check all targets in this group
-                    for target in group.get('targets', []):
-                        if check_exit_signal(target, i):
-                            exit_triggered = True
-
-                            # Mark bar exit type — Target, unless a stop also triggers
-                            if bar_exit_type is None:
-                                bar_exit_type = "Target"
-
-                            # Record trade
-                            target_trigger = target.get('trigger', {})
-                            t_el1 = target_trigger.get('element1', '')
-                            t_exit_price = (get_r_trigger_price(target_trigger, i)
-                                            if t_el1 in ("R Profit", "R Loss")
-                                            else get_trigger_price(target_trigger, i))
-                            all_trades.append({
-                                'trade_id': current_trade_id,
-                                'entry_price': current_entry_price,
-                                'exit_price': t_exit_price,
-                                'allocation_pct': alloc_pct,
-                                'r_distance': current_r_distance,
-                                'entry_r': entry_r,
-                                'exit_type': 'Target'
-                            })
-
-                            # OCO: This group is closed, cancel all other targets/stops in group
-                            groups_to_close.append(group_idx)
-                            break  # Exit target loop, this group is done
-
-                    # If no target hit, check stops in this group
-                    if group_idx not in groups_to_close:
-                        for stop in group.get('stops', []):
-                            if check_exit_signal(stop, i):
-                                exit_triggered = True
-
-                                # Stop takes priority over target for bar marker
-                                bar_exit_type = "Stop"
-
-                                # Record trade
-                                stop_trigger = stop.get('trigger', {})
-                                s_el1 = stop_trigger.get('element1', '')
-                                s_exit_price = (get_r_trigger_price(stop_trigger, i)
-                                                if s_el1 in ("R Profit", "R Loss")
-                                                else get_trigger_price(stop_trigger, i))
-                                all_trades.append({
-                                    'trade_id': current_trade_id,
-                                    'entry_price': current_entry_price,
-                                    'exit_price': s_exit_price,
-                                    'allocation_pct': alloc_pct,
-                                    'r_distance': current_r_distance,
-                                    'entry_r': entry_r,
-                                    'exit_type': 'Stop'
-                                })
-
-                                # OCO: This group is closed
-                                groups_to_close.append(group_idx)
-                                break  # Exit stop loop, this group is done
-
-                # Remove closed groups
-                for group_idx in groups_to_close:
-                    active_exit_groups.discard(group_idx)
-
-            # Update signals
-            if exit_triggered:
-                entry_signal.append(False)
-                exit_signal.append(True)
-                exit_type_series.append(bar_exit_type)
-
-                # If all groups closed, position is done
-                if not active_exit_groups:
-                    in_position = False
-                    current_entry_price = None
-                    locked_stop_value = None
-            else:
-                entry_signal.append(False)
-                exit_signal.append(False)
-                exit_type_series.append(None)
-
-        else:
-            entry_signal.append(False)
-            exit_signal.append(False)
-            exit_type_series.append(None)
+        # ----- STEP 3: Record bar signals -----
+        entry_signal.append(bar_entry)
+        exit_signal.append(bar_exit)
+        exit_type_series.append(bar_exit_type)
 
     # -------------------------------------------------
-    # Handle open position at the end (close remaining groups)
+    # Handle open positions at the end (close all remaining)
     # -------------------------------------------------
-    if in_position and current_entry_price is not None:
-        last_price = df["latest"].iloc[-1]
-
-        # Close all remaining active groups at last price
-        for group_idx in active_exit_groups:
+    last_price = df["latest"].iloc[-1] if len(df) > 0 else 0.0
+    for pos in open_positions:
+        for group_idx in pos['active_exit_groups']:
             alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
             all_trades.append({
-                'trade_id': current_trade_id,
-                'entry_price': current_entry_price,
+                'trade_id': pos['trade_id'],
+                'entry_price': pos['entry_price'],
                 'exit_price': last_price,
                 'allocation_pct': alloc_pct,
-                'r_distance': current_r_distance,
-                'entry_r': entry_r,
+                'r_distance': pos['r_distance'],
+                'entry_r': pos['entry_r'],
                 'exit_type': 'End of Data'
             })
 

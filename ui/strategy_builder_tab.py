@@ -73,6 +73,15 @@ def _apply_pending_edit():
     st.session_state['strategy_name_input'] = strategy.get('strategy_name', '')
     st.session_state['strategy_patterns'] = strategy.get('patterns', [])
 
+    # Load max positions
+    max_pos = strategy.get('max_positions', 1)
+    if max_pos is None:
+        st.session_state['max_positions_unlimited'] = True
+        st.session_state['max_positions_count'] = 1
+    else:
+        st.session_state['max_positions_unlimited'] = False
+        st.session_state['max_positions_count'] = max_pos
+
     # Load entry config
     entry = strategy.get('entry', {})
     entry_trigger = entry.get('trigger', {})
@@ -225,6 +234,30 @@ def render_strategy_form():
 
     # Store in session state
     st.session_state['strategy_patterns'] = selected_patterns
+
+    # Max Positions
+    st.markdown("#### Max Positions")
+    st.caption("How many simultaneous positions this strategy can hold")
+
+    mp_col1, mp_col2 = st.columns([1, 1])
+    with mp_col1:
+        unlimited = st.checkbox(
+            "Unlimited",
+            value=st.session_state.get('max_positions_unlimited', False),
+            key="max_positions_unlimited_cb",
+        )
+        st.session_state['max_positions_unlimited'] = unlimited
+    with mp_col2:
+        max_pos = st.number_input(
+            "Max Positions",
+            min_value=1,
+            value=int(st.session_state.get('max_positions_count', 1)),
+            step=1,
+            key="max_positions_count_input",
+            disabled=unlimited,
+            label_visibility="collapsed",
+        )
+        st.session_state['max_positions_count'] = max_pos
 
     # Reset / Cancel buttons
     if st.session_state.get('editing_strategy'):
@@ -953,6 +986,8 @@ def render_save_button(strategy_name_input: str):
             st.session_state['exit_groups'] = []
             st.session_state['initial_stop'] = None
             st.session_state['strategy_name_input'] = ""
+            st.session_state.pop('max_positions_unlimited', None)
+            st.session_state.pop('max_positions_count', None)
 
             st.rerun()
 
@@ -1782,6 +1817,8 @@ def reset_strategy_builder():
     st.session_state['strategy_name_input'] = ""
     st.session_state['editing_strategy'] = False
     st.session_state['editing_strategy_idx'] = None
+    st.session_state.pop('max_positions_unlimited', None)
+    st.session_state.pop('max_positions_count', None)
     # Reset strategy builder indicator settings to defaults
     pfx = "sb_"
     for key in ['rsi_window', 'bb_upper_period', 'bb_upper_stdev', 'bb_mid_period',
