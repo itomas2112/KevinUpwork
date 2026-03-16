@@ -364,6 +364,21 @@ def _display_results(strategy_name, global_agg, results):
         perf_table = _build_metrics_table(results)
         st.table(perf_table)
 
+    # Download button
+    from io import BytesIO
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        global_table.to_excel(writer, sheet_name='Global')
+        if results:
+            perf_table.to_excel(writer, sheet_name='By Selection')
+    output.seek(0)
+    st.download_button(
+        label="Download to Excel",
+        data=output,
+        file_name=f"performance_{strategy_name}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
 
 # ------------------------------------------------------------------
 # Helpers
