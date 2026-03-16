@@ -1,9 +1,120 @@
 # win %, loss %, number of trades, return
 
+import copy
 import pandas as pd
 import numpy as np
 from config.constants import get_indicator_map
 from indicators.atr_indicator import atr_indicator
+
+
+# ---------------------------------------------------------------------------
+# Ichimoku special comparison preprocessing
+# ---------------------------------------------------------------------------
+_ICHIMOKU_DISPLACEMENT = 26
+_SENKOU_ELEMENTS = frozenset({"Senkou A", "Senkou B"})
+
+
+def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
+    """
+    Handle Ichimoku special comparison rules by creating shifted columns
+    and remapping element names in the strategy config (already deep-copied).
+
+    Rules:
+      1. Chikou vs X  →  latest.shift(26) vs X_col.shift(26)
+         (compare price 26 bars ago with indicator 26 bars ago)
+      2. Senkou A/B vs non-Senkou indicator  →  no change (compare at time t)
+      3. Senkou A vs Senkou B  →  use senkou_a_current vs senkou_b_current
+         (raw / unshifted values = cloud 26 bars ahead)
+    """
+    created = set()
+
+    def _ensure_shifted(orig_col, shift):
+        """Create a shifted column once; return its name."""
+        new_col = f'_ichi_{orig_col}_s{shift}'
+        if new_col not in created and orig_col in df.columns:
+            df[new_col] = df[orig_col].shift(shift)
+            created.add(new_col)
+            indicator_map[new_col] = new_col
+        return new_col
+
+    def _remap_pair(config, key1='element1', key2='element2'):
+        """Remap element names for a single trigger / condition dict."""
+        e1 = config.get(key1)
+        e2 = config.get(key2)
+        compare_type = config.get('compare_type', 'Indicator')
+
+        if not e1:
+            return
+
+        # Chikou with Fixed Value — Chikou becomes current price, fixed value stays
+        if e1 == 'Chikou' and compare_type == 'Fixed Value':
+            config[key1] = 'Price'
+            return
+
+        if not e2 or compare_type == 'Fixed Value':
+            return
+
+        chikou_involved = (e1 == 'Chikou' or e2 == 'Chikou')
+        senkou_vs_senkou = (e1 in _SENKOU_ELEMENTS and e2 in _SENKOU_ELEMENTS)
+
+        if chikou_involved:
+            # Rule 1: Price[t] vs Indicator[t-26]
+            # Chikou → current price (latest), other → shifted back by 26
+            for key, elem in [(key1, e1), (key2, e2)]:
+                if elem == 'Chikou':
+                    config[key] = 'Price'
+                else:
+                    orig_col = indicator_map.get(elem)
+                    if orig_col and orig_col in df.columns:
+                        config[key] = _ensure_shifted(orig_col, _ICHIMOKU_DISPLACEMENT)
+
+        elif senkou_vs_senkou:
+            # Rule 3: use raw / unshifted Senkou columns
+            remap = {
+                'Senkou A': 'senkou_a_current',
+                'Senkou B': 'senkou_b_current',
+            }
+            for key, elem in [(key1, e1), (key2, e2)]:
+                raw_col = remap[elem]
+                syn = f'_raw_{raw_col}'
+                if syn not in indicator_map:
+                    indicator_map[syn] = raw_col
+                config[key] = syn
+
+        # Rule 2 (Senkou vs non-Senkou, non-Chikou): no changes needed
+
+    def _process_trigger(trigger):
+        if trigger:
+            _remap_pair(trigger)
+
+    def _process_conditions(conditions):
+        for cond in (conditions or []):
+            _remap_pair(cond)
+
+    # --- Entry ---
+    entry = strategy_config.get('entry', {})
+    _process_trigger(entry.get('trigger'))
+    _process_conditions(entry.get('conditions'))
+
+    # --- Initial stop ---
+    initial_stop = strategy_config.get('initial_stop')
+    if initial_stop:
+        _remap_pair(initial_stop)
+
+    # --- Exit groups ---
+    for group in strategy_config.get('exit_groups', []):
+        for target in group.get('targets', []):
+            _process_trigger(target.get('trigger'))
+            _process_conditions(target.get('conditions'))
+        for stop in group.get('stops', []):
+            _process_trigger(stop.get('trigger'))
+            _process_conditions(stop.get('conditions'))
+
+    # --- Old-style single exit (backward compat) ---
+    old_exit = strategy_config.get('exit', {})
+    if old_exit:
+        _process_trigger(old_exit.get('trigger'))
+        _process_conditions(old_exit.get('conditions'))
 
 def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
     df = df.copy()
@@ -144,6 +255,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     """
 
     df = df.copy()
+    strategy_config = copy.deepcopy(strategy_config)  # avoid mutating caller's data
 
     # -------------------------------------------------
     # Clean existing signals
@@ -160,6 +272,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     while f"ema_{ema_count}" in df.columns:
         ema_count += 1
     indicator_map = get_indicator_map(ema_count)
+
+    # -------------------------------------------------
+    # Ichimoku special comparison preprocessing
+    # -------------------------------------------------
+    _prepare_ichimoku_columns(df, indicator_map, strategy_config)
 
     # -------------------------------------------------
     # Helper function to check if condition is met
