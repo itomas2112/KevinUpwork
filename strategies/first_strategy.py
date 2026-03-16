@@ -210,6 +210,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         R Profit = unrealized profit in R terms (positive when profitable).
         R Loss = unrealized loss in R terms (positive when losing).
         Only valid while in a position.
+
+        Uses high/low prices for current bar detection (like regular Cross events)
+        and close price for previous bar state.
         """
         if current_entry_price is None or current_r_distance <= 0:
             return False
@@ -221,9 +224,23 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         if fixed_value is None:
             return False
 
-        price = df['latest'].iloc[current_idx]
+        # Use high/low for current bar R value depending on what we're checking:
+        # R Profit (Long) → high gives best-case profit → use high
+        # R Profit (Short) → low gives best-case profit → use low
+        # R Loss (Long) → low gives worst-case loss → use low
+        # R Loss (Short) → high gives worst-case loss → use high
+        if element1_name == "R Profit":
+            if strategy_direction == 'Long':
+                price = df['high'].iloc[current_idx]
+            else:
+                price = df['low'].iloc[current_idx]
+        else:  # R Loss
+            if strategy_direction == 'Long':
+                price = df['low'].iloc[current_idx]
+            else:
+                price = df['high'].iloc[current_idx]
 
-        # Calculate directional price move
+        # Calculate directional price move for current bar
         if strategy_direction == 'Long':
             price_move = price - current_entry_price
         else:
@@ -236,7 +253,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         else:  # R Loss
             r_value = -price_move / current_r_distance
 
-        # Need previous bar for cross detection
+        # Previous bar uses close price (same pattern as regular Cross events)
         if current_idx > 0:
             prev_price = df['latest'].iloc[current_idx - 1]
             if strategy_direction == 'Long':
@@ -265,9 +282,29 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         return False
 
-    def get_r_trigger_price(current_idx):
-        """For R Profit/R Loss triggers, exit at the bar's close price."""
-        return df['latest'].iloc[current_idx]
+    def get_r_trigger_price(trigger_config, current_idx):
+        """
+        Compute the exact price at the target R level rather than using
+        the bar's close (which may overshoot).
+        """
+        if current_entry_price is None or current_r_distance <= 0:
+            return df['latest'].iloc[current_idx]
+
+        element1_name = trigger_config.get('element1')
+        fixed_value = trigger_config.get('value')
+        if fixed_value is None:
+            return df['latest'].iloc[current_idx]
+
+        if element1_name == "R Profit":
+            if strategy_direction == 'Long':
+                return current_entry_price + fixed_value * current_r_distance
+            else:
+                return current_entry_price - fixed_value * current_r_distance
+        else:  # R Loss
+            if strategy_direction == 'Long':
+                return current_entry_price - fixed_value * current_r_distance
+            else:
+                return current_entry_price + fixed_value * current_r_distance
 
     # -------------------------------------------------
     # Helper function to check trigger events
@@ -765,7 +802,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                             # Record trade
                             target_trigger = target.get('trigger', {})
                             t_el1 = target_trigger.get('element1', '')
-                            t_exit_price = (get_r_trigger_price(i)
+                            t_exit_price = (get_r_trigger_price(target_trigger, i)
                                             if t_el1 in ("R Profit", "R Loss")
                                             else get_trigger_price(target_trigger, i))
                             all_trades.append({
@@ -793,7 +830,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                                 # Record trade
                                 stop_trigger = stop.get('trigger', {})
                                 s_el1 = stop_trigger.get('element1', '')
-                                s_exit_price = (get_r_trigger_price(i)
+                                s_exit_price = (get_r_trigger_price(stop_trigger, i)
                                                 if s_el1 in ("R Profit", "R Loss")
                                                 else get_trigger_price(stop_trigger, i))
                                 all_trades.append({

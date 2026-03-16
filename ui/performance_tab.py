@@ -1,6 +1,7 @@
 """
 Performance tab (Tab 3) - Aggregated backtest metrics across multiple Elliott Wave patterns.
 Independent pattern selection UI with 6 modes, "+ Add Selection" rows, and global metrics.
+Fully self-contained: own strategy selector, date range, and calculate button.
 """
 import streamlit as st
 import pandas as pd
@@ -9,7 +10,7 @@ from data.loader import parse_drm_periods
 from data.helpers import PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES, expand_selection, selection_label
 from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings
 from strategies.first_strategy import execute_custom_strategy
-from ui.charting_tab import _aggregate_stats
+from ui.charting_tab import _aggregate_stats, _get_or_calculate
 
 SELECTION_MODES = [
     "All Patterns",
@@ -19,6 +20,23 @@ SELECTION_MODES = [
     "Specified Secondary",
     "Secondary Across Primaries",
 ]
+
+# Default indicator params (matching calculate_indicators defaults)
+_DEFAULT_INDICATOR_PARAMS = {
+    'rsi_window': 14,
+    'bb_upper_period': 20, 'bb_upper_stdev': 2.0, 'bb_mid_period': 20,
+    'bb_lower_period': 20, 'bb_lower_stdev': 2.0,
+    'kc_upper_ema': 20, 'kc_mid_ema': 20, 'kc_lower_ema': 20,
+    'kc_atr_period': 10, 'kc_upper_mult': 2.0, 'kc_lower_mult': 2.0,
+    'stoch_k_period': 14, 'stoch_k_smooth': 3, 'stoch_d_smooth': 3,
+    'adx_period': 14, 'atr_period': 14,
+    'macd_fast': 12, 'macd_slow': 26, 'macd_signal': 9,
+    'supertrend_period': 10, 'supertrend_multiplier': 3.0,
+    'ema_periods': [],
+    'dc_upper_period': 20, 'dc_mid_period': 20, 'dc_lower_period': 20, 'dc_offset': 0,
+    'psar_af_start': 0.02, 'psar_af_increment': 0.02, 'psar_af_max': 0.20,
+}
+
 
 def render_performance_tab(sidebar_config):
     """Render the Performance tab content."""
@@ -43,11 +61,10 @@ def render_performance_tab(sidebar_config):
     selected_strategy = saved[selected_idx]
 
     # --------------------------------------------------
-    # Prerequisites
+    # Prerequisites — only need OHLC data and DRM uploaded
     # --------------------------------------------------
     show_1h = sidebar_config['analysis_mode'] == "1H"
     df_key = 'df_1h' if show_1h else 'df_15m'
-    params_key = 'params_1h' if show_1h else 'params_15m'
     tf_label = "1H" if show_1h else "15m"
 
     if df_key not in st.session_state:
@@ -60,9 +77,15 @@ def render_performance_tab(sidebar_config):
         st.info("Please upload a DRM file in the Charting tab first.")
         return
 
+    # --------------------------------------------------
+    # Date Range — uses sidebar's global date range
+    # --------------------------------------------------
     if not sidebar_config.get('date_range_applied', False):
         st.info("Please set a date range in the sidebar and click **Apply Date Range** to proceed.")
         return
+
+    perf_start = sidebar_config.get('global_start_date')
+    perf_end = sidebar_config.get('global_end_date')
 
     # --------------------------------------------------
     # Selection UI — dynamic rows with add/remove
@@ -177,26 +200,36 @@ def render_performance_tab(sidebar_config):
     st.markdown("---")
 
     # --------------------------------------------------
-    # Auto-calculate backtest
+    # Calculate button (manual trigger)
     # --------------------------------------------------
-    display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2', 'cmb_lines',
-                         'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
-                         'ichi_show_senkou_b', 'ichi_show_chikou',
-                         'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
-                         'ichi_show_chikou_decision',
-                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
-                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
-                         'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
-    indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
+    calculate_clicked = st.button("Calculate", key="perf_calculate", type="primary")
+
+    # Show cached results if available and no new calculation requested
+    if not calculate_clicked:
+        cached_results = st.session_state.get('_perf_cached_results')
+        if cached_results:
+            _display_results(cached_results['strategy_name'],
+                             cached_results['global_agg'],
+                             cached_results['results'])
+        else:
+            st.info("Set date range, select patterns, and click **Calculate** to run the backtest.")
+        return
+
+    # --------------------------------------------------
+    # Build indicator params from defaults + strategy settings
+    # --------------------------------------------------
+    indicator_params = dict(_DEFAULT_INDICATOR_PARAMS)
     strategy_settings = selected_strategy.get('indicator_settings')
     if strategy_settings:
         strategy_settings = migrate_indicator_settings(strategy_settings)
         indicator_params.update(strategy_settings)
-    from ui.charting_tab import _get_or_calculate
-    g_start = sidebar_config.get('global_start_date')
-    g_end = sidebar_config.get('global_end_date')
+
     df_full = _get_or_calculate(df_key, f"_perf_{df_key}_features", f"_perf_{df_key}_params", indicator_params,
-                                global_start_date=g_start, global_end_date=g_end)
+                                global_start_date=perf_start, global_end_date=perf_end)
+
+    if df_full.empty:
+        st.warning("No data available for the selected date range.")
+        return
 
     # --------------------------------------------------
     # Run backtest for each selection
@@ -261,11 +294,11 @@ def render_performance_tab(sidebar_config):
             for start_dt, end_dt in periods:
                 df_slice, period_start, period_end = slice_for_graph(
                     df=df_full, start_date=start_dt, end_date=end_dt,
-                    show_ichimoku=sidebar_config['show_ichimoku'],
-                    show_bb=sidebar_config['show_bb'],
-                    show_kc=sidebar_config['show_kc'],
-                    show_donchian=sidebar_config.get('show_donchian', False),
-                    show_psar=sidebar_config.get('show_psar', False),
+                    show_ichimoku=True,
+                    show_bb=True,
+                    show_kc=True,
+                    show_donchian=True,
+                    show_psar=True,
                 )
                 if df_slice.empty:
                     continue
@@ -293,17 +326,29 @@ def render_performance_tab(sidebar_config):
     progress_bar.empty()
 
     # --------------------------------------------------
-    # Display results
+    # Cache and display results
     # --------------------------------------------------
     strategy_name = selected_strategy.get('strategy_name', 'Custom')
-
-    # Global Performance Metrics
-    st.subheader("Global Performance Metrics")
-    st.caption(f"Strategy: **{strategy_name}**")
     if global_stats:
         global_agg = _aggregate_stats(global_stats)
     else:
         global_agg = _empty_agg()
+
+    # Cache results in session state so they persist across reruns
+    st.session_state['_perf_cached_results'] = {
+        'strategy_name': strategy_name,
+        'global_agg': global_agg,
+        'results': results,
+    }
+
+    _display_results(strategy_name, global_agg, results)
+
+
+def _display_results(strategy_name, global_agg, results):
+    """Display the performance results tables."""
+    # Global Performance Metrics
+    st.subheader("Global Performance Metrics")
+    st.caption(f"Strategy: **{strategy_name}**")
 
     global_table = _build_metrics_table({"Global": global_agg})
     st.table(global_table)
