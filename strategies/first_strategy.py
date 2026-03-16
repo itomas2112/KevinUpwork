@@ -816,7 +816,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     active_exit_groups = set()
 
     # Trade tracking for P&L (R-based)
-    all_trades = []  # List of dicts: {entry_price, exit_price, allocation_pct, r_distance, entry_r, exit_type}
+    all_trades = []  # List of dicts: {trade_id, entry_price, exit_price, allocation_pct, r_distance, entry_r, exit_type}
+    trade_counter = 0  # Unique ID per entry, safe for future multi-trade support
+    current_trade_id = None
     current_entry_price = None
     current_r_distance = 0.0  # abs(entry_price - static_stop_value)
     locked_stop_value = None  # Static stop price locked at entry time
@@ -853,6 +855,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 exit_type_series.append(None)
 
                 in_position = True
+                trade_counter += 1
+                current_trade_id = trade_counter
                 current_entry_price = get_trigger_price(entry_trigger, i)
 
                 # Lock the static stop price at entry time
@@ -888,6 +892,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 for group_idx in active_exit_groups:
                     alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
                     all_trades.append({
+                        'trade_id': current_trade_id,
                         'entry_price': current_entry_price,
                         'exit_price': stop_exit_price,
                         'allocation_pct': alloc_pct,
@@ -923,6 +928,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                                             if t_el1 in ("R Profit", "R Loss")
                                             else get_trigger_price(target_trigger, i))
                             all_trades.append({
+                                'trade_id': current_trade_id,
                                 'entry_price': current_entry_price,
                                 'exit_price': t_exit_price,
                                 'allocation_pct': alloc_pct,
@@ -951,6 +957,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                                                 if s_el1 in ("R Profit", "R Loss")
                                                 else get_trigger_price(stop_trigger, i))
                                 all_trades.append({
+                                    'trade_id': current_trade_id,
                                     'entry_price': current_entry_price,
                                     'exit_price': s_exit_price,
                                     'allocation_pct': alloc_pct,
@@ -998,6 +1005,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         for group_idx in active_exit_groups:
             alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
             all_trades.append({
+                'trade_id': current_trade_id,
                 'entry_price': current_entry_price,
                 'exit_price': last_price,
                 'allocation_pct': alloc_pct,
@@ -1015,13 +1023,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
     # -------------------------------------------------
     # Statistics with R-based P&L calculation
+    # Consolidate exit group records into one trade per entry
     # -------------------------------------------------
-    num_trades = len(all_trades)
 
-    # Calculate P&L in R for each trade
-    trade_returns = []
-    trade_pnls_r = []
-
+    # Step 1: Calculate P&L in R for each group exit record
     for trade in all_trades:
         entry_price = trade['entry_price']
         exit_price = trade['exit_price']
@@ -1029,45 +1034,56 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         r_distance = trade['r_distance']
         t_entry_r = trade['entry_r']
 
-        # Calculate return ratio
         if strategy_direction == 'Long':
-            trade_return = exit_price / entry_price
             price_move = exit_price - entry_price
-        else:  # Short
-            trade_return = entry_price / exit_price
+        else:
             price_move = entry_price - exit_price
 
-        trade_returns.append(trade_return)
-
-        # Calculate P&L in R
-        # group_R = entry_R * (allocation_pct / 100)
-        # pnl_R = (price_move / r_distance) * group_R
         if r_distance > 0:
             group_r = t_entry_r * (alloc_pct / 100.0)
-            pnl_r = (price_move / r_distance) * group_r
+            trade['pnl_r'] = (price_move / r_distance) * group_r
         else:
-            pnl_r = 0.0
+            trade['pnl_r'] = 0.0
 
-        trade_pnls_r.append(pnl_r)
+    # Step 2: Group by trade_id to consolidate exit groups into one trade per entry
+    # Exit type priority: Initial Stop > Stop > End of Data > Target
+    exit_type_priority = {'Initial Stop': 0, 'Stop': 1, 'End of Data': 2, 'Target': 3}
+
+    from collections import OrderedDict
+    entry_trades = OrderedDict()
+    for trade in all_trades:
+        tid = trade['trade_id']
+        if tid not in entry_trades:
+            entry_trades[tid] = {
+                'pnl_r': 0.0,
+                'exit_type': trade['exit_type'],
+            }
+        entry = entry_trades[tid]
+        entry['pnl_r'] += trade['pnl_r']
+        # Keep the highest-priority (lowest number) exit type
+        if exit_type_priority.get(trade['exit_type'], 99) < exit_type_priority.get(entry['exit_type'], 99):
+            entry['exit_type'] = trade['exit_type']
+
+    # Step 3: Build per-trade lists from consolidated entries
+    trade_pnls_r = [t['pnl_r'] for t in entry_trades.values()]
+    consolidated_exit_types = [t['exit_type'] for t in entry_trades.values()]
+
+    num_trades = len(entry_trades)
 
     if num_trades > 0:
-        wins = sum(r > 1 for r in trade_returns)
+        wins = sum(pnl > 0 for pnl in trade_pnls_r)
         losses = num_trades - wins
 
         win_rate = wins / num_trades * 100
         loss_rate = losses / num_trades * 100
 
-        total_return = 1.0
-        for r in trade_returns:
-            total_return *= r
-
         total_pnl = sum(trade_pnls_r)
-        avg_pnl_per_trade = total_pnl / num_trades if num_trades > 0 else 0
+        avg_pnl_per_trade = total_pnl / num_trades
         winning_trades_pnl = sum(pnl for pnl in trade_pnls_r if pnl > 0)
         losing_trades_pnl = sum(pnl for pnl in trade_pnls_r if pnl < 0)
 
-        target_exits = sum(1 for t in all_trades if t['exit_type'] == 'Target')
-        stop_exits = sum(1 for t in all_trades if t['exit_type'] in ('Stop', 'Initial Stop'))
+        target_exits = sum(1 for t in consolidated_exit_types if t == 'Target')
+        stop_exits = sum(1 for t in consolidated_exit_types if t in ('Stop', 'Initial Stop'))
         target_exit_pct = target_exits / num_trades * 100
         stop_exit_pct = stop_exits / num_trades * 100
 
@@ -1095,7 +1111,6 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     else:
         win_rate = 0.0
         loss_rate = 0.0
-        total_return = 1.0
         total_pnl = 0.0
         avg_pnl_per_trade = 0.0
         winning_trades_pnl = 0.0
@@ -1113,7 +1128,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 num_trades,
                 win_rate,
                 loss_rate,
-                (total_return - 1) * 100,
+                0.0,  # Total return (%) — deprecated, use Total P&L (R)
                 total_pnl,
                 avg_pnl_per_trade,
                 winning_trades_pnl,

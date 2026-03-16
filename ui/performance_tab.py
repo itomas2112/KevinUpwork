@@ -204,9 +204,14 @@ def render_performance_tab(sidebar_config):
     # --------------------------------------------------
     calculate_clicked = st.button("Calculate", key="perf_calculate", type="primary")
 
+    # Invalidate cached results if strategy changed
+    cached_results = st.session_state.get('_perf_cached_results')
+    if cached_results and cached_results.get('strategy_name') != selected_strategy.get('strategy_name', 'Custom'):
+        st.session_state.pop('_perf_cached_results', None)
+        cached_results = None
+
     # Show cached results if available and no new calculation requested
     if not calculate_clicked:
-        cached_results = st.session_state.get('_perf_cached_results')
         if cached_results:
             _display_results(cached_results['strategy_name'],
                              cached_results['global_agg'],
@@ -294,11 +299,11 @@ def render_performance_tab(sidebar_config):
             for start_dt, end_dt in periods:
                 df_slice, period_start, period_end = slice_for_graph(
                     df=df_full, start_date=start_dt, end_date=end_dt,
-                    show_ichimoku=True,
-                    show_bb=True,
-                    show_kc=True,
-                    show_donchian=True,
-                    show_psar=True,
+                    show_ichimoku=False,
+                    show_bb=False,
+                    show_kc=False,
+                    show_donchian=False,
+                    show_psar=False,
                 )
                 if df_slice.empty:
                     continue

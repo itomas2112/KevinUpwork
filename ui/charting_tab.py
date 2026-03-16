@@ -483,22 +483,14 @@ def _aggregate_stats(all_stats):
     """
     import numpy as np
 
-    total_trades = 0
-    total_wins = 0
+    all_trade_pnls = []  # pooled individual trade R P&Ls
     total_win_pnl = 0.0
     total_lose_pnl = 0.0
     total_target_exits = 0
     total_stop_exits = 0
-    all_trade_pnls = []  # pooled individual trade R P&Ls
 
     for stats_df in all_stats:
         n = int(stats_df.loc['Number of trades', 'value'])
-        win_rate = stats_df.loc['Win rate (%)', 'value'] / 100.0
-
-        wins = round(n * win_rate)
-
-        total_trades += n
-        total_wins += wins
         total_win_pnl += stats_df.loc['Winning trades P&L (R)', 'value']
         total_lose_pnl += stats_df.loc['Losing trades P&L (R)', 'value']
         total_target_exits += round(n * stats_df.loc['Target exit (%)', 'value'] / 100.0)
@@ -508,6 +500,9 @@ def _aggregate_stats(all_stats):
         trade_pnls = getattr(stats_df, 'attrs', {}).get('trade_pnls_r', [])
         all_trade_pnls.extend(trade_pnls)
 
+    # Derive counts directly from pooled trade P&Ls (avoids lossy percentage reconstruction)
+    total_trades = len(all_trade_pnls)
+    total_wins = sum(pnl > 0 for pnl in all_trade_pnls)
     total_losses = total_trades - total_wins
     total_pnl = total_win_pnl + total_lose_pnl
 
