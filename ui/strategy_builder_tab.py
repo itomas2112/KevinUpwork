@@ -642,10 +642,10 @@ def render_entry_box():
                 )
                 initial_stop_atr_mult = st.number_input(
                     "ATR Multiplier",
-                    min_value=0.1,
-                    value=1.5,
-                    step=0.1,
-                    format="%.1f",
+                    min_value=0.01,
+                    value=1.50,
+                    step=0.01,
+                    format="%.2f",
                     key="initial_stop_atr_multiplier"
                 )
                 st.caption(f"Stop = Entry ± ATR({initial_stop_atr_period}) × {initial_stop_atr_mult}")
