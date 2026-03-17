@@ -357,14 +357,14 @@ def _display_results(strategy_name, global_agg, results):
 
     global_table = _build_metrics_table({"Global": global_agg})
     st.table(global_table)
-    _copy_to_clipboard(global_table.to_csv(sep='\t'), key="perf_copy_global")
+    _copy_to_clipboard(global_table.to_csv(sep='\t', header=False, index=False), key="perf_copy_global")
 
     # Per-selection results table
     if results:
         st.subheader("Performance by Selection")
         perf_table = _build_metrics_table(results)
         st.table(perf_table)
-        _copy_to_clipboard(perf_table.to_csv(sep='\t'), key="perf_copy_selection")
+        _copy_to_clipboard(perf_table.to_csv(sep='\t', header=False, index=False), key="perf_copy_selection")
 
 
 # ------------------------------------------------------------------

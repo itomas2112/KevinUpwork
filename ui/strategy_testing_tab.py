@@ -253,9 +253,9 @@ def render_strategy_testing_tab(sidebar_config):
     st.markdown("---")
 
     # ==================================================
-    # Section B: Cross Validation (Test Set)
+    # Section B: Test Set (one-shot)
     # ==================================================
-    st.subheader("Cross Validation (Test Set)")
+    st.subheader("Test Set")
 
     if not sidebar_config.get('test_set_applied', False):
         st.info("Please set a Test Set date range in the sidebar and click **Apply Test Set** to proceed.")
@@ -264,12 +264,7 @@ def render_strategy_testing_tab(sidebar_config):
         test_end = sidebar_config.get('test_end_date')
         st.caption(f"Test Set: **{test_start}** → **{test_end}**")
 
-        test_k_col, test_btn_col, _ = st.columns([1, 1, 2])
-        with test_k_col:
-            test_k = st.number_input("K Folds", min_value=2, max_value=50, value=10, step=1, key="test_k_folds")
-        with test_btn_col:
-            st.markdown("<br>", unsafe_allow_html=True)
-            test_calculate = st.button("Calculate", key="test_calculate", type="primary")
+        test_calculate = st.button("Calculate", key="test_calculate", type="primary")
 
         # Invalidate cache if strategy changed
         test_cache = st.session_state.get('_test_cached_results')
@@ -278,16 +273,14 @@ def render_strategy_testing_tab(sidebar_config):
             test_cache = None
 
         if test_calculate:
-            _run_cross_validation(
+            _run_test_set(
                 df_key, indicator_params, selected_strategy, strategy_name,
-                test_start, test_end, all_combos, drm_bullish, drm_bearish, test_k,
-                cache_key='_test_cached_results', features_key='_test_features', params_key='_test_params',
-                download_key='test_download', file_prefix='test_cv'
+                test_start, test_end, all_combos, drm_bullish, drm_bearish,
             )
         elif test_cache:
-            _display_cv_results(test_cache, download_key="test_download", file_prefix="test_cv")
+            _display_test_set_results(test_cache)
         else:
-            st.info("Set K folds and click **Calculate** to run cross validation on the Test Set.")
+            st.info("Click **Calculate** to run the strategy on the Test Set.")
 
 
 # ------------------------------------------------------------------
@@ -416,7 +409,62 @@ def _display_cv_results(cache, download_key="cv_download", file_prefix="cv"):
     st.table(table)
 
     # Copy to clipboard
-    _copy_to_clipboard(table.to_csv(sep='\t'), key=download_key)
+    _copy_to_clipboard(table.to_csv(sep='\t', header=False, index=False), key=download_key)
+
+
+# ------------------------------------------------------------------
+# Test Set (one-shot)
+# ------------------------------------------------------------------
+
+def _run_test_set(df_key, indicator_params, selected_strategy, strategy_name,
+                  date_start, date_end, all_combos, drm_bullish, drm_bearish):
+    """Run strategy once on the full test set date range (no folds)."""
+
+    df_full = _get_or_calculate(
+        df_key, '_test_features', '_test_params', indicator_params,
+        global_start_date=date_start, global_end_date=date_end
+    )
+
+    if df_full.empty:
+        st.warning("No data available for the selected date range.")
+        return
+
+    progress_bar = st.progress(0)
+
+    all_stats = _run_on_date_range(
+        df_full, selected_strategy, all_combos,
+        drm_bullish, drm_bearish,
+        pd.Timestamp(date_start),
+        pd.Timestamp(date_end) + pd.Timedelta(days=1),
+        progress_callback=lambda p: progress_bar.progress(p)
+    )
+
+    progress_bar.empty()
+
+    if all_stats:
+        agg = _aggregate_stats(all_stats)
+    else:
+        agg = _empty_agg()
+
+    cache = {
+        'strategy_name': strategy_name,
+        'agg': agg,
+    }
+    st.session_state['_test_cached_results'] = cache
+    _display_test_set_results(cache)
+
+
+def _display_test_set_results(cache):
+    """Display test set results (single result, no folds)."""
+    strategy_name = cache['strategy_name']
+    agg = cache['agg']
+
+    st.caption(f"Strategy: **{strategy_name}**")
+
+    table = _build_metrics_table({"Result": agg})
+    st.table(table)
+
+    _copy_to_clipboard(table.to_csv(sep='\t', header=False, index=False), key="test_download")
 
 
 # ------------------------------------------------------------------
