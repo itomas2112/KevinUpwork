@@ -86,7 +86,7 @@ def render_charting_tab(sidebar_config):
 
     # Require date range before proceeding
     if not sidebar_config.get('date_range_applied', False):
-        st.info("Please set a date range in the sidebar and click **Apply Date Range** to proceed.")
+        st.info("Please set a date range in the sidebar and click **Apply Training Set** to proceed.")
         return
 
     # Expand all charting selections into (pattern_type, primary, secondary) combos

@@ -81,7 +81,7 @@ def render_performance_tab(sidebar_config):
     # Date Range — uses sidebar's global date range
     # --------------------------------------------------
     if not sidebar_config.get('date_range_applied', False):
-        st.info("Please set a date range in the sidebar and click **Apply Date Range** to proceed.")
+        st.info("Please set a date range in the sidebar and click **Apply Training Set** to proceed.")
         return
 
     perf_start = sidebar_config.get('global_start_date')

@@ -154,9 +154,11 @@ def collect_exit_config(group_idx, exit_type, exit_idx):
     # ---- Trigger ----
     compare_type = st.session_state.get(f'{prefix}_trigger_compare_type', 'Indicator')
 
+    element1 = st.session_state.get(f'{prefix}_trigger_element1')
+
     trigger = {
         'group': st.session_state.get(f'{prefix}_trigger_group1'),
-        'element1': st.session_state.get(f'{prefix}_trigger_element1'),
+        'element1': element1,
         'event': st.session_state.get(f'{prefix}_trigger_event'),
         'compare_type': compare_type,
         'element2': (
@@ -168,6 +170,11 @@ def collect_exit_config(group_idx, exit_type, exit_idx):
             if compare_type == 'Fixed Value' else None
         ),
     }
+
+    # ATR Target: store period and multiplier
+    if element1 == 'ATR Target':
+        trigger['atr_period'] = st.session_state.get(f'{prefix}_atr_period', 14)
+        trigger['atr_multiplier'] = st.session_state.get(f'{prefix}_atr_multiplier', 2.0)
 
     # If element1 was never set the widget wasn't rendered – skip
     if trigger['element1'] is None:

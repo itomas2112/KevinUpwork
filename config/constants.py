@@ -66,6 +66,11 @@ R_PROFIT_LOSS_ELEMENTS = [
     "R Loss",
 ]
 
+# Special exit-only element: ATR-based fixed target/stop (locked at entry time)
+ATR_TARGET_ELEMENTS = [
+    "ATR Target",
+]
+
 EVENT_TYPES = [
     "Cross",
     "Cross Above",

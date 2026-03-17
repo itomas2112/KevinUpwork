@@ -27,8 +27,8 @@ def render_sidebar():
         horizontal=True,
     )
 
-    # Global Date Range — required before any calculations
-    with st.sidebar.expander("Date Range Filter", expanded=False):
+    # Training Set — required before any calculations
+    with st.sidebar.expander("Training Set", expanded=False):
         date_col1, date_col2 = st.columns(2)
         with date_col1:
             global_start_date = st.date_input(
@@ -42,13 +42,36 @@ def render_sidebar():
                 value=st.session_state.get("global_end_date"),
                 key="global_end_date",
             )
-        if st.button("Apply Date Range", key="apply_date_range", type="primary"):
+        if st.button("Apply Training Set", key="apply_date_range", type="primary"):
             st.session_state['date_range_applied'] = True
             st.rerun()
         if st.session_state.get('date_range_applied'):
             st.success(f"{global_start_date} → {global_end_date}")
         else:
             st.warning("Set dates and click Apply to proceed.")
+
+    # Test Set — used only by Strategy Testing tab
+    with st.sidebar.expander("Test Set", expanded=False):
+        test_col1, test_col2 = st.columns(2)
+        with test_col1:
+            test_start_date = st.date_input(
+                "Start Date",
+                value=st.session_state.get("test_start_date"),
+                key="test_start_date",
+            )
+        with test_col2:
+            test_end_date = st.date_input(
+                "End Date",
+                value=st.session_state.get("test_end_date"),
+                key="test_end_date",
+            )
+        if st.button("Apply Test Set", key="apply_test_set", type="primary"):
+            st.session_state['test_set_applied'] = True
+            st.rerun()
+        if st.session_state.get('test_set_applied'):
+            st.success(f"{test_start_date} → {test_end_date}")
+        else:
+            st.info("Optional: set dates for Strategy Testing tab.")
 
     # Pattern Parameters — multi-row selection
     with st.sidebar.expander("Pattern Parameters", expanded=False):
@@ -299,7 +322,10 @@ def render_sidebar():
         'draw_mode': draw_mode,
         'chart_height': chart_height,
         'params_1h': params_1h,
-        'params_15m': params_15m
+        'params_15m': params_15m,
+        'test_start_date': test_start_date,
+        'test_end_date': test_end_date,
+        'test_set_applied': st.session_state.get('test_set_applied', False),
     }
 
 def render_timeframe_parameters(timeframe, disabled=False):
@@ -426,7 +452,7 @@ def render_timeframe_parameters(timeframe, disabled=False):
             disabled=disabled,
         )
         params['supertrend_multiplier'] = st.number_input(
-            "Multiplier", 0.5, 10.0, 3.0, step=0.1,
+            "Multiplier", 0.5, 10.0, 3.0, step=0.01, format="%.2f",
             key=f"st_m_{key_prefix}",
             disabled=disabled,
         )
@@ -531,7 +557,7 @@ def render_timeframe_parameters(timeframe, disabled=False):
             disabled=disabled,
         )
         params['bb_upper_stdev'] = st.number_input(
-            "Upper StdDev", 0.5, 5.0, 2.0, step=0.1,
+            "Upper StdDev", 0.5, 5.0, 2.0, step=0.01, format="%.2f",
             key=f"bb_up_s_{key_prefix}",
             disabled=disabled,
         )
@@ -548,7 +574,7 @@ def render_timeframe_parameters(timeframe, disabled=False):
             disabled=disabled,
         )
         params['bb_lower_stdev'] = st.number_input(
-            "Lower StdDev", 0.5, 5.0, 2.0, step=0.1,
+            "Lower StdDev", 0.5, 5.0, 2.0, step=0.01, format="%.2f",
             key=f"bb_lo_s_{key_prefix}",
             disabled=disabled,
         )
@@ -582,7 +608,7 @@ def render_timeframe_parameters(timeframe, disabled=False):
             disabled=disabled,
         )
         params['kc_upper_mult'] = st.number_input(
-            "Upper ATR Mult", 0.5, 5.0, 2.0, step=0.1,
+            "Upper ATR Mult", 0.5, 5.0, 2.0, step=0.01, format="%.2f",
             key=f"kc_up_mult_{key_prefix}",
             disabled=disabled,
         )
@@ -599,7 +625,7 @@ def render_timeframe_parameters(timeframe, disabled=False):
             disabled=disabled,
         )
         params['kc_lower_mult'] = st.number_input(
-            "Lower ATR Mult", 0.5, 5.0, 2.0, step=0.1,
+            "Lower ATR Mult", 0.5, 5.0, 2.0, step=0.01, format="%.2f",
             key=f"kc_lo_mult_{key_prefix}",
             disabled=disabled,
         )

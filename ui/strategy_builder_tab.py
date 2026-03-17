@@ -20,6 +20,7 @@ from config.constants import (
     GROUP_NAMES,
     GROUP_MAP,
     R_PROFIT_LOSS_ELEMENTS,
+    ATR_TARGET_ELEMENTS,
     get_group_elements,
 )
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
@@ -314,7 +315,7 @@ def render_strategy_indicator_settings():
         st.session_state[f'{pfx}bb_upper_stdev'] = st.number_input(
             "Upper StdDev", 0.5, 5.0,
             value=float(st.session_state.get(f'{pfx}bb_upper_stdev', 2.0)),
-            step=0.1, key=f"{pfx}bb_up_s"
+            step=0.01, format="%.2f", key=f"{pfx}bb_up_s"
         )
         st.caption("**Middle Band**")
         st.session_state[f'{pfx}bb_mid_period'] = st.number_input(
@@ -331,7 +332,7 @@ def render_strategy_indicator_settings():
         st.session_state[f'{pfx}bb_lower_stdev'] = st.number_input(
             "Lower StdDev", 0.5, 5.0,
             value=float(st.session_state.get(f'{pfx}bb_lower_stdev', 2.0)),
-            step=0.1, key=f"{pfx}bb_lo_s"
+            step=0.01, format="%.2f", key=f"{pfx}bb_lo_s"
         )
 
     with st.expander("Keltner Channel", expanded=False):
@@ -349,7 +350,7 @@ def render_strategy_indicator_settings():
         st.session_state[f'{pfx}kc_upper_mult'] = st.number_input(
             "Upper ATR Mult", 0.5, 5.0,
             value=float(st.session_state.get(f'{pfx}kc_upper_mult', 2.0)),
-            step=0.1, key=f"{pfx}kc_up_m"
+            step=0.01, format="%.2f", key=f"{pfx}kc_up_m"
         )
         st.caption("**Middle Band**")
         st.session_state[f'{pfx}kc_mid_ema'] = st.number_input(
@@ -366,7 +367,7 @@ def render_strategy_indicator_settings():
         st.session_state[f'{pfx}kc_lower_mult'] = st.number_input(
             "Lower ATR Mult", 0.5, 5.0,
             value=float(st.session_state.get(f'{pfx}kc_lower_mult', 2.0)),
-            step=0.1, key=f"{pfx}kc_lo_m"
+            step=0.01, format="%.2f", key=f"{pfx}kc_lo_m"
         )
 
     with st.expander("Stochastic", expanded=False):
@@ -426,7 +427,7 @@ def render_strategy_indicator_settings():
         st.session_state[f'{pfx}supertrend_multiplier'] = st.number_input(
             "Multiplier", 0.5, 10.0,
             value=float(st.session_state.get(f'{pfx}supertrend_multiplier', 3.0)),
-            step=0.1, key=f"{pfx}st_m"
+            step=0.01, format="%.2f", key=f"{pfx}st_m"
         )
 
     with st.expander("EMA Overlay", expanded=False):
@@ -621,7 +622,8 @@ def render_entry_box():
             "Position Size (R)",
             min_value=0.1,
             value=1.0,
-            step=0.1,
+            step=0.01,
+            format="%.2f",
             key="entry_position_size"
         )
 
@@ -851,7 +853,8 @@ def render_exit_box():
             "Position Size (units)",
             min_value=0.0,
             value=1.0,
-            step=0.1,
+            step=0.01,
+            format="%.2f",
             key="exit_position_size"
         )
 
@@ -1264,7 +1267,11 @@ def render_strategy_management():
                                         t_event = t_trigger.get('event', 'N/A')
                                         t_ctype = t_trigger.get('compare_type', 'Indicator')
 
-                                        if t_ctype == "Fixed Value":
+                                        if t_el1 == "ATR Target":
+                                            atr_p = t_trigger.get('atr_period', 14)
+                                            atr_m = t_trigger.get('atr_multiplier', 2.0)
+                                            t_el2 = f"ATR({atr_p}) × {atr_m}"
+                                        elif t_ctype == "Fixed Value":
                                             t_el2 = t_trigger.get('value', 'N/A')
                                             # Add R suffix for R Profit/R Loss
                                             if t_el1 in ("R Profit", "R Loss"):
@@ -1294,7 +1301,11 @@ def render_strategy_management():
                                         s_event = s_trigger.get('event', 'N/A')
                                         s_ctype = s_trigger.get('compare_type', 'Indicator')
 
-                                        if s_ctype == "Fixed Value":
+                                        if s_el1 == "ATR Target":
+                                            atr_p = s_trigger.get('atr_period', 14)
+                                            atr_m = s_trigger.get('atr_multiplier', 2.0)
+                                            s_el2 = f"ATR({atr_p}) × {atr_m}"
+                                        elif s_ctype == "Fixed Value":
                                             s_el2 = s_trigger.get('value', 'N/A')
                                             if s_el1 in ("R Profit", "R Loss"):
                                                 s_el2 = f"{s_el2}R"
@@ -1613,7 +1624,7 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
 
         # Trigger
         st.markdown("**Trigger**")
-        exit_group_options = ["R Profit / R Loss"] + GROUP_NAMES
+        exit_group_options = ["R Profit / R Loss", "ATR Target"] + GROUP_NAMES
 
         col1, col2, col3 = st.columns([2, 1, 2])
 
@@ -1631,6 +1642,8 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
 
             if trigger_group == "R Profit / R Loss":
                 available_elements = R_PROFIT_LOSS_ELEMENTS
+            elif trigger_group == "ATR Target":
+                available_elements = ATR_TARGET_ELEMENTS
             else:
                 available_elements = get_group_elements(trigger_group, _ema_count())
 
@@ -1641,17 +1654,48 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
             )
 
         is_r_element = trigger_element1 in R_PROFIT_LOSS_ELEMENTS
+        is_atr_target = trigger_element1 in ATR_TARGET_ELEMENTS
 
         with col2:
-            event_options = STOP_EVENT_TYPES if exit_type == "Stop" else EVENT_TYPES
-            trigger_event = st.selectbox(
-                "Event",
-                event_options,
-                key=f"{prefix}_trigger_event"
-            )
+            if is_atr_target:
+                # ATR Target: event is always Cross Above for Long / Cross Below for Short
+                # but let user choose (they may want Cross Below for a stop-like ATR Target)
+                event_options = STOP_EVENT_TYPES if exit_type == "Stop" else EVENT_TYPES
+                trigger_event = st.selectbox(
+                    "Event",
+                    event_options,
+                    key=f"{prefix}_trigger_event"
+                )
+            else:
+                event_options = STOP_EVENT_TYPES if exit_type == "Stop" else EVENT_TYPES
+                trigger_event = st.selectbox(
+                    "Event",
+                    event_options,
+                    key=f"{prefix}_trigger_event"
+                )
 
         with col3:
-            if is_r_element:
+            if is_atr_target:
+                # ATR Target: show ATR period + multiplier inputs
+                if st.session_state.get(f"{prefix}_trigger_compare_type") != "ATR":
+                    st.session_state[f"{prefix}_trigger_compare_type"] = "ATR"
+                atr_period = st.number_input(
+                    "ATR Period",
+                    min_value=1,
+                    value=int(st.session_state.get(f"{prefix}_atr_period", 14)),
+                    step=1,
+                    key=f"{prefix}_atr_period"
+                )
+                atr_mult = st.number_input(
+                    "ATR Multiplier",
+                    min_value=0.01,
+                    value=float(st.session_state.get(f"{prefix}_atr_multiplier", 2.0)),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"{prefix}_atr_multiplier"
+                )
+                st.caption(f"Target = Entry ± ATR({atr_period}) × {atr_mult}")
+            elif is_r_element:
                 # R Profit/R Loss: always Fixed Value, no indicator comparison
                 # Force compare type to Fixed Value if switching from indicator mode
                 if st.session_state.get(f"{prefix}_trigger_compare_type") != "Fixed Value":
@@ -1667,7 +1711,7 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
                     f"Value ({r_label})",
                     value=0.5,
                     min_value=0.0,
-                    step=0.1,
+                    step=0.01,
                     format="%.2f",
                     key=f"{prefix}_trigger_value",
                     help=f"e.g., 0.7 means 0.7R {'profit' if trigger_element1 == 'R Profit' else 'loss'}"
@@ -1726,6 +1770,8 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
     # R Profit/R Loss use special group name
     if element1 in R_PROFIT_LOSS_ELEMENTS:
         st.session_state[f'{prefix}_trigger_group1'] = 'R Profit / R Loss'
+    elif element1 == 'ATR Target':
+        st.session_state[f'{prefix}_trigger_group1'] = 'ATR Target'
     else:
         st.session_state[f'{prefix}_trigger_group1'] = trigger.get('group', 'Price & Indicators')
 
@@ -1733,7 +1779,11 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
     st.session_state[f'{prefix}_trigger_event'] = trigger.get('event')
     st.session_state[f'{prefix}_trigger_compare_type'] = trigger.get('compare_type', 'Indicator')
 
-    if trigger.get('compare_type') == 'Indicator':
+    if element1 == 'ATR Target':
+        st.session_state[f'{prefix}_trigger_compare_type'] = 'ATR'
+        st.session_state[f'{prefix}_atr_period'] = trigger.get('atr_period', 14)
+        st.session_state[f'{prefix}_atr_multiplier'] = trigger.get('atr_multiplier', 2.0)
+    elif trigger.get('compare_type') == 'Indicator':
         st.session_state[f'{prefix}_trigger_element2'] = trigger.get('element2')
     else:
         st.session_state[f'{prefix}_trigger_value'] = trigger.get('value', 50.0)

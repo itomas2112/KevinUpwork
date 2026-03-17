@@ -75,3 +75,12 @@ def initialize_session_state():
             "primary": None,
             "secondary": None,
         }]
+
+    # Strategy Testing tab selections
+    if 'testing_selections' not in st.session_state:
+        st.session_state['testing_selections'] = [{
+            "mode": "All Patterns",
+            "pattern_type": "Bullish",
+            "primary": None,
+            "secondary": None,
+        }]

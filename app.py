@@ -8,6 +8,7 @@ from ui.sidebar import render_sidebar
 from ui.charting_tab import render_charting_tab
 from ui.strategy_builder_tab import render_strategy_builder_tab
 from ui.performance_tab import render_performance_tab
+from ui.strategy_testing_tab import render_strategy_testing_tab
 
 # -------------------------------------------------
 # Configuration
@@ -52,7 +53,7 @@ st.markdown("""
 st.title("Trading Analysis Platform")
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance", "🧪 Strategy Testing"])
 
 # Render sidebar and get configuration
 sidebar_config = render_sidebar()
@@ -66,3 +67,6 @@ with tab2:
 
 with tab3:
     render_performance_tab(sidebar_config)
+
+with tab4:
+    render_strategy_testing_tab(sidebar_config)
