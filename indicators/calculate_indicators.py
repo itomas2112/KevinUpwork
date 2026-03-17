@@ -107,11 +107,13 @@ def recalculate_groups(df, groups, **params):
         )
 
     if 'supertrend' in groups:
-        df["supertrend"], df["supertrend_dir"], df["supertrend_upper"], df["supertrend_lower"] = supertrend(
+        df["supertrend"], df["supertrend_dir"], st_upper, st_lower = supertrend(
             df["high"], df["low"], df["latest"],
             period=params.get('supertrend_period', 10),
             multiplier=params.get('supertrend_multiplier', 3.0),
         )
+        df["supertrend_upper"] = st_upper.shift(1)
+        df["supertrend_lower"] = st_lower.shift(1)
 
     if 'ema' in groups:
         # Remove old ema columns
@@ -132,12 +134,14 @@ def recalculate_groups(df, groups, **params):
         )
 
     if 'psar' in groups:
-        df["psar"], df["psar_dir"], df["psar_upper"], df["psar_lower"] = parabolic_sar(
+        df["psar"], df["psar_dir"], psar_up, psar_lo = parabolic_sar(
             df["high"], df["low"], df["latest"],
             af_start=params.get('psar_af_start', 0.02),
             af_increment=params.get('psar_af_increment', 0.02),
             af_max=params.get('psar_af_max', 0.20),
         )
+        df["psar_upper"] = psar_up.shift(1)
+        df["psar_lower"] = psar_lo.shift(1)
 
     return df
 
@@ -349,10 +353,12 @@ def calculate_indicators(
     (
         df["supertrend"],
         df["supertrend_dir"],
-        df["supertrend_upper"],
-        df["supertrend_lower"],
+        st_upper,
+        st_lower,
     ) = supertrend(df["high"], df["low"], df["latest"],
                    period=supertrend_period, multiplier=supertrend_multiplier)
+    df["supertrend_upper"] = st_upper.shift(1)
+    df["supertrend_lower"] = st_lower.shift(1)
 
     # -------------------------------------------------
     # EMA Overlay
@@ -384,14 +390,16 @@ def calculate_indicators(
     (
         df["psar"],
         df["psar_dir"],
-        df["psar_upper"],
-        df["psar_lower"],
+        psar_up,
+        psar_lo,
     ) = parabolic_sar(
         df["high"], df["low"], df["latest"],
         af_start=psar_af_start,
         af_increment=psar_af_increment,
         af_max=psar_af_max,
     )
+    df["psar_upper"] = psar_up.shift(1)
+    df["psar_lower"] = psar_lo.shift(1)
 
     return df
 
