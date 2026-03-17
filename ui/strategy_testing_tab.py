@@ -415,24 +415,29 @@ def _display_cv_results(cache, download_key="cv_download", file_prefix="cv"):
     table = _build_metrics_table(results_dict)
     st.table(table)
 
-    # Download
-    from io import BytesIO
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        table.to_excel(writer, sheet_name='Cross Validation')
-    output.seek(0)
-    st.download_button(
-        label="Download to Excel",
-        data=output,
-        file_name=f"{file_prefix}_{strategy_name}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=download_key,
-    )
+    # Copy to clipboard
+    _copy_to_clipboard(table.to_csv(sep='\t'), key=download_key)
 
 
 # ------------------------------------------------------------------
 # Shared helpers
 # ------------------------------------------------------------------
+
+def _copy_to_clipboard(text: str, key: str = "copy_btn"):
+    """Render a 'Copy to Clipboard' button using HTML/JS."""
+    import streamlit.components.v1 as components
+    escaped = text.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
+    components.html(f"""
+    <button id="btn_{key}" onclick="
+        navigator.clipboard.writeText(`{escaped}`).then(function() {{
+            document.getElementById('btn_{key}').innerText = 'Copied!';
+            setTimeout(function() {{ document.getElementById('btn_{key}').innerText = 'Copy to Clipboard'; }}, 2000);
+        }})
+    " style="
+        background-color: #FF4B4B; color: white; border: none; padding: 8px 16px;
+        border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;
+    ">Copy to Clipboard</button>
+    """, height=50)
 
 def _run_on_date_range(df_full, selected_strategy, all_combos,
                        drm_bullish, drm_bearish, range_start, range_end,

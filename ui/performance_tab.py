@@ -357,32 +357,35 @@ def _display_results(strategy_name, global_agg, results):
 
     global_table = _build_metrics_table({"Global": global_agg})
     st.table(global_table)
+    _copy_to_clipboard(global_table.to_csv(sep='\t'), key="perf_copy_global")
 
     # Per-selection results table
     if results:
         st.subheader("Performance by Selection")
         perf_table = _build_metrics_table(results)
         st.table(perf_table)
-
-    # Download button
-    from io import BytesIO
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        global_table.to_excel(writer, sheet_name='Global')
-        if results:
-            perf_table.to_excel(writer, sheet_name='By Selection')
-    output.seek(0)
-    st.download_button(
-        label="Download to Excel",
-        data=output,
-        file_name=f"performance_{strategy_name}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        _copy_to_clipboard(perf_table.to_csv(sep='\t'), key="perf_copy_selection")
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _copy_to_clipboard(text: str, key: str = "copy_btn"):
+    """Render a 'Copy to Clipboard' button using HTML/JS."""
+    import streamlit.components.v1 as components
+    escaped = text.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
+    components.html(f"""
+    <button id="btn_{key}" onclick="
+        navigator.clipboard.writeText(`{escaped}`).then(function() {{
+            document.getElementById('btn_{key}').innerText = 'Copied!';
+            setTimeout(function() {{ document.getElementById('btn_{key}').innerText = 'Copy to Clipboard'; }}, 2000);
+        }})
+    " style="
+        background-color: #FF4B4B; color: white; border: none; padding: 8px 16px;
+        border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;
+    ">Copy to Clipboard</button>
+    """, height=50)
 
 def _build_metrics_table(results_dict):
     """Build a DataFrame with metric rows and one column per result."""

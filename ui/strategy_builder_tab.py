@@ -663,7 +663,7 @@ def render_entry_box():
 
                 initial_stop_element2 = st.selectbox(
                     "Indicator",
-                    PRICE_AND_INDICATORS[1:],
+                    get_group_elements("Price & Indicators", _ema_count())[1:],
                     key="initial_stop_element2"
                 )
                 st.caption(f"Price {initial_stop_event} {initial_stop_element2}")
