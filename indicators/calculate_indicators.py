@@ -107,7 +107,7 @@ def recalculate_groups(df, groups, **params):
         )
 
     if 'supertrend' in groups:
-        df["supertrend"], df["supertrend_dir"] = supertrend(
+        df["supertrend"], df["supertrend_dir"], df["supertrend_upper"], df["supertrend_lower"] = supertrend(
             df["high"], df["low"], df["latest"],
             period=params.get('supertrend_period', 10),
             multiplier=params.get('supertrend_multiplier', 3.0),
@@ -132,7 +132,7 @@ def recalculate_groups(df, groups, **params):
         )
 
     if 'psar' in groups:
-        df["psar"], df["psar_dir"] = parabolic_sar(
+        df["psar"], df["psar_dir"], df["psar_upper"], df["psar_lower"] = parabolic_sar(
             df["high"], df["low"], df["latest"],
             af_start=params.get('psar_af_start', 0.02),
             af_increment=params.get('psar_af_increment', 0.02),
@@ -349,6 +349,8 @@ def calculate_indicators(
     (
         df["supertrend"],
         df["supertrend_dir"],
+        df["supertrend_upper"],
+        df["supertrend_lower"],
     ) = supertrend(df["high"], df["low"], df["latest"],
                    period=supertrend_period, multiplier=supertrend_multiplier)
 
@@ -382,6 +384,8 @@ def calculate_indicators(
     (
         df["psar"],
         df["psar_dir"],
+        df["psar_upper"],
+        df["psar_lower"],
     ) = parabolic_sar(
         df["high"], df["low"], df["latest"],
         af_start=psar_af_start,

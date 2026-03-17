@@ -69,4 +69,6 @@ def supertrend(
     return (
         pd.Series(st_line, index=close.index),
         pd.Series(direction, index=close.index),
+        pd.Series(upper_arr, index=close.index),
+        pd.Series(lower_arr, index=close.index),
     )

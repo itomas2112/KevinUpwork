@@ -15,9 +15,14 @@ def parabolic_sar(high: pd.Series, low: pd.Series, close: pd.Series,
     n = len(close)
     psar = np.full(n, np.nan)
     psar_dir = np.full(n, np.nan)
+    psar_upper = np.full(n, np.nan)
+    psar_lower = np.full(n, np.nan)
 
     if n < 2:
-        return pd.Series(psar, index=close.index), pd.Series(psar_dir, index=close.index)
+        return (pd.Series(psar, index=close.index),
+                pd.Series(psar_dir, index=close.index),
+                pd.Series(psar_upper, index=close.index),
+                pd.Series(psar_lower, index=close.index))
 
     h = high.values
     l = low.values
@@ -32,21 +37,31 @@ def parabolic_sar(high: pd.Series, low: pd.Series, close: pd.Series,
         sar = h[0]
         ep = l[0]
 
+    # Initialize independent upper (bearish) and lower (bullish) SAR tracks
+    upper_sar = h[0]
+    upper_ep = l[0]
+    upper_af = af_start
+
+    lower_sar = l[0]
+    lower_ep = h[0]
+    lower_af = af_start
+
     psar[0] = sar
     psar_dir[0] = 1 if is_long else -1
+    psar_upper[0] = upper_sar
+    psar_lower[0] = lower_sar
 
     for i in range(1, n):
         prev_sar = sar
 
+        # --- Standard flipping PSAR ---
         if is_long:
             sar = prev_sar + af * (ep - prev_sar)
-            # SAR must not be above prior two lows
             sar = min(sar, l[i - 1])
             if i >= 2:
                 sar = min(sar, l[i - 2])
 
             if l[i] < sar:
-                # Reversal to short
                 is_long = False
                 sar = ep
                 ep = l[i]
@@ -57,13 +72,11 @@ def parabolic_sar(high: pd.Series, low: pd.Series, close: pd.Series,
                     af = min(af + af_increment, af_max)
         else:
             sar = prev_sar + af * (ep - prev_sar)
-            # SAR must not be below prior two highs
             sar = max(sar, h[i - 1])
             if i >= 2:
                 sar = max(sar, h[i - 2])
 
             if h[i] > sar:
-                # Reversal to long
                 is_long = True
                 sar = ep
                 ep = h[i]
@@ -76,4 +89,47 @@ def parabolic_sar(high: pd.Series, low: pd.Series, close: pd.Series,
         psar[i] = sar
         psar_dir[i] = 1 if is_long else -1
 
-    return pd.Series(psar, index=close.index), pd.Series(psar_dir, index=close.index)
+        # --- Upper SAR (always bearish / above price) ---
+        prev_upper = upper_sar
+        upper_sar = prev_upper + upper_af * (upper_ep - prev_upper)
+        # SAR must not be below prior two highs
+        upper_sar = max(upper_sar, h[i - 1])
+        if i >= 2:
+            upper_sar = max(upper_sar, h[i - 2])
+
+        if h[i] > upper_sar:
+            # Price broke above — reset upper SAR from current extreme
+            upper_sar = h[i]
+            upper_ep = l[i]
+            upper_af = af_start
+        else:
+            if l[i] < upper_ep:
+                upper_ep = l[i]
+                upper_af = min(upper_af + af_increment, af_max)
+
+        psar_upper[i] = upper_sar
+
+        # --- Lower SAR (always bullish / below price) ---
+        prev_lower = lower_sar
+        lower_sar = prev_lower + lower_af * (lower_ep - prev_lower)
+        # SAR must not be above prior two lows
+        lower_sar = min(lower_sar, l[i - 1])
+        if i >= 2:
+            lower_sar = min(lower_sar, l[i - 2])
+
+        if l[i] < lower_sar:
+            # Price broke below — reset lower SAR from current extreme
+            lower_sar = l[i]
+            lower_ep = h[i]
+            lower_af = af_start
+        else:
+            if h[i] > lower_ep:
+                lower_ep = h[i]
+                lower_af = min(lower_af + af_increment, af_max)
+
+        psar_lower[i] = lower_sar
+
+    return (pd.Series(psar, index=close.index),
+            pd.Series(psar_dir, index=close.index),
+            pd.Series(psar_upper, index=close.index),
+            pd.Series(psar_lower, index=close.index))
