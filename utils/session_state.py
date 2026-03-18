@@ -80,6 +80,29 @@ def initialize_session_state():
     if 'mc_results' not in st.session_state:
         st.session_state['mc_results'] = None
 
+    # Grid Search tab
+    if 'gs_selections' not in st.session_state:
+        st.session_state['gs_selections'] = [{
+            "mode": "All Patterns",
+            "pattern_type": "Bullish",
+            "primary": None,
+            "secondary": None,
+        }]
+    if 'gs_direction' not in st.session_state:
+        st.session_state['gs_direction'] = "Long"
+    if 'gs_current_step' not in st.session_state:
+        st.session_state['gs_current_step'] = 1
+    if 'gs_training_strategy' not in st.session_state:
+        st.session_state['gs_training_strategy'] = None
+    if 'gs_locked_components' not in st.session_state:
+        st.session_state['gs_locked_components'] = {
+            "trigger": None,
+            "conditions": None,
+            "dynamic_stop": None,
+            "static_stop": None,
+            "target": None,
+        }
+
     # Strategy Testing tab selections
     if 'testing_selections' not in st.session_state:
         st.session_state['testing_selections'] = [{

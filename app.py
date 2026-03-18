@@ -10,6 +10,7 @@ from ui.strategy_builder_tab import render_strategy_builder_tab
 from ui.performance_tab import render_performance_tab
 from ui.strategy_testing_tab import render_strategy_testing_tab
 from ui.monte_carlo_tab import render_monte_carlo_tab
+from ui.grid_search_tab import render_grid_search_tab
 
 # -------------------------------------------------
 # Configuration
@@ -54,7 +55,7 @@ st.markdown("""
 st.title("Trading Analysis Platform")
 
 # Create tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance", "🧪 Strategy Testing", "🎲 Monte Carlo"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance", "🧪 Strategy Testing", "🎲 Monte Carlo", "🔍 Grid Search"])
 
 # Render sidebar and get configuration
 sidebar_config = render_sidebar()
@@ -74,3 +75,6 @@ with tab4:
 
 with tab5:
     render_monte_carlo_tab()
+
+with tab6:
+    render_grid_search_tab(sidebar_config)
