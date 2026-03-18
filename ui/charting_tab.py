@@ -2,6 +2,7 @@
 Charting tab (Tab 1) UI and logic
 """
 import streamlit as st
+import streamlit.components.v1 as _components
 from data.loader import load_ohlc, load_drm, parse_drm_periods
 from data.helpers import expand_selection
 from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings, changed_groups, recalculate_groups
@@ -72,6 +73,61 @@ def _get_or_calculate(raw_df_key, features_key, params_key, current_params,
     return df_features
 
 
+def _build_charting_fingerprint(sidebar_config, show_1h):
+    """Build a fingerprint of all inputs that affect charting output.
+
+    When this fingerprint differs from the last calculated one, the user
+    sees a sticky 'Recalculate' bar at the bottom of the viewport.
+    """
+    display_only_keys = {'rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
+                         'cmb_lines',
+                         'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
+                         'ichi_show_senkou_b', 'ichi_show_chikou',
+                         'ichi_show_senkou_a_current', 'ichi_show_senkou_b_current',
+                         'ichi_show_chikou_decision',
+                         'bb_show_upper', 'bb_show_middle', 'bb_show_lower',
+                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
+                         'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
+
+    params_key = 'params_1h' if show_1h else 'params_15m'
+    indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
+
+    # Include strategy settings
+    strategy_settings = None
+    if st.session_state.get('selected_custom_strategy_idx', 0) > 0:
+        actual_idx = st.session_state.get('selected_custom_strategy_actual_idx')
+        if actual_idx is not None and actual_idx < len(st.session_state['saved_strategies']):
+            strategy_settings = st.session_state['saved_strategies'][actual_idx].get('indicator_settings')
+            if strategy_settings:
+                strategy_settings = migrate_indicator_settings(strategy_settings)
+
+    # Include combos, strategy, overlays, display params, date range
+    charting_selections = sidebar_config['charting_selections']
+    combos_str = json.dumps(charting_selections, sort_keys=True, default=str)
+    params_str = json.dumps(indicator_params, sort_keys=True, default=str)
+    strat_idx = st.session_state.get('selected_custom_strategy_idx', 0)
+    strat_actual = st.session_state.get('selected_custom_strategy_actual_idx')
+    strat_settings_str = json.dumps(strategy_settings, sort_keys=True, default=str) if strategy_settings else ""
+
+    # Include display-only keys (RSI zones, visibility toggles) so toggling
+    # a line also triggers the recalculate bar
+    display_params = {k: sidebar_config[params_key].get(k) for k in display_only_keys
+                      if k in sidebar_config[params_key]}
+    display_str = json.dumps(display_params, sort_keys=True, default=str)
+
+    overlay_keys = ('show_ichimoku', 'show_bb', 'show_kc', 'show_donchian', 'show_psar',
+                    'show_rsi', 'show_cmb', 'show_stoch', 'show_adx', 'show_atr',
+                    'show_macd', 'show_obv', 'show_accdist', 'show_supertrend', 'show_ema')
+    overlays = tuple((k, sidebar_config.get(k)) for k in overlay_keys)
+    g_start = sidebar_config.get('global_start_date')
+    g_end = sidebar_config.get('global_end_date')
+    chart_height = sidebar_config.get('chart_height')
+    draw_mode = sidebar_config.get('draw_mode', False)
+
+    return hash((combos_str, params_str, strat_idx, strat_actual, strat_settings_str,
+                 display_str, overlays, str(g_start), str(g_end), chart_height, draw_mode))
+
+
 def render_charting_tab(sidebar_config):
     """Render the charting tab content"""
 
@@ -102,6 +158,38 @@ def render_charting_tab(sidebar_config):
     if not all_combos:
         st.info("Please configure pattern selections in the sidebar to display charts.")
         return
+
+    # ── Recalculate gate ─────────────────────────────────────────────
+    # Build a fingerprint of the current inputs.  When it differs from
+    # the last-calculated fingerprint, show a sticky "Recalculate" bar
+    # instead of re-running the expensive pipeline automatically.
+    current_fp = _build_charting_fingerprint(sidebar_config, show_1h)
+    last_calc_fp = st.session_state.get('_charting_calc_fp')
+
+    calculate_clicked = st.button("Calculate", key="charting_calculate", type="primary")
+
+    # First time — nothing cached yet, need an initial calculate
+    if last_calc_fp is None and not calculate_clicked:
+        st.info("Click **Calculate** to render charts.")
+        return
+
+    params_changed = (last_calc_fp is not None and current_fp != last_calc_fp)
+
+    if params_changed and not calculate_clicked:
+        # Show cached results (below) but also show sticky recalculate bar
+        _inject_sticky_recalculate_bar()
+
+    if not calculate_clicked and last_calc_fp is not None:
+        # Show cached charting results without recalculating
+        cached = st.session_state.get('_charting_cached_output')
+        if cached:
+            _display_cached_output(cached, sidebar_config, show_1h)
+            return
+
+    # ── Expensive pipeline (only runs on Calculate click) ────────────
+
+    # Clear chart HTML cache for fresh rebuild
+    st.session_state['_charting_html_cache'] = {}
 
     # Determine if custom strategy is selected (before indicator calc for overrides)
     show_custom_strategy = False
@@ -180,6 +268,15 @@ def render_charting_tab(sidebar_config):
     drm_bullish = st.session_state.get('drm_bullish')
     drm_bearish = st.session_state.get('drm_bearish')
 
+    # Collect rendered output for caching
+    cached_output = {
+        'combo_sections': [],
+        'all_stats_1h': [],
+        'all_stats_15m': [],
+        'strategy_label': None,
+        'total_periods': 0,
+    }
+
     # Render periods for each combo
     for pattern_type, primary, secondary in all_combos:
         drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
@@ -195,6 +292,13 @@ def render_charting_tab(sidebar_config):
 
         st.markdown(f"## {pattern_type} — {primary} → {secondary}")
 
+        section = {
+            'pattern_type': pattern_type,
+            'primary': primary,
+            'secondary': secondary,
+            'periods': [],
+        }
+
         for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
             chart_key = f"{pattern_type}_{primary}_{secondary}_{i}"
             stats_1h, stats_15m = render_period(
@@ -207,11 +311,18 @@ def render_charting_tab(sidebar_config):
                 chart_key=chart_key,
             )
 
+            section['periods'].append({
+                'start_dt': start_dt,
+                'end_dt': end_dt,
+                'chart_key': chart_key,
+            })
+
             if stats_1h is not None:
                 all_stats_1h.append(stats_1h)
             if stats_15m is not None:
                 all_stats_15m.append(stats_15m)
 
+        cached_output['combo_sections'].append(section)
         total_periods += len(drm_periods)
 
     if show_custom_strategy and selected_custom_strategy is not None:
@@ -222,6 +333,106 @@ def render_charting_tab(sidebar_config):
     if has_stats:
         with global_perf_container:
             render_global_performance(all_stats_1h, all_stats_15m, strategy_label, total_periods, show_1h)
+
+    # Cache the output and fingerprint
+    cached_output['all_stats_1h'] = all_stats_1h
+    cached_output['all_stats_15m'] = all_stats_15m
+    cached_output['strategy_label'] = strategy_label
+    cached_output['total_periods'] = total_periods
+    cached_output['show_custom_strategy'] = show_custom_strategy
+    cached_output['selected_custom_strategy'] = selected_custom_strategy
+    cached_output['chart_height'] = sidebar_config.get('chart_height', 920)
+    st.session_state['_charting_cached_output'] = cached_output
+    st.session_state['_charting_calc_fp'] = current_fp
+
+
+def _display_cached_output(cached, sidebar_config, show_1h):
+    """Display charts from cached HTML strings — no chart construction or data processing."""
+    all_stats_1h = cached.get('all_stats_1h', [])
+    all_stats_15m = cached.get('all_stats_15m', [])
+    strategy_label = cached.get('strategy_label')
+    total_periods = cached.get('total_periods', 0)
+    show_custom_strategy = cached.get('show_custom_strategy', False)
+    chart_height = cached.get('chart_height', 920)
+
+    chart_html_cache = st.session_state.get('_charting_html_cache', {})
+
+    # Reserve a container at the top for the global performance summary
+    global_perf_container = st.container()
+
+    for section in cached.get('combo_sections', []):
+        pattern_type = section['pattern_type']
+        primary = section['primary']
+        secondary = section['secondary']
+
+        st.markdown(f"## {pattern_type} — {primary} → {secondary}")
+
+        for idx, period_info in enumerate(section['periods']):
+            chart_key = period_info['chart_key']
+            start_dt = period_info['start_dt']
+            end_dt = period_info['end_dt']
+            period_num = idx + 1
+
+            st.markdown(f"### Period {period_num}: {start_dt} → {end_dt}")
+
+            cached_entry = chart_html_cache.get(chart_key)
+            if cached_entry:
+                html_str = cached_entry['html']
+                stats_data = cached_entry.get('stats')
+                strat_label = cached_entry.get('strategy_label')
+
+                if stats_data is not None:
+                    col_charts, col_stats = st.columns([3, 1], gap="medium")
+                    with col_charts:
+                        _components.html(html_str, height=chart_height, scrolling=False)
+                    with col_stats:
+                        render_strategy_stats(
+                            stats_data if show_1h else None,
+                            stats_data if not show_1h else None,
+                            strat_label, show_1h)
+                else:
+                    _components.html(html_str, height=chart_height, scrolling=False)
+            else:
+                st.info("Click **Calculate** to render this chart.")
+
+            st.divider()
+
+    # Render global performance summary
+    has_stats = bool(all_stats_1h) if show_1h else bool(all_stats_15m)
+    if has_stats:
+        with global_perf_container:
+            render_global_performance(all_stats_1h, all_stats_15m, strategy_label, total_periods, show_1h)
+
+
+def _inject_sticky_recalculate_bar():
+    """Inject CSS + HTML for a fixed bar at the bottom of the viewport."""
+    st.markdown("""
+    <style>
+    .sticky-recalc-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border-top: 2px solid #e67e22;
+        padding: 12px 24px;
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        box-shadow: 0 -4px 12px rgba(0,0,0,0.4);
+    }
+    .sticky-recalc-bar span {
+        color: #e67e22;
+        font-weight: 600;
+        font-size: 0.95rem;
+    }
+    </style>
+    <div class="sticky-recalc-bar">
+        <span>⚠ Parameters changed — click Calculate above to update charts</span>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def render_file_uploaders(show_1h=False):
@@ -401,12 +612,21 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
         col_charts, col_stats = st.columns([3, 1], gap="medium")
 
         with col_charts:
-            render_charts(show_strategy=True, **chart_kwargs)
+            chart_html = render_charts(show_strategy=True, **chart_kwargs)
 
         with col_stats:
             render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h)
     else:
-        render_charts(show_strategy=False, **chart_kwargs)
+        chart_html = render_charts(show_strategy=False, **chart_kwargs)
+
+    # Cache the chart HTML for fast redisplay on subsequent reruns
+    html_cache = st.session_state.get('_charting_html_cache', {})
+    html_cache[chart_key] = {
+        'html': chart_html,
+        'stats': active_stats,
+        'strategy_label': strategy_label,
+    }
+    st.session_state['_charting_html_cache'] = html_cache
 
     st.divider()
 

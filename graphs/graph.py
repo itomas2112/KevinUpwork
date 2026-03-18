@@ -780,6 +780,9 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
 
     _components.html(full_html, height=height, scrolling=False)
 
+    # Cache the final HTML for fast redisplay by charting tab
+    return full_html
+
 
 def render_charts(
     df_slice_1h,
@@ -828,6 +831,7 @@ def render_charts(
     if draw_mode:
         config["modeBarButtonsToAdd"] = ["drawrect", "eraseshape"]
 
+    chart_html = None
     if show_1h:
         st.subheader("1H Chart")
         fig_1h = build_main_chart(
@@ -837,7 +841,7 @@ def render_charts(
             chart_height=chart_height, chart_key=chart_key,
             **panel_kwargs, **(rsi_zones_1h or {}),
         )
-        _render_persistent_chart(fig_1h, config,
+        chart_html = _render_persistent_chart(fig_1h, config,
                                  f"1h_{chart_key}" if chart_key else "1h",
                                  chart_height, draw_mode)
     else:
@@ -849,6 +853,7 @@ def render_charts(
             chart_height=chart_height, chart_key=chart_key,
             **panel_kwargs, **(rsi_zones_15m or {}),
         )
-        _render_persistent_chart(fig_15m, config,
+        chart_html = _render_persistent_chart(fig_15m, config,
                                  f"15m_{chart_key}" if chart_key else "15m",
                                  chart_height, draw_mode)
+    return chart_html
