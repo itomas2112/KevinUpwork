@@ -115,8 +115,8 @@ def render_monte_carlo_tab():
             step=0.1, format="%.2f", key="mc_reward_risk")
     with col3:
         n_simulations = st.number_input(
-            "Number of Simulations", min_value=1, value=1000,
-            step=100, key="mc_n_simulations")
+            "Number of Simulations", min_value=1, value=20000,
+            step=1000, key="mc_n_simulations")
         risk_pct = st.number_input(
             "Risk per Trade (%)", min_value=0.01, max_value=100.0,
             value=1.0, step=0.25, format="%.2f", key="mc_risk_pct")
