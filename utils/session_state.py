@@ -76,6 +76,10 @@ def initialize_session_state():
             "secondary": None,
         }]
 
+    # Monte Carlo results cache
+    if 'mc_results' not in st.session_state:
+        st.session_state['mc_results'] = None
+
     # Strategy Testing tab selections
     if 'testing_selections' not in st.session_state:
         st.session_state['testing_selections'] = [{
