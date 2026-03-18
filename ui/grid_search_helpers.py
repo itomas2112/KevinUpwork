@@ -28,7 +28,9 @@ def build_skeleton_strategy(direction, indicator_settings):
             "conditions": [],
         },
         "initial_stop": {
+            "element1": "Price",
             "stop_type": "ATR",
+            "event": "Cross Below" if is_long else "Cross Above",
             "atr_period": 14,
             "atr_multiplier": 2.0,
         },

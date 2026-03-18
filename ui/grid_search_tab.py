@@ -525,8 +525,11 @@ def _render_static_stop_candidate(idx, prefix):
             with ac2:
                 atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0, value=2.0,
                                            step=0.1, format="%.1f", key=f"{prefix}_atr_m")
+            default_event = "Cross Below" if direction == "Long" else "Cross Above"
             return {
+                "element1": "Price",
                 "stop_type": "ATR",
+                "event": default_event,
                 "atr_period": atr_period,
                 "atr_multiplier": atr_mult,
             }
