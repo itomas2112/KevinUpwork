@@ -47,9 +47,9 @@ SORT_METRICS = [
     ("avg_lose_pnl", "Avg Loss (R)"),
     ("total_pnl", "Total P&L (R)"),
     ("target_exit_pct", "Target Exit %"),
-    ("stop_exit_pct", "Stop Exit %"),
+    ("static_exit_pct", "Static %"),
+    ("dynamic_exit_pct", "Dynamic %"),
     ("sharpe_ratio", "Sharpe Ratio"),
-    ("max_drawdown", "Max Drawdown (R)"),
     ("mar_ratio", "MAR Ratio"),
     ("sqn", "SQN"),
 ]
@@ -177,7 +177,7 @@ def render_grid_search_tab(sidebar_config):
 
     # ── Section F: Filters & Sort ───────────────────────
     st.markdown("**Performance Filters**")
-    fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+    fc1, fc2, fc3, fc4 = st.columns(4)
     with fc1:
         min_trades = st.number_input("Min Trades", value=0, step=1, key="gs_thresh_min_trades")
     with fc2:
@@ -187,9 +187,6 @@ def render_grid_search_tab(sidebar_config):
         min_sharpe = st.number_input("Min Sharpe", value=-999.0, step=0.01,
                                      format="%.2f", key="gs_thresh_min_sharpe")
     with fc4:
-        max_dd = st.number_input("Max Drawdown (R)", value=999.0, step=0.1,
-                                 format="%.2f", key="gs_thresh_max_dd")
-    with fc5:
         min_sqn = st.number_input("Min SQN", value=-999.0, step=0.01,
                                   format="%.2f", key="gs_thresh_min_sqn")
 
@@ -197,7 +194,6 @@ def render_grid_search_tab(sidebar_config):
         "min_trades": min_trades,
         "min_ev": min_ev,
         "min_sharpe": min_sharpe,
-        "max_dd": max_dd,
         "min_sqn": min_sqn,
     }
 
@@ -233,10 +229,13 @@ def render_grid_search_tab(sidebar_config):
             sidebar_config, show_1h, df_key)
         fp = _build_cache_fingerprint(selected_strategy, search_group,
                                        search_set, condition_candidates)
+        # Include selection labels in fingerprint for cache invalidation on selection change
+        sel_labels = [selection_label(s) for s in st.session_state.get("gs_selections", [])]
         st.session_state["_gs_cached_results"] = {
             "fingerprint": fp,
             "results": results,
             "strategy_name": selected_strategy.get("strategy_name", "Custom"),
+            "selection_labels": sel_labels,
         }
         cached = st.session_state["_gs_cached_results"]
 
@@ -815,7 +814,11 @@ def _render_indicator_settings():
 
 def _run_grid_search(selected_strategy, search_group, search_set,
                      condition_candidates, sidebar_config, show_1h, df_key):
-    """Run backtests for all candidate runs. Returns list of (label, agg_dict)."""
+    """Run backtests for all candidate runs.
+
+    Returns list of (label, global_agg, selection_results) where
+    selection_results is an OrderedDict {selection_label: agg_dict}.
+    """
 
     # Build indicator params: start from defaults, overlay strategy settings, then gs_ overrides
     indicator_params = dict(_DEFAULT_INDICATOR_PARAMS)
@@ -839,44 +842,60 @@ def _run_grid_search(selected_strategy, search_group, search_set,
         st.warning("No data available for the selected date range.")
         return []
 
-    # Expand pattern selections
+    # Expand pattern selections per selection group
     selections = st.session_state.get("gs_selections", [])
-    all_combos = []
-    seen = set()
-    for sel in selections:
-        for combo in expand_selection(sel):
-            if combo not in seen:
-                seen.add(combo)
-                all_combos.append(combo)
-
-    if not all_combos:
-        st.warning("No pattern combos selected.")
-        return []
-
-    # Precompute period slices
     drm_bullish = st.session_state.get("drm_bullish")
     drm_bearish = st.session_state.get("drm_bearish")
 
-    period_slices = []
-    for pattern_type, primary, secondary in all_combos:
-        drm_df = drm_bullish if pattern_type == "Bullish" else drm_bearish
-        if drm_df is None:
-            continue
-        periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
-        for start_dt, end_dt in periods:
-            df_slice, ps, pe = slice_for_graph(
-                df=df_full, start_date=start_dt, end_date=end_dt,
-                show_ichimoku=True, show_bb=True, show_kc=True,
-                show_donchian=True, show_psar=True)
-            if not df_slice.empty:
-                period_slices.append((df_slice, ps, pe))
+    # Build period slices per unique combo, and track which combos belong to each selection
+    from collections import OrderedDict
+    combo_slices = OrderedDict()  # combo_key -> [(df_slice, ps, pe), ...]
+    selection_combo_map = OrderedDict()  # sel_label -> [combo_key, ...]
+    global_combo_keys = []  # all unique combo keys (deduplicated, ordered)
 
-    if not period_slices:
+    for sel in selections:
+        label = selection_label(sel)
+        # Ensure unique labels
+        if label in selection_combo_map:
+            n = 2
+            while f"{label} ({n})" in selection_combo_map:
+                n += 1
+            label = f"{label} ({n})"
+
+        combos = expand_selection(sel)
+        sel_combo_keys = []
+        for pattern_type, primary, secondary in combos:
+            combo_key = (pattern_type, primary, secondary)
+            sel_combo_keys.append(combo_key)
+
+            if combo_key not in combo_slices:
+                # First time seeing this combo — compute its period slices
+                drm_df = drm_bullish if pattern_type == "Bullish" else drm_bearish
+                slices = []
+                if drm_df is not None:
+                    periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
+                    for start_dt, end_dt in periods:
+                        df_slice, ps, pe = slice_for_graph(
+                            df=df_full, start_date=start_dt, end_date=end_dt,
+                            show_ichimoku=True, show_bb=True, show_kc=True,
+                            show_donchian=True, show_psar=True)
+                        if not df_slice.empty:
+                            slices.append((df_slice, ps, pe))
+                combo_slices[combo_key] = slices
+                global_combo_keys.append(combo_key)
+
+        selection_combo_map[label] = sel_combo_keys
+
+    # Flatten all unique period slices
+    all_unique_slices = []
+    for ck in global_combo_keys:
+        all_unique_slices.extend(combo_slices[ck])
+
+    if not all_unique_slices:
         st.warning("No valid DRM periods found for selected patterns.")
         return []
 
     # Generate all run configs
-    # Prepare the base strategy with updated indicator settings
     base = copy.deepcopy(selected_strategy)
     base["indicator_settings"] = dict(indicator_params)
 
@@ -888,29 +907,44 @@ def _run_grid_search(selected_strategy, search_group, search_set,
         st.warning("No run configurations generated.")
         return []
 
-    # Run backtests
-    total = len(run_configs) * len(period_slices)
+    # Run backtests — each unique combo run once per candidate, results assembled
+    total = len(run_configs) * len(all_unique_slices)
     progress = st.progress(0, text="Running grid search...")
     done = 0
 
     results = []
     for label, strategy in run_configs:
-        all_stats = []
-        for df_slice, ps, pe in period_slices:
-            try:
-                _, stats = execute_custom_strategy(df_slice.copy(), strategy, ps, pe)
-                if stats is not None:
-                    all_stats.append(stats)
-            except Exception:
-                pass
-            done += 1
-            progress.progress(done / total,
-                              text=f"Run {len(results)+1}/{len(run_configs)} | Period {done}/{total}")
+        # Run each unique combo's period slices once, cache stats per combo
+        combo_stats_cache = {}  # combo_key -> [stats, ...]
+        for combo_key in global_combo_keys:
+            combo_stats = []
+            for df_slice, ps, pe in combo_slices[combo_key]:
+                try:
+                    _, stats = execute_custom_strategy(df_slice.copy(), strategy, ps, pe)
+                    if stats is not None:
+                        combo_stats.append(stats)
+                except Exception:
+                    pass
+                done += 1
+                progress.progress(done / total,
+                                  text=f"Run {len(results)+1}/{len(run_configs)}")
+            combo_stats_cache[combo_key] = combo_stats
 
-        if all_stats:
-            results.append((label, _aggregate_stats(all_stats)))
-        else:
-            results.append((label, _empty_agg()))
+        # Assemble global stats (all unique combos)
+        global_stats = []
+        for ck in global_combo_keys:
+            global_stats.extend(combo_stats_cache[ck])
+        global_agg = _aggregate_stats(global_stats) if global_stats else _empty_agg()
+
+        # Assemble per-selection stats
+        sel_results = OrderedDict()
+        for sel_label, sel_combo_keys in selection_combo_map.items():
+            sel_stats = []
+            for ck in sel_combo_keys:
+                sel_stats.extend(combo_stats_cache[ck])
+            sel_results[sel_label] = _aggregate_stats(sel_stats) if sel_stats else _empty_agg()
+
+        results.append((label, global_agg, sel_results))
 
     progress.empty()
     return results
@@ -921,17 +955,16 @@ def _run_grid_search(selected_strategy, search_group, search_set,
 # ======================================================================
 
 def _display_results(results, strategy_name, thresholds, sort_key, sort_descending):
-    """Display filtered, sorted, paginated results."""
+    """Display filtered, sorted, paginated results with Global + per-selection breakdown."""
 
-    # Filter
+    # Filter based on Global metrics
     filtered = []
-    for label, agg in results:
-        if (agg["num_trades"] >= thresholds["min_trades"]
-                and agg["expected_value"] >= thresholds["min_ev"]
-                and agg["sharpe_ratio"] >= thresholds["min_sharpe"]
-                and agg["max_drawdown"] <= thresholds["max_dd"]
-                and agg["sqn"] >= thresholds["min_sqn"]):
-            filtered.append((label, agg))
+    for label, global_agg, sel_results in results:
+        if (global_agg["num_trades"] >= thresholds["min_trades"]
+                and global_agg["expected_value"] >= thresholds["min_ev"]
+                and global_agg["sharpe_ratio"] >= thresholds["min_sharpe"]
+                and global_agg["sqn"] >= thresholds["min_sqn"]):
+            filtered.append((label, global_agg, sel_results))
 
     st.subheader(f"Results — {strategy_name}")
     st.caption(f"{len(filtered)} of {len(results)} candidates pass filters")
@@ -940,27 +973,27 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
         st.warning("No candidates pass the threshold filters.")
         return
 
-    # Sort
+    # Sort based on Global metrics
     filtered.sort(key=lambda x: x[1].get(sort_key, 0), reverse=sort_descending)
 
-    # Build full results table (rows = candidates, columns = metrics)
+    # Build Global results table (rows = candidates, columns = metrics)
     rows = []
-    for label, agg in filtered:
+    for label, global_agg, sel_results in filtered:
         rows.append({
             "Candidate": label,
-            "Trades": agg["num_trades"],
-            "Win%": f"{agg['win_pct']:.0f}%",
-            "Lose%": f"{agg['lose_pct']:.0f}%",
-            "Avg Profit": f"{agg['avg_win_pnl']:.2f}R",
-            "Avg Loss": f"{agg['avg_lose_pnl']:.2f}R",
-            "Total P&L": f"{agg['total_pnl']:.2f}R",
-            "EV": f"{agg['expected_value']:.2f}R",
-            "Target%": f"{agg['target_exit_pct']:.0f}%",
-            "Stop%": f"{agg['stop_exit_pct']:.0f}%",
-            "Sharpe": f"{agg['sharpe_ratio']:.2f}",
-            "MaxDD": f"{agg['max_drawdown']:.2f}R",
-            "MAR": f"{agg['mar_ratio']:.2f}",
-            "SQN": f"{agg['sqn']:.2f}",
+            "Trades": global_agg["num_trades"],
+            "Win%": f"{global_agg['win_pct']:.0f}%",
+            "Lose%": f"{global_agg['lose_pct']:.0f}%",
+            "Avg Profit": f"{global_agg['avg_win_pnl']:.2f}R",
+            "Avg Loss": f"{global_agg['avg_lose_pnl']:.2f}R",
+            "Total P&L": f"{global_agg['total_pnl']:.2f}R",
+            "EV": f"{global_agg['expected_value']:.2f}R",
+            "Target%": f"{global_agg['target_exit_pct']:.0f}%",
+            "Static%": f"{global_agg['static_exit_pct']:.0f}%",
+            "Dynamic%": f"{global_agg['dynamic_exit_pct']:.0f}%",
+            "Sharpe": f"{global_agg['sharpe_ratio']:.2f}",
+            "MAR": f"{global_agg['mar_ratio']:.2f}",
+            "SQN": f"{global_agg['sqn']:.2f}",
         })
 
     df_results = pd.DataFrame(rows)
@@ -980,11 +1013,27 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
     start_idx = (page - 1) * PAGE_SIZE
     end_idx = min(start_idx + PAGE_SIZE, len(filtered))
 
-    st.caption(f"Showing {start_idx + 1}–{end_idx} of {len(filtered)} results")
+    st.caption(f"Showing {start_idx + 1}–{end_idx} of {len(filtered)} results (Global Performance)")
 
     # Display page slice
     page_df = df_results.iloc[start_idx:end_idx]
     st.dataframe(page_df, use_container_width=True, hide_index=True)
+
+    # Expandable detail view for each candidate on current page
+    st.markdown("---")
+    st.subheader("Detailed Performance")
+    for idx in range(start_idx, end_idx):
+        label, global_agg, sel_results = filtered[idx]
+        with st.expander(f"**{label}**", expanded=False):
+            # Build table: Global on the left + per-selection columns (if multiple)
+            table_data = {"Global": global_agg}
+            if len(sel_results) > 1:
+                table_data.update(sel_results)
+            table = _build_metrics_table(table_data)
+            st.table(table)
+            _copy_to_clipboard(
+                table.to_csv(sep='\t'),
+                key=f"gs_sel_detail_{idx}")
 
 
 # ======================================================================

@@ -1152,9 +1152,20 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             entry_trades[tid] = {
                 'pnl_r': 0.0,
                 'exit_type': trade['exit_type'],
+                'static_alloc': 0.0,
+                'dynamic_alloc': 0.0,
+                'target_alloc': 0.0,
             }
         entry = entry_trades[tid]
         entry['pnl_r'] += trade['pnl_r']
+        # Track allocation-weighted exit types
+        alloc = trade.get('allocation_pct', 100.0)
+        if trade['exit_type'] == 'Initial Stop':
+            entry['static_alloc'] += alloc
+        elif trade['exit_type'] == 'Stop':
+            entry['dynamic_alloc'] += alloc
+        elif trade['exit_type'] == 'Target':
+            entry['target_alloc'] += alloc
         # Keep the highest-priority (lowest number) exit type
         if exit_type_priority.get(trade['exit_type'], 99) < exit_type_priority.get(entry['exit_type'], 99):
             entry['exit_type'] = trade['exit_type']
@@ -1177,10 +1188,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         winning_trades_pnl = sum(pnl for pnl in trade_pnls_r if pnl > 0)
         losing_trades_pnl = sum(pnl for pnl in trade_pnls_r if pnl < 0)
 
-        target_exits = sum(1 for t in consolidated_exit_types if t == 'Target')
-        stop_exits = sum(1 for t in consolidated_exit_types if t in ('Stop', 'Initial Stop'))
-        target_exit_pct = target_exits / num_trades * 100
-        stop_exit_pct = stop_exits / num_trades * 100
+        # Allocation-weighted exit type percentages
+        target_exit_pct = sum(t['target_alloc'] for t in entry_trades.values()) / num_trades
+        static_exit_pct = sum(t['static_alloc'] for t in entry_trades.values()) / num_trades
+        dynamic_exit_pct = sum(t['dynamic_alloc'] for t in entry_trades.values()) / num_trades
 
         # Sharpe Ratio: mean(R P&Ls) / stdev(R P&Ls), risk-free rate = 0
         if num_trades >= 2:
@@ -1211,7 +1222,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         winning_trades_pnl = 0.0
         losing_trades_pnl = 0.0
         target_exit_pct = 0.0
-        stop_exit_pct = 0.0
+        static_exit_pct = 0.0
+        dynamic_exit_pct = 0.0
         sharpe_ratio = 0.0
         max_drawdown = 0.0
         mar_ratio = 0.0
@@ -1229,7 +1241,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 winning_trades_pnl,
                 losing_trades_pnl,
                 target_exit_pct,
-                stop_exit_pct,
+                static_exit_pct,
+                dynamic_exit_pct,
                 sharpe_ratio,
                 max_drawdown,
                 mar_ratio,
@@ -1246,7 +1259,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             "Winning trades P&L (R)",
             "Losing trades P&L (R)",
             "Target exit (%)",
-            "Stop exit (%)",
+            "Static exit (%)",
+            "Dynamic exit (%)",
             "Sharpe Ratio",
             "Max Drawdown (R)",
             "MAR Ratio",
@@ -1254,7 +1268,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         ],
     )
 
-    # Store individual trade R P&Ls for aggregation across periods
+    # Store individual trade R P&Ls and allocation totals for aggregation across periods
     stats_df.attrs['trade_pnls_r'] = list(trade_pnls_r)
+    stats_df.attrs['total_static_alloc'] = sum(t['static_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
+    stats_df.attrs['total_dynamic_alloc'] = sum(t['dynamic_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
+    stats_df.attrs['total_target_alloc'] = sum(t['target_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
 
     return df, stats_df

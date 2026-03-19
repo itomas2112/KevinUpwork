@@ -657,9 +657,9 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
             f"{avg_loss:.2f}R",
             f"{stats.loc['Total P&L (R)', 'value']:.2f}R",
             f"{round(stats.loc['Target exit (%)', 'value']):.0f}%",
-            f"{round(stats.loc['Stop exit (%)', 'value']):.0f}%",
+            f"{round(stats.loc['Static exit (%)', 'value']):.0f}%",
+            f"{round(stats.loc['Dynamic exit (%)', 'value']):.0f}%",
             f"{stats.loc['Sharpe Ratio', 'value']:.2f}",
-            f"{stats.loc['Max Drawdown (R)', 'value']:.2f}R",
             f"{stats.loc['MAR Ratio', 'value']:.2f}",
             f"{stats.loc['SQN', 'value']:.2f}",
         ]
@@ -679,9 +679,9 @@ def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
             "Avg Loss",
             "Total P&L",
             "Target Exit %",
-            "Stop Exit %",
+            "Static %",
+            "Dynamic %",
             "Sharpe Ratio",
-            "Max Drawdown",
             "MAR Ratio",
             "SQN",
         ],
@@ -706,18 +706,22 @@ def _aggregate_stats(all_stats):
     all_trade_pnls = []  # pooled individual trade R P&Ls
     total_win_pnl = 0.0
     total_lose_pnl = 0.0
-    total_target_exits = 0
-    total_stop_exits = 0
+    total_static_alloc = 0.0
+    total_dynamic_alloc = 0.0
+    total_target_alloc = 0.0
 
     for stats_df in all_stats:
-        n = int(stats_df.loc['Number of trades', 'value'])
         total_win_pnl += stats_df.loc['Winning trades P&L (R)', 'value']
         total_lose_pnl += stats_df.loc['Losing trades P&L (R)', 'value']
-        total_target_exits += round(n * stats_df.loc['Target exit (%)', 'value'] / 100.0)
-        total_stop_exits += round(n * stats_df.loc['Stop exit (%)', 'value'] / 100.0)
+
+        # Collect allocation-weighted exit type totals
+        attrs = getattr(stats_df, 'attrs', {})
+        total_static_alloc += attrs.get('total_static_alloc', 0.0)
+        total_dynamic_alloc += attrs.get('total_dynamic_alloc', 0.0)
+        total_target_alloc += attrs.get('total_target_alloc', 0.0)
 
         # Collect individual trade R P&Ls for pooled metric computation
-        trade_pnls = getattr(stats_df, 'attrs', {}).get('trade_pnls_r', [])
+        trade_pnls = attrs.get('trade_pnls_r', [])
         all_trade_pnls.extend(trade_pnls)
 
     # Derive counts directly from pooled trade P&Ls (avoids lossy percentage reconstruction)
@@ -729,8 +733,9 @@ def _aggregate_stats(all_stats):
     if total_trades > 0:
         win_pct = (total_wins / total_trades) * 100
         lose_pct = (total_losses / total_trades) * 100
-        target_exit_pct = (total_target_exits / total_trades) * 100
-        stop_exit_pct = (total_stop_exits / total_trades) * 100
+        target_exit_pct = total_target_alloc / total_trades
+        static_exit_pct = total_static_alloc / total_trades
+        dynamic_exit_pct = total_dynamic_alloc / total_trades
 
         avg_win_pnl = total_win_pnl / total_wins if total_wins > 0 else 0.0
         avg_lose_pnl = total_lose_pnl / total_losses if total_losses > 0 else 0.0
@@ -771,7 +776,8 @@ def _aggregate_stats(all_stats):
         avg_lose_pnl = 0.0
         expected_value = 0.0
         target_exit_pct = 0.0
-        stop_exit_pct = 0.0
+        static_exit_pct = 0.0
+        dynamic_exit_pct = 0.0
         sharpe_ratio = 0.0
         max_drawdown = 0.0
         mar_ratio = 0.0
@@ -786,7 +792,8 @@ def _aggregate_stats(all_stats):
         'total_pnl': total_pnl,
         'expected_value': expected_value,
         'target_exit_pct': target_exit_pct,
-        'stop_exit_pct': stop_exit_pct,
+        'static_exit_pct': static_exit_pct,
+        'dynamic_exit_pct': dynamic_exit_pct,
         'sharpe_ratio': sharpe_ratio,
         'max_drawdown': max_drawdown,
         'mar_ratio': mar_ratio,
@@ -814,9 +821,9 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             f"{agg['total_pnl']:.2f}R",
             f"{agg['expected_value']:.2f}R",
             f"{agg['target_exit_pct']:.0f}%",
-            f"{agg['stop_exit_pct']:.0f}%",
+            f"{agg['static_exit_pct']:.0f}%",
+            f"{agg['dynamic_exit_pct']:.0f}%",
             f"{agg['sharpe_ratio']:.2f}",
-            f"{agg['max_drawdown']:.2f}R",
             f"{agg['mar_ratio']:.2f}",
             f"{agg['sqn']:.2f}",
         ]
@@ -839,9 +846,9 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             "Total P&L",
             "Expected Value",
             "Target Exit %",
-            "Stop Exit %",
+            "Static %",
+            "Dynamic %",
             "Sharpe Ratio",
-            "Max Drawdown",
             "MAR Ratio",
             "SQN",
         ],
