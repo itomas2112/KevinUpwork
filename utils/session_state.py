@@ -5,6 +5,7 @@ import streamlit as st
 import json
 import os
 from config.constants import STRATEGIES_FILE
+from strategies.group_set_manager import load_group_sets
 
 
 def initialize_session_state():
@@ -88,20 +89,8 @@ def initialize_session_state():
             "primary": None,
             "secondary": None,
         }]
-    if 'gs_direction' not in st.session_state:
-        st.session_state['gs_direction'] = "Long"
-    if 'gs_current_step' not in st.session_state:
-        st.session_state['gs_current_step'] = 1
-    if 'gs_training_strategy' not in st.session_state:
-        st.session_state['gs_training_strategy'] = None
-    if 'gs_locked_components' not in st.session_state:
-        st.session_state['gs_locked_components'] = {
-            "trigger": None,
-            "conditions": None,
-            "dynamic_stop": None,
-            "static_stop": None,
-            "target": None,
-        }
+    if 'saved_group_sets' not in st.session_state:
+        st.session_state['saved_group_sets'] = load_group_sets()
 
     # Strategy Testing tab selections
     if 'testing_selections' not in st.session_state:

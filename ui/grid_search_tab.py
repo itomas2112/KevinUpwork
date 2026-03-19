@@ -1,42 +1,60 @@
 """
-Grid Search tab — systematic strategy development via iterative component optimization.
+Grid Search tab — load a saved strategy, swap components with pre-saved group sets,
+and batch-run backtests across all candidates.
 """
 import streamlit as st
 import streamlit.components.v1 as _components
 import pandas as pd
 import copy
+import math
 
 from data.loader import parse_drm_periods
 from data.helpers import (PRIMARY_SECONDARY_MAP, PRIMARY_LIST,
                           ALL_UNIQUE_SECONDARIES, expand_selection, selection_label)
 from indicators.calculate_indicators import slice_for_graph, migrate_indicator_settings
 from strategies.first_strategy import execute_custom_strategy
-from strategies.strategy_manager import save_strategies_to_file
+from strategies.group_set_manager import (
+    load_group_sets, save_group_set, update_group_set, delete_group_set,
+    export_group_set, import_group_set, get_group_sets_by_type,
+    save_group_sets_to_file,
+)
 from ui.charting_tab import _aggregate_stats, _get_or_calculate
 from ui.performance_tab import (_DEFAULT_INDICATOR_PARAMS, SELECTION_MODES,
                                  _build_metrics_table, _copy_to_clipboard, _empty_agg)
-from ui.grid_search_helpers import (build_skeleton_strategy, build_candidate_strategy,
-                                     candidate_label, collect_gs_indicator_settings)
+from ui.grid_search_helpers import (
+    format_candidate_label, generate_run_configs,
+    collect_gs_indicator_settings,
+)
 from config.constants import (GROUP_NAMES, EVENT_TYPES, STOP_EVENT_TYPES,
                                CONDITION_OPERATORS, get_group_elements,
                                R_PROFIT_LOSS_ELEMENTS, ATR_TARGET_ELEMENTS)
 
+# Group types for the group set manager
+GROUP_TYPES = [
+    ("trigger", "Trigger"),
+    ("condition", "Condition"),
+    ("static_stop", "Static Stop"),
+    ("dynamic_stop", "Dynamic Stop"),
+    ("target", "Target"),
+]
 
-STEP_NAMES = {
-    1: "Step 1: Develop Trigger",
-    2: "Step 2: Develop Condition",
-    3: "Step 3: Develop Dynamic Stop",
-    4: "Step 4: Develop Static Stop",
-    5: "Step 5: Develop Target",
-}
+SORT_METRICS = [
+    ("expected_value", "Expected Value (R)"),
+    ("num_trades", "Number of Trades"),
+    ("win_pct", "Win %"),
+    ("lose_pct", "Lose %"),
+    ("avg_win_pnl", "Avg Profit (R)"),
+    ("avg_lose_pnl", "Avg Loss (R)"),
+    ("total_pnl", "Total P&L (R)"),
+    ("target_exit_pct", "Target Exit %"),
+    ("stop_exit_pct", "Stop Exit %"),
+    ("sharpe_ratio", "Sharpe Ratio"),
+    ("max_drawdown", "Max Drawdown (R)"),
+    ("mar_ratio", "MAR Ratio"),
+    ("sqn", "SQN"),
+]
 
-STEP_COMPONENT_KEY = {
-    1: "trigger",
-    2: "conditions",
-    3: "dynamic_stop",
-    4: "static_stop",
-    5: "target",
-}
+PAGE_SIZE = 50
 
 
 # ======================================================================
@@ -45,18 +63,9 @@ STEP_COMPONENT_KEY = {
 
 def render_grid_search_tab(sidebar_config):
     """Render the Grid Search tab."""
+    st.subheader("Grid Search")
 
-    st.subheader("Grid Search — Strategy Development")
-
-    # ── Direction ────────────────────────────────────────────────────
-    direction = st.radio("Direction", ["Long", "Short"],
-                         horizontal=True, key="gs_direction_radio")
-    if st.session_state.get("gs_direction") != direction:
-        st.session_state["gs_direction"] = direction
-        # Reset everything when direction changes
-        _reset_all_steps()
-
-    # ── Data checks ─────────────────────────────────────────────────
+    # ── Data checks ─────────────────────────────────────
     show_1h = sidebar_config["analysis_mode"] == "1H"
     df_key = "df_1h" if show_1h else "df_15m"
     if df_key not in st.session_state:
@@ -73,19 +82,101 @@ def render_grid_search_tab(sidebar_config):
         st.info("Please apply a Training Set date range in the sidebar.")
         return
 
-    # ── Pattern selection ───────────────────────────────────────────
+    # ── Section A: Strategy Loader ──────────────────────
+    saved = st.session_state.get("saved_strategies", [])
+    if not saved:
+        st.info("No saved strategies. Create one in the Strategy Builder tab.")
+        return
+
+    strategy_names = [s.get("strategy_name", f"Strategy_{i+1}") for i, s in enumerate(saved)]
+    sel_col, info_col = st.columns([1, 3])
+    with sel_col:
+        selected_idx = st.selectbox(
+            "Load Strategy", range(len(strategy_names)),
+            format_func=lambda x: strategy_names[x],
+            key="gs_strategy_select")
+    selected_strategy = saved[selected_idx]
+
+    with info_col:
+        st.markdown(f"**Direction:** {selected_strategy.get('direction', '?')}  "
+                    f"| **Max Positions:** {selected_strategy.get('max_positions', 1) or 'Unlimited'}")
+
+    st.markdown("---")
+
+    # ── Section B: Group Set Management ─────────────────
+    with st.expander("Group Set Management", expanded=False):
+        _render_group_set_management()
+
+    st.markdown("---")
+
+    # ── Section C: Search Configuration ─────────────────
+    st.markdown("**Search Configuration**")
+
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        search_type_labels = [label for _, label in GROUP_TYPES]
+        search_type_idx = st.selectbox(
+            "Component to Search",
+            range(len(GROUP_TYPES)),
+            format_func=lambda x: search_type_labels[x],
+            key="gs_search_type_idx")
+        search_group = GROUP_TYPES[search_type_idx][0]
+
+    with sc2:
+        available = get_group_sets_by_type(search_group)
+        if not available:
+            st.warning(f"No group sets saved for **{GROUP_TYPES[search_type_idx][1]}**. Create one above.")
+            return
+        gs_options = [(i, gs["name"]) for i, gs in available]
+        gs_sel = st.selectbox(
+            "Group Set to Use",
+            range(len(gs_options)),
+            format_func=lambda x: gs_options[x][1],
+            key="gs_search_set_sel")
+        search_set_global_idx = gs_options[gs_sel][0]
+        search_set = st.session_state["saved_group_sets"][search_set_global_idx]
+
+    # Cross-combination: condition group set for target/dynamic
+    condition_candidates = None
+    if search_group in ("target", "dynamic_stop"):
+        cond_available = get_group_sets_by_type("condition")
+        if cond_available:
+            cond_options = [("none", "No cross-combination")] + \
+                           [(i, gs["name"]) for i, gs in cond_available]
+            cond_sel = st.selectbox(
+                "Condition Group Set (cross-combine)",
+                range(len(cond_options)),
+                format_func=lambda x: cond_options[x][1],
+                key="gs_cross_cond_sel")
+            if cond_sel > 0:
+                cond_global_idx = cond_options[cond_sel][0]
+                condition_candidates = st.session_state["saved_group_sets"][cond_global_idx]["candidates"]
+
+    # Show run count
+    n_search = len(search_set.get("candidates", []))
+    n_cond = len(condition_candidates) if condition_candidates else 0
+    if search_group in ("target", "dynamic_stop") and n_cond > 0:
+        total_runs = n_search * (n_cond + 1)
+        st.info(f"**{n_search}** candidates x **{n_cond + 1}** (standalone + {n_cond} conditions) = **{total_runs}** total runs")
+    else:
+        st.info(f"**{n_search}** candidates to test")
+
+    st.markdown("---")
+
+    # ── Section D: Pattern Selection ────────────────────
+    st.markdown("**Pattern Selection**")
     _render_pattern_selection()
 
     st.markdown("---")
 
-    # ── Indicator settings ──────────────────────────────────────────
+    # ── Section E: Indicator Settings ───────────────────
     with st.expander("Indicator Settings", expanded=False):
         _render_indicator_settings()
 
     st.markdown("---")
 
-    # ── Threshold filters ───────────────────────────────────────────
-    st.markdown("**Global Performance Filters**")
+    # ── Section F: Filters & Sort ───────────────────────
+    st.markdown("**Performance Filters**")
     fc1, fc2, fc3, fc4, fc5 = st.columns(5)
     with fc1:
         min_trades = st.number_input("Min Trades", value=0, step=1, key="gs_thresh_min_trades")
@@ -110,29 +201,391 @@ def render_grid_search_tab(sidebar_config):
         "min_sqn": min_sqn,
     }
 
+    sort_col1, sort_col2 = st.columns(2)
+    with sort_col1:
+        sort_metric_labels = [label for _, label in SORT_METRICS]
+        sort_idx = st.selectbox("Sort By", range(len(SORT_METRICS)),
+                                format_func=lambda x: sort_metric_labels[x],
+                                key="gs_sort_metric")
+        sort_key = SORT_METRICS[sort_idx][0]
+    with sort_col2:
+        sort_order = st.radio("Order", ["Highest to Lowest", "Lowest to Highest"],
+                              horizontal=True, key="gs_sort_order")
+        sort_descending = sort_order == "Highest to Lowest"
+
     st.markdown("---")
 
-    # ── Steps ───────────────────────────────────────────────────────
-    current_step = st.session_state.get("gs_current_step", 1)
+    # ── Section G: Calculate + Results ──────────────────
+    calculate_clicked = st.button("Calculate", key="gs_calculate", type="primary")
 
-    for step in range(1, 6):
-        _render_step(step, current_step, sidebar_config, show_1h, df_key, thresholds)
+    # Cache invalidation
+    cached = st.session_state.get("_gs_cached_results")
+    if cached:
+        fp = _build_cache_fingerprint(selected_strategy, search_group,
+                                       search_set, condition_candidates)
+        if cached.get("fingerprint") != fp:
+            st.session_state.pop("_gs_cached_results", None)
+            cached = None
 
-    # ── Save final strategy ─────────────────────────────────────────
-    if current_step > 5:
-        st.markdown("---")
-        st.success("All components locked! Strategy is complete.")
-        save_name = st.text_input("Strategy Name", key="gs_save_name")
-        if st.button("Save Strategy", key="gs_save_btn", type="primary"):
-            strategy = copy.deepcopy(st.session_state["gs_training_strategy"])
-            strategy["strategy_name"] = save_name or f"GridSearch_{len(st.session_state['saved_strategies']) + 1}"
-            st.session_state["saved_strategies"].append(strategy)
-            save_strategies_to_file()
-            st.success(f"Strategy **{strategy['strategy_name']}** saved!")
+    if calculate_clicked:
+        results = _run_grid_search(
+            selected_strategy, search_group, search_set, condition_candidates,
+            sidebar_config, show_1h, df_key)
+        fp = _build_cache_fingerprint(selected_strategy, search_group,
+                                       search_set, condition_candidates)
+        st.session_state["_gs_cached_results"] = {
+            "fingerprint": fp,
+            "results": results,
+            "strategy_name": selected_strategy.get("strategy_name", "Custom"),
+        }
+        cached = st.session_state["_gs_cached_results"]
+
+    if cached and cached.get("results"):
+        _display_results(cached["results"], cached["strategy_name"],
+                         thresholds, sort_key, sort_descending)
+    elif not calculate_clicked:
+        st.info("Configure search and click **Calculate** to run.")
 
 
 # ======================================================================
-# Pattern selection UI (reuses Performance tab pattern)
+# Group Set Management UI
+# ======================================================================
+
+def _render_group_set_management():
+    """Render the group set create/edit/delete/import/export UI."""
+    tabs = st.tabs([label for _, label in GROUP_TYPES])
+
+    for tab, (gs_type, gs_label) in zip(tabs, GROUP_TYPES):
+        with tab:
+            available = get_group_sets_by_type(gs_type)
+
+            if available:
+                gs_names = [gs["name"] for _, gs in available]
+                sel = st.selectbox(f"Saved {gs_label} Sets", range(len(gs_names)),
+                                   format_func=lambda x, n=gs_names: n[x],
+                                   key=f"gs_mgmt_{gs_type}_sel")
+                global_idx, selected_gs = available[sel]
+
+                # Show candidates
+                if selected_gs.get("candidates"):
+                    cand_labels = []
+                    for c in selected_gs["candidates"]:
+                        cand_labels.append(format_candidate_label(c, gs_type))
+                    st.caption(f"{len(cand_labels)} candidates")
+                    with st.expander("View candidates", expanded=False):
+                        for i, lbl in enumerate(cand_labels):
+                            st.text(f"{i+1}. {lbl}")
+
+                # Action buttons
+                bc1, bc2, bc3 = st.columns(3)
+                with bc1:
+                    if st.button("Delete", key=f"gs_mgmt_{gs_type}_del", type="secondary"):
+                        delete_group_set(global_idx)
+                        st.rerun()
+                with bc2:
+                    json_data = export_group_set(selected_gs)
+                    st.download_button("Export JSON", json_data,
+                                       file_name=f"{selected_gs['name']}.json",
+                                       mime="application/json",
+                                       key=f"gs_mgmt_{gs_type}_export")
+                with bc3:
+                    if st.button("Edit", key=f"gs_mgmt_{gs_type}_edit_btn"):
+                        st.session_state[f"gs_editing_{gs_type}"] = global_idx
+                        st.rerun()
+
+                # Edit mode
+                if st.session_state.get(f"gs_editing_{gs_type}") is not None:
+                    edit_idx = st.session_state[f"gs_editing_{gs_type}"]
+                    edit_gs = st.session_state["saved_group_sets"][edit_idx]
+                    st.markdown("---")
+                    st.markdown(f"**Editing: {edit_gs['name']}**")
+                    edited_candidates = _render_candidate_editor(
+                        gs_type, list(edit_gs.get("candidates", [])),
+                        f"gs_edit_{gs_type}")
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        if st.button("Save Changes", key=f"gs_edit_{gs_type}_save", type="primary"):
+                            edit_gs["candidates"] = edited_candidates
+                            update_group_set(edit_idx, edit_gs)
+                            st.session_state.pop(f"gs_editing_{gs_type}", None)
+                            st.rerun()
+                    with ec2:
+                        if st.button("Cancel", key=f"gs_edit_{gs_type}_cancel"):
+                            st.session_state.pop(f"gs_editing_{gs_type}", None)
+                            st.rerun()
+            else:
+                st.caption(f"No {gs_label} group sets saved yet.")
+
+            st.markdown("---")
+
+            # Import
+            uploaded = st.file_uploader(f"Import {gs_label} Group Set",
+                                        type=["json"], key=f"gs_import_{gs_type}")
+            if uploaded:
+                try:
+                    data = import_group_set(uploaded.read().decode("utf-8"))
+                    data["type"] = gs_type  # force correct type
+                    save_group_set(data)
+                    st.success(f"Imported **{data['name']}** with {len(data['candidates'])} candidates.")
+                    st.rerun()
+                except (ValueError, Exception) as e:
+                    st.error(f"Import failed: {e}")
+
+            # Create new
+            with st.expander(f"Create New {gs_label} Set", expanded=False):
+                new_name = st.text_input("Name", key=f"gs_new_{gs_type}_name")
+                new_candidates = _render_candidate_editor(gs_type, [], f"gs_new_{gs_type}")
+                if st.button("Save New Set", key=f"gs_new_{gs_type}_save", type="primary"):
+                    if not new_name.strip():
+                        st.error("Please provide a name.")
+                    elif not new_candidates:
+                        st.error("Add at least one candidate.")
+                    else:
+                        new_gs = {
+                            "name": new_name.strip(),
+                            "type": gs_type,
+                            "candidates": new_candidates,
+                        }
+                        save_group_set(new_gs)
+                        st.success(f"Created **{new_name}** with {len(new_candidates)} candidates.")
+                        st.rerun()
+
+
+# ======================================================================
+# Candidate Editor
+# ======================================================================
+
+def _render_candidate_editor(group_type, initial_candidates, prefix):
+    """Render an editable list of candidates. Returns list of candidate dicts."""
+    # Use session state to track candidates for this editor
+    state_key = f"{prefix}_candidates"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = list(initial_candidates) if initial_candidates else []
+
+    candidates = st.session_state[state_key]
+    ema_count = len(st.session_state.get("gs_ema_periods", []))
+
+    to_remove = []
+    for i, cand in enumerate(candidates):
+        st.markdown(f"**Candidate {i+1}**")
+        updated = _render_single_candidate(group_type, cand, f"{prefix}_{i}", ema_count)
+        candidates[i] = updated
+
+        if st.button("Remove", key=f"{prefix}_{i}_rm"):
+            to_remove.append(i)
+
+    if to_remove:
+        for idx in sorted(to_remove, reverse=True):
+            candidates.pop(idx)
+        st.session_state[state_key] = candidates
+        st.rerun()
+
+    if st.button("+ Add Candidate", key=f"{prefix}_add"):
+        candidates.append(_default_candidate(group_type))
+        st.session_state[state_key] = candidates
+        st.rerun()
+
+    return candidates
+
+
+def _default_candidate(group_type):
+    """Return a default empty candidate dict for a given group type."""
+    if group_type == "condition":
+        return {
+            "group": "Price & Indicators",
+            "element1": "Price",
+            "operator": "Above",
+            "compare_type": "Indicator",
+            "element2": "Tenkan",
+            "value": None,
+        }
+    elif group_type == "static_stop":
+        return {
+            "stop_type": "ATR",
+            "element1": "Price",
+            "event": "Cross Below",
+            "atr_period": 14,
+            "atr_multiplier": 2.0,
+        }
+    else:
+        return {
+            "group": "Price & Indicators",
+            "element1": "Price",
+            "event": "Cross Above",
+            "compare_type": "Indicator",
+            "element2": "Tenkan",
+            "value": None,
+        }
+
+
+def _render_single_candidate(group_type, cand, prefix, ema_count):
+    """Render widgets for a single candidate and return updated dict."""
+
+    if group_type == "static_stop":
+        return _render_static_stop_edit(cand, prefix, ema_count)
+
+    # Common layout for trigger, condition, dynamic_stop, target
+    include_r = group_type in ("dynamic_stop", "target")
+    include_atr_target = group_type == "target"
+    is_condition = group_type == "condition"
+
+    c_grp, c_e1, c_ev, c_cmp, c_e2 = st.columns([2, 2, 2, 1.5, 2])
+
+    with c_grp:
+        group_idx = GROUP_NAMES.index(cand.get("group", GROUP_NAMES[0])) if cand.get("group") in GROUP_NAMES else 0
+        group = st.selectbox("Group", GROUP_NAMES, index=group_idx, key=f"{prefix}_grp")
+
+    with c_e1:
+        elements = get_group_elements(group, ema_count)
+        extra = []
+        if include_r:
+            extra.extend(R_PROFIT_LOSS_ELEMENTS)
+        if include_atr_target:
+            extra.extend(ATR_TARGET_ELEMENTS)
+        all_e1 = elements + extra
+        e1_val = cand.get("element1", all_e1[0])
+        if e1_val not in all_e1:
+            e1_val = all_e1[0]
+        element1 = st.selectbox("Element 1", all_e1, index=all_e1.index(e1_val), key=f"{prefix}_e1")
+
+    is_r = element1 in R_PROFIT_LOSS_ELEMENTS
+    is_atr_target = element1 in ATR_TARGET_ELEMENTS
+
+    with c_ev:
+        if is_condition:
+            ops = CONDITION_OPERATORS
+            op_val = cand.get("operator", ops[0])
+            if op_val not in ops:
+                op_val = ops[0]
+            operator = st.selectbox("Operator", ops, index=ops.index(op_val), key=f"{prefix}_op")
+        else:
+            evts = STOP_EVENT_TYPES if group_type in ("dynamic_stop", "target") else EVENT_TYPES
+            ev_val = cand.get("event", evts[0])
+            if ev_val not in evts:
+                ev_val = evts[0]
+            event = st.selectbox("Event", evts, index=evts.index(ev_val), key=f"{prefix}_ev")
+
+    with c_cmp:
+        if is_r:
+            compare = "Fixed Value"
+            st.radio("Compare", ["Fixed Value"], key=f"{prefix}_cmp_d", disabled=True)
+        elif is_atr_target:
+            compare = "Indicator"
+            st.radio("Compare", ["Indicator"], key=f"{prefix}_cmp_at", disabled=True)
+        else:
+            cmp_val = cand.get("compare_type", "Indicator")
+            cmp_opts = ["Indicator", "Fixed Value"]
+            compare = st.radio("Compare", cmp_opts,
+                               index=cmp_opts.index(cmp_val) if cmp_val in cmp_opts else 0,
+                               key=f"{prefix}_cmp", horizontal=True)
+
+    with c_e2:
+        if is_atr_target:
+            atr_period = st.number_input("ATR Period", 1, 200,
+                                         value=int(cand.get("atr_period", 14)),
+                                         step=1, key=f"{prefix}_atr_p")
+            atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
+                                        value=float(cand.get("atr_multiplier", 2.0)),
+                                        step=0.1, format="%.1f", key=f"{prefix}_atr_m")
+            result = {
+                "group": group,
+                "element1": element1,
+                "event": event if not is_condition else None,
+                "compare_type": "Indicator",
+                "element2": None,
+                "value": None,
+                "atr_period": atr_period,
+                "atr_multiplier": atr_mult,
+            }
+            if is_condition:
+                result["operator"] = operator
+            return result
+
+        elif compare == "Indicator":
+            all_elements = []
+            for g in GROUP_NAMES:
+                all_elements.extend(get_group_elements(g, ema_count))
+            e2_val = cand.get("element2", all_elements[0] if all_elements else "Price")
+            if e2_val not in all_elements:
+                e2_val = all_elements[0]
+            element2 = st.selectbox("Element 2", all_elements,
+                                    index=all_elements.index(e2_val), key=f"{prefix}_e2")
+            value = None
+        else:
+            element2 = None
+            value = st.number_input("Value", value=float(cand.get("value") or 0.0),
+                                    step=0.01, format="%.4f", key=f"{prefix}_val")
+
+    result = {
+        "group": group,
+        "element1": element1,
+        "compare_type": compare,
+        "element2": element2,
+        "value": value,
+    }
+    if is_condition:
+        result["operator"] = operator
+    else:
+        result["event"] = event
+    return result
+
+
+def _render_static_stop_edit(cand, prefix, ema_count):
+    """Render a static stop candidate editor."""
+    c_type, c_detail = st.columns([1.5, 3])
+    with c_type:
+        st_val = cand.get("stop_type", "ATR")
+        st_opts = ["ATR", "Indicator"]
+        stop_type = st.selectbox("Stop Type", st_opts,
+                                 index=st_opts.index(st_val) if st_val in st_opts else 0,
+                                 key=f"{prefix}_stype")
+
+    with c_detail:
+        if stop_type == "ATR":
+            ac1, ac2 = st.columns(2)
+            with ac1:
+                atr_period = st.number_input("ATR Period", 1, 200,
+                                             value=int(cand.get("atr_period", 14)),
+                                             step=1, key=f"{prefix}_atr_p")
+            with ac2:
+                atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
+                                           value=float(cand.get("atr_multiplier", 2.0)),
+                                           step=0.1, format="%.1f", key=f"{prefix}_atr_m")
+            return {
+                "element1": "Price",
+                "stop_type": "ATR",
+                "event": cand.get("event", "Cross Below"),
+                "atr_period": atr_period,
+                "atr_multiplier": atr_mult,
+            }
+        else:
+            all_elements = []
+            for g in GROUP_NAMES:
+                all_elements.extend(get_group_elements(g, ema_count))
+            e2_val = cand.get("element2", all_elements[0] if all_elements else "Tenkan")
+            if e2_val not in all_elements:
+                e2_val = all_elements[0]
+            element2 = st.selectbox("Stop Element", all_elements,
+                                    index=all_elements.index(e2_val),
+                                    key=f"{prefix}_e2")
+            ev_val = cand.get("event", STOP_EVENT_TYPES[0])
+            if ev_val not in STOP_EVENT_TYPES:
+                ev_val = STOP_EVENT_TYPES[0]
+            event = st.selectbox("Event", STOP_EVENT_TYPES,
+                                 index=STOP_EVENT_TYPES.index(ev_val),
+                                 key=f"{prefix}_ev")
+            return {
+                "stop_type": "Indicator",
+                "group": "Price & Indicators",
+                "element1": "Price",
+                "element2": element2,
+                "event": event,
+                "compare_type": "Indicator",
+            }
+
+
+# ======================================================================
+# Pattern selection UI (same as Performance tab)
 # ======================================================================
 
 def _render_pattern_selection():
@@ -207,7 +660,7 @@ def _render_pattern_selection():
 
 
 # ======================================================================
-# Indicator settings UI
+# Indicator settings UI (gs_ prefixed)
 # ======================================================================
 
 def _render_indicator_settings():
@@ -357,326 +810,34 @@ def _render_indicator_settings():
 
 
 # ======================================================================
-# Candidate definition UI
+# Grid Search execution
 # ======================================================================
 
-def _render_trigger_candidate(idx, prefix):
-    """Render a single trigger candidate row. Returns config dict or None."""
-    ema_count = len(st.session_state.get("gs_ema_periods", []))
+def _run_grid_search(selected_strategy, search_group, search_set,
+                     condition_candidates, sidebar_config, show_1h, df_key):
+    """Run backtests for all candidate runs. Returns list of (label, agg_dict)."""
 
-    c_grp, c_e1, c_ev, c_cmp, c_e2 = st.columns([2, 2, 2, 1.5, 2])
+    # Build indicator params: start from defaults, overlay strategy settings, then gs_ overrides
+    indicator_params = dict(_DEFAULT_INDICATOR_PARAMS)
+    strategy_settings = selected_strategy.get("indicator_settings")
+    if strategy_settings:
+        strategy_settings = migrate_indicator_settings(strategy_settings)
+        indicator_params.update(strategy_settings)
+    # Override with gs_ UI settings
+    gs_settings = collect_gs_indicator_settings(st.session_state)
+    indicator_params.update(gs_settings)
 
-    with c_grp:
-        group = st.selectbox("Group", GROUP_NAMES, key=f"{prefix}_grp")
-    with c_e1:
-        elements = get_group_elements(group, ema_count)
-        element1 = st.selectbox("Element 1", elements, key=f"{prefix}_e1")
-    with c_ev:
-        event = st.selectbox("Event", EVENT_TYPES, key=f"{prefix}_ev")
-    with c_cmp:
-        compare = st.radio("Compare", ["Indicator", "Fixed Value"],
-                           key=f"{prefix}_cmp", horizontal=True)
-    with c_e2:
-        if compare == "Indicator":
-            all_elements = []
-            for g in GROUP_NAMES:
-                all_elements.extend(get_group_elements(g, ema_count))
-            element2 = st.selectbox("Element 2", all_elements, key=f"{prefix}_e2")
-            value = None
-        else:
-            element2 = None
-            value = st.number_input("Value", value=0.0, step=0.01,
-                                    format="%.4f", key=f"{prefix}_val")
-
-    return {
-        "group": group,
-        "element1": element1,
-        "event": event,
-        "compare_type": compare,
-        "element2": element2,
-        "value": value,
-    }
-
-
-def _render_condition_candidate(idx, prefix):
-    """Render a single condition candidate row. Returns config dict or None."""
-    ema_count = len(st.session_state.get("gs_ema_periods", []))
-
-    c_grp, c_e1, c_op, c_cmp, c_e2 = st.columns([2, 2, 1.5, 1.5, 2])
-
-    with c_grp:
-        group = st.selectbox("Group", GROUP_NAMES, key=f"{prefix}_grp")
-    with c_e1:
-        elements = get_group_elements(group, ema_count)
-        element1 = st.selectbox("Element 1", elements, key=f"{prefix}_e1")
-    with c_op:
-        operator = st.selectbox("Operator", CONDITION_OPERATORS, key=f"{prefix}_op")
-    with c_cmp:
-        compare = st.radio("Compare", ["Indicator", "Fixed Value"],
-                           key=f"{prefix}_cmp", horizontal=True)
-    with c_e2:
-        if compare == "Indicator":
-            all_elements = []
-            for g in GROUP_NAMES:
-                all_elements.extend(get_group_elements(g, ema_count))
-            element2 = st.selectbox("Element 2", all_elements, key=f"{prefix}_e2")
-            value = None
-        else:
-            element2 = None
-            value = st.number_input("Value", value=0.0, step=0.01,
-                                    format="%.4f", key=f"{prefix}_val")
-
-    return {
-        "group": group,
-        "element1": element1,
-        "operator": operator,
-        "compare_type": compare,
-        "element2": element2,
-        "value": value,
-    }
-
-
-def _render_exit_trigger_candidate(idx, prefix, include_r=False, include_atr_target=False):
-    """Render a single exit trigger candidate row (dynamic stop or target)."""
-    ema_count = len(st.session_state.get("gs_ema_periods", []))
-
-    # Build element list — include R Profit/Loss and ATR Target for targets
-    extra_elements = []
-    if include_r:
-        extra_elements.extend(R_PROFIT_LOSS_ELEMENTS)
-    if include_atr_target:
-        extra_elements.extend(ATR_TARGET_ELEMENTS)
-
-    c_grp, c_e1, c_ev, c_cmp, c_e2 = st.columns([2, 2, 2, 1.5, 2])
-
-    with c_grp:
-        group = st.selectbox("Group", GROUP_NAMES, key=f"{prefix}_grp")
-    with c_e1:
-        elements = get_group_elements(group, ema_count) + extra_elements
-        element1 = st.selectbox("Element 1", elements, key=f"{prefix}_e1")
-    with c_ev:
-        event = st.selectbox("Event", STOP_EVENT_TYPES, key=f"{prefix}_ev")
-
-    is_r_element = element1 in R_PROFIT_LOSS_ELEMENTS
-    is_atr_target = element1 in ATR_TARGET_ELEMENTS
-
-    with c_cmp:
-        if is_r_element:
-            compare = "Fixed Value"
-            st.radio("Compare", ["Fixed Value"], key=f"{prefix}_cmp", disabled=True)
-        elif is_atr_target:
-            compare = "Indicator"
-            st.radio("Compare", ["Indicator"], key=f"{prefix}_cmp_d", disabled=True)
-        else:
-            compare = st.radio("Compare", ["Indicator", "Fixed Value"],
-                               key=f"{prefix}_cmp", horizontal=True)
-
-    with c_e2:
-        if is_atr_target:
-            atr_period = st.number_input("ATR Period", 1, 200, value=14,
-                                         step=1, key=f"{prefix}_atr_p")
-            atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0, value=2.0,
-                                       step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-            return {
-                "group": group,
-                "element1": element1,
-                "event": event,
-                "compare_type": "Indicator",
-                "element2": None,
-                "value": None,
-                "atr_period": atr_period,
-                "atr_multiplier": atr_mult,
-            }
-        elif compare == "Indicator":
-            all_elements = []
-            for g in GROUP_NAMES:
-                all_elements.extend(get_group_elements(g, ema_count))
-            element2 = st.selectbox("Element 2", all_elements, key=f"{prefix}_e2")
-            value = None
-        else:
-            element2 = None
-            value = st.number_input("Value", value=0.0, step=0.01,
-                                    format="%.4f", key=f"{prefix}_val")
-
-    return {
-        "group": group,
-        "element1": element1,
-        "event": event,
-        "compare_type": compare,
-        "element2": element2,
-        "value": value,
-    }
-
-
-def _render_static_stop_candidate(idx, prefix):
-    """Render a single static / initial stop candidate row."""
-    direction = st.session_state.get("gs_direction", "Long")
-
-    c_type, c_detail = st.columns([1.5, 3])
-    with c_type:
-        stop_type = st.selectbox("Stop Type", ["ATR", "Indicator"], key=f"{prefix}_stype")
-
-    with c_detail:
-        if stop_type == "ATR":
-            ac1, ac2 = st.columns(2)
-            with ac1:
-                atr_period = st.number_input("ATR Period", 1, 200, value=14,
-                                             step=1, key=f"{prefix}_atr_p")
-            with ac2:
-                atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0, value=2.0,
-                                           step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-            default_event = "Cross Below" if direction == "Long" else "Cross Above"
-            return {
-                "element1": "Price",
-                "stop_type": "ATR",
-                "event": default_event,
-                "atr_period": atr_period,
-                "atr_multiplier": atr_mult,
-            }
-        else:
-            ema_count = len(st.session_state.get("gs_ema_periods", []))
-            all_elements = []
-            for g in GROUP_NAMES:
-                all_elements.extend(get_group_elements(g, ema_count))
-            element2 = st.selectbox("Stop Element", all_elements, key=f"{prefix}_e2")
-            default_event = "Cross Below" if direction == "Long" else "Cross Above"
-            event_idx = STOP_EVENT_TYPES.index(default_event) if default_event in STOP_EVENT_TYPES else 0
-            event = st.selectbox("Event", STOP_EVENT_TYPES, index=event_idx,
-                                 key=f"{prefix}_ev")
-            return {
-                "stop_type": "Indicator",
-                "group": "Price & Indicators",
-                "element1": "Price",
-                "element2": element2,
-                "event": event,
-                "compare_type": "Indicator",
-            }
-
-
-# ======================================================================
-# Step rendering
-# ======================================================================
-
-def _render_step(step, current_step, sidebar_config, show_1h, df_key, thresholds):
-    """Render a single step section."""
-    locked = st.session_state.get("gs_locked_components", {})
-    component_key = STEP_COMPONENT_KEY[step]
-    is_locked = locked.get(component_key) is not None
-    is_active = step <= current_step
-    step_label = STEP_NAMES[step]
-
-    if is_locked:
-        step_label += "  ✓"
-
-    with st.expander(step_label, expanded=(step == current_step)):
-        if not is_active and not is_locked:
-            st.info(f"Complete Step {step - 1} first.")
-            return
-
-        if is_locked:
-            locked_cfg = locked[component_key]
-            st.success(f"Locked: **{candidate_label(locked_cfg, step)}**")
-            if st.button("Unlock", key=f"gs_unlock_{step}"):
-                _unlock_from_step(step)
-                st.rerun()
-            # Still show cached results if available
-            cached = st.session_state.get(f"gs_step{step}_results")
-            if cached:
-                _display_step_results(cached, thresholds, step)
-            return
-
-        # ── Candidate definition ────────────────────────────────
-        candidates_key = f"gs_step{step}_count"
-        if candidates_key not in st.session_state:
-            st.session_state[candidates_key] = 1
-
-        n_candidates = st.session_state[candidates_key]
-        candidate_configs = []
-
-        for i in range(n_candidates):
-            prefix = f"gs_s{step}_{i}"
-            st.markdown(f"**Candidate {i + 1}**")
-
-            if step == 1:
-                cfg = _render_trigger_candidate(i, prefix)
-            elif step == 2:
-                cfg = _render_condition_candidate(i, prefix)
-            elif step == 3:
-                cfg = _render_exit_trigger_candidate(i, prefix,
-                                                     include_r=True, include_atr_target=False)
-            elif step == 4:
-                cfg = _render_static_stop_candidate(i, prefix)
-            elif step == 5:
-                cfg = _render_exit_trigger_candidate(i, prefix,
-                                                     include_r=True, include_atr_target=True)
-            candidate_configs.append(cfg)
-
-            if n_candidates > 1:
-                if st.button("Remove", key=f"gs_rm_s{step}_{i}"):
-                    st.session_state[candidates_key] -= 1
-                    st.rerun()
-
-            st.markdown("---")
-
-        if st.button("+ Add Candidate", key=f"gs_add_s{step}"):
-            st.session_state[candidates_key] += 1
-            st.rerun()
-
-        # ── Calculate ───────────────────────────────────────────
-        if st.button("Calculate", key=f"gs_calc_{step}", type="primary"):
-            results = _run_step_search(
-                step, candidate_configs, sidebar_config, show_1h, df_key)
-            st.session_state[f"gs_step{step}_results"] = results
-            st.session_state[f"gs_step{step}_configs"] = candidate_configs
-
-        # ── Results ─────────────────────────────────────────────
-        cached = st.session_state.get(f"gs_step{step}_results")
-        if cached:
-            _display_step_results(cached, thresholds, step)
-
-            # Lock selection
-            cached_configs = st.session_state.get(f"gs_step{step}_configs", candidate_configs)
-            candidate_names = list(cached.keys())
-            if candidate_names:
-                lock_choice = st.selectbox("Select candidate to lock",
-                                           candidate_names, key=f"gs_lock_sel_{step}")
-                if st.button("Lock and Proceed", key=f"gs_lock_btn_{step}", type="primary"):
-                    lock_idx = candidate_names.index(lock_choice)
-                    locked_cfg = cached_configs[lock_idx]
-                    _lock_step(step, locked_cfg)
-                    st.rerun()
-
-
-# ======================================================================
-# Search execution
-# ======================================================================
-
-def _run_step_search(step, candidate_configs, sidebar_config, show_1h, df_key):
-    """Run backtests for all candidates at the given step. Returns {label: agg_dict}."""
-
-    # Build indicator params
-    indicator_settings = collect_gs_indicator_settings(st.session_state)
-
-    # Build or update training strategy
-    direction = st.session_state.get("gs_direction", "Long")
-    training_strategy = st.session_state.get("gs_training_strategy")
-    if training_strategy is None or training_strategy["direction"] != direction:
-        training_strategy = build_skeleton_strategy(direction, indicator_settings)
-        st.session_state["gs_training_strategy"] = training_strategy
-    # Always update indicator settings
-    training_strategy["indicator_settings"] = dict(indicator_settings)
-
-    # Calculate indicators
+    # Calculate indicators once
     g_start = sidebar_config.get("global_start_date")
     g_end = sidebar_config.get("global_end_date")
 
     df_full = _get_or_calculate(
-        df_key, f"_gs_{df_key}_features", f"_gs_{df_key}_params",
-        indicator_settings, global_start_date=g_start, global_end_date=g_end)
+        df_key, "_gs_features", "_gs_params",
+        indicator_params, global_start_date=g_start, global_end_date=g_end)
 
     if df_full.empty:
         st.warning("No data available for the selected date range.")
-        return {}
+        return []
 
     # Expand pattern selections
     selections = st.session_state.get("gs_selections", [])
@@ -690,7 +851,7 @@ def _run_step_search(step, candidate_configs, sidebar_config, show_1h, df_key):
 
     if not all_combos:
         st.warning("No pattern combos selected.")
-        return {}
+        return []
 
     # Precompute period slices
     drm_bullish = st.session_state.get("drm_bullish")
@@ -712,134 +873,132 @@ def _run_step_search(step, candidate_configs, sidebar_config, show_1h, df_key):
 
     if not period_slices:
         st.warning("No valid DRM periods found for selected patterns.")
-        return {}
+        return []
 
-    # Run each candidate
-    total = len(candidate_configs) * len(period_slices)
+    # Generate all run configs
+    # Prepare the base strategy with updated indicator settings
+    base = copy.deepcopy(selected_strategy)
+    base["indicator_settings"] = dict(indicator_params)
+
+    search_candidates = search_set.get("candidates", [])
+    run_configs = generate_run_configs(
+        base, search_group, search_candidates, condition_candidates)
+
+    if not run_configs:
+        st.warning("No run configurations generated.")
+        return []
+
+    # Run backtests
+    total = len(run_configs) * len(period_slices)
     progress = st.progress(0, text="Running grid search...")
     done = 0
 
-    results = {}
-    for i, cfg in enumerate(candidate_configs):
-        strategy = build_candidate_strategy(training_strategy, step, cfg)
+    results = []
+    for label, strategy in run_configs:
         all_stats = []
-
         for df_slice, ps, pe in period_slices:
             try:
                 _, stats = execute_custom_strategy(df_slice.copy(), strategy, ps, pe)
                 if stats is not None:
                     all_stats.append(stats)
             except Exception:
-                pass  # Skip invalid configs silently
+                pass
             done += 1
-            progress.progress(done / total, text=f"Candidate {i+1}/{len(candidate_configs)}")
-
-        label = candidate_label(cfg, step)
-        # Deduplicate labels
-        base_label = label
-        counter = 2
-        while label in results:
-            label = f"{base_label} ({counter})"
-            counter += 1
+            progress.progress(done / total,
+                              text=f"Run {len(results)+1}/{len(run_configs)} | Period {done}/{total}")
 
         if all_stats:
-            results[label] = _aggregate_stats(all_stats)
+            results.append((label, _aggregate_stats(all_stats)))
         else:
-            results[label] = _empty_agg()
+            results.append((label, _empty_agg()))
 
     progress.empty()
     return results
 
 
 # ======================================================================
-# Results display
+# Results display with filtering, sorting, pagination
 # ======================================================================
 
-def _display_step_results(results, thresholds, step):
-    """Display filtered + sorted results table for a step."""
-    # Filter by thresholds
-    filtered = {}
-    for label, agg in results.items():
+def _display_results(results, strategy_name, thresholds, sort_key, sort_descending):
+    """Display filtered, sorted, paginated results."""
+
+    # Filter
+    filtered = []
+    for label, agg in results:
         if (agg["num_trades"] >= thresholds["min_trades"]
                 and agg["expected_value"] >= thresholds["min_ev"]
                 and agg["sharpe_ratio"] >= thresholds["min_sharpe"]
                 and agg["max_drawdown"] <= thresholds["max_dd"]
                 and agg["sqn"] >= thresholds["min_sqn"]):
-            filtered[label] = agg
+            filtered.append((label, agg))
+
+    st.subheader(f"Results — {strategy_name}")
+    st.caption(f"{len(filtered)} of {len(results)} candidates pass filters")
 
     if not filtered:
         st.warning("No candidates pass the threshold filters.")
         return
 
-    # Sort by EV descending
-    sorted_results = dict(sorted(filtered.items(),
-                                 key=lambda x: x[1]["expected_value"], reverse=True))
+    # Sort
+    filtered.sort(key=lambda x: x[1].get(sort_key, 0), reverse=sort_descending)
 
-    table = _build_metrics_table(sorted_results)
-    st.table(table)
-    _copy_to_clipboard(
-        table.to_csv(sep='\t', header=False, index=False),
-        key=f"gs_copy_s{step}")
+    # Build full results table (rows = candidates, columns = metrics)
+    rows = []
+    for label, agg in filtered:
+        rows.append({
+            "Candidate": label,
+            "Trades": agg["num_trades"],
+            "Win%": f"{agg['win_pct']:.0f}%",
+            "Lose%": f"{agg['lose_pct']:.0f}%",
+            "Avg Profit": f"{agg['avg_win_pnl']:.2f}R",
+            "Avg Loss": f"{agg['avg_lose_pnl']:.2f}R",
+            "Total P&L": f"{agg['total_pnl']:.2f}R",
+            "EV": f"{agg['expected_value']:.2f}R",
+            "Target%": f"{agg['target_exit_pct']:.0f}%",
+            "Stop%": f"{agg['stop_exit_pct']:.0f}%",
+            "Sharpe": f"{agg['sharpe_ratio']:.2f}",
+            "MaxDD": f"{agg['max_drawdown']:.2f}R",
+            "MAR": f"{agg['mar_ratio']:.2f}",
+            "SQN": f"{agg['sqn']:.2f}",
+        })
+
+    df_results = pd.DataFrame(rows)
+
+    # Copy to clipboard (all filtered results, TSV)
+    tsv_data = df_results.to_csv(sep='\t', index=False)
+    _copy_to_clipboard(tsv_data, key="gs_copy_results")
+
+    # Pagination
+    total_pages = max(1, math.ceil(len(filtered) / PAGE_SIZE))
+    if total_pages > 1:
+        page = st.number_input("Page", min_value=1, max_value=total_pages, value=1,
+                               step=1, key="gs_page")
+    else:
+        page = 1
+
+    start_idx = (page - 1) * PAGE_SIZE
+    end_idx = min(start_idx + PAGE_SIZE, len(filtered))
+
+    st.caption(f"Showing {start_idx + 1}–{end_idx} of {len(filtered)} results")
+
+    # Display page slice
+    page_df = df_results.iloc[start_idx:end_idx]
+    st.dataframe(page_df, use_container_width=True, hide_index=True)
 
 
 # ======================================================================
-# Lock / unlock / reset
+# Cache helpers
 # ======================================================================
 
-def _lock_step(step, candidate_config):
-    """Lock a candidate at the given step and advance."""
-    component_key = STEP_COMPONENT_KEY[step]
-    locked = st.session_state.get("gs_locked_components", {})
-    locked[component_key] = candidate_config
-    st.session_state["gs_locked_components"] = locked
-
-    # Update training strategy
-    indicator_settings = collect_gs_indicator_settings(st.session_state)
-    direction = st.session_state.get("gs_direction", "Long")
-    training = st.session_state.get("gs_training_strategy")
-    if training is None:
-        training = build_skeleton_strategy(direction, indicator_settings)
-
-    training = build_candidate_strategy(training, step, candidate_config)
-    st.session_state["gs_training_strategy"] = training
-    st.session_state["gs_current_step"] = step + 1
-
-
-def _unlock_from_step(step):
-    """Unlock the given step and all downstream steps."""
-    locked = st.session_state.get("gs_locked_components", {})
-    for s in range(step, 6):
-        component_key = STEP_COMPONENT_KEY[s]
-        locked[component_key] = None
-        st.session_state.pop(f"gs_step{s}_results", None)
-        st.session_state.pop(f"gs_step{s}_configs", None)
-    st.session_state["gs_locked_components"] = locked
-    st.session_state["gs_current_step"] = step
-
-    # Rebuild training strategy from remaining locks
-    indicator_settings = collect_gs_indicator_settings(st.session_state)
-    direction = st.session_state.get("gs_direction", "Long")
-    training = build_skeleton_strategy(direction, indicator_settings)
-    for s in range(1, step):
-        comp_key = STEP_COMPONENT_KEY[s]
-        cfg = locked.get(comp_key)
-        if cfg is not None:
-            training = build_candidate_strategy(training, s, cfg)
-    st.session_state["gs_training_strategy"] = training
-
-
-def _reset_all_steps():
-    """Reset all grid search state (e.g. when direction changes)."""
-    st.session_state["gs_current_step"] = 1
-    st.session_state["gs_training_strategy"] = None
-    st.session_state["gs_locked_components"] = {
-        "trigger": None,
-        "conditions": None,
-        "dynamic_stop": None,
-        "static_stop": None,
-        "target": None,
-    }
-    for s in range(1, 6):
-        st.session_state.pop(f"gs_step{s}_results", None)
-        st.session_state.pop(f"gs_step{s}_configs", None)
-        st.session_state.pop(f"gs_step{s}_count", None)
+def _build_cache_fingerprint(strategy, search_group, search_set, condition_candidates):
+    """Build a hashable fingerprint for cache invalidation."""
+    import json
+    parts = [
+        strategy.get("strategy_name", ""),
+        search_group,
+        search_set.get("name", ""),
+        json.dumps(search_set.get("candidates", []), sort_keys=True),
+        json.dumps(condition_candidates, sort_keys=True) if condition_candidates else "",
+    ]
+    return "|".join(parts)

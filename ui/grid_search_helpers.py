@@ -1,150 +1,231 @@
 """
-Grid Search helpers — strategy construction, candidate management, labels.
+Grid Search helpers — strategy replacement logic, candidate labeling,
+cross-combination generation.
 """
 import copy
 
 
 # ---------------------------------------------------------------------------
-# Default skeleton
+# Format candidate label: "Element1 (action) Element2"
 # ---------------------------------------------------------------------------
 
-def build_skeleton_strategy(direction, indicator_settings):
-    """Return the default Training Strategy skeleton.
+def format_candidate_label(candidate, group_type):
+    """Generate label in the format: Element1 (action) Element2.
 
-    Long:  2×ATR static stop below entry, 2×ATR target above entry.
-    Short: 2×ATR static stop above entry, 2×ATR target below entry.
+    - First element capitalized, action lower case in ( ), second element capitalized.
+    - ATR stops: "ATR(period) x multiplier"
     """
-    is_long = direction == "Long"
+    if candidate is None:
+        return "None"
 
-    return {
-        "strategy_name": "Grid Search",
-        "direction": direction,
-        "patterns": [],
-        "max_positions": 1,
-        "entry": {
-            "trigger": None,
-            "position_size": 1.0,
-            "conditions_count": 0,
-            "conditions": [],
-        },
-        "initial_stop": {
-            "element1": "Price",
-            "stop_type": "ATR",
-            "event": "Cross Below" if is_long else "Cross Above",
-            "atr_period": 14,
-            "atr_multiplier": 2.0,
-        },
-        "exit_groups": [{
-            "group_id": 1,
-            "allocation_pct": 100.0,
-            "targets": [{
-                "type": "Target",
-                "trigger": {
-                    "group": "Price & Indicators",
-                    "element1": "ATR Target",
-                    "event": "Cross Above" if is_long else "Cross Below",
-                    "compare_type": "Indicator",
-                    "element2": None,
-                    "value": None,
-                    "atr_period": 14,
-                    "atr_multiplier": 2.0,
-                },
-                "conditions": [],
-            }],
-            "stops": [],
-        }],
-        "indicator_settings": dict(indicator_settings),
-    }
+    # ATR static stop
+    if group_type == "static_stop" and candidate.get("stop_type") == "ATR":
+        return f"ATR({candidate.get('atr_period', 14)}) x {candidate.get('atr_multiplier', 2.0)}"
+
+    e1 = candidate.get("element1", "?")
+
+    # ATR Target element
+    if e1 == "ATR Target":
+        action = candidate.get("event", "?").lower()
+        atr_p = candidate.get("atr_period", 14)
+        atr_m = candidate.get("atr_multiplier", 2.0)
+        return f"ATR Target({atr_p} x {atr_m}) ({action})"
+
+    # Conditions use operator, others use event
+    if group_type == "condition":
+        action = candidate.get("operator", "?").lower()
+    else:
+        action = candidate.get("event", "?").lower()
+
+    compare = candidate.get("compare_type", "Indicator")
+    if compare == "Indicator":
+        e2 = candidate.get("element2", "?")
+        return f"{e1} ({action}) {e2}"
+    else:
+        val = candidate.get("value", "?")
+        return f"{e1} ({action}) {val}"
 
 
 # ---------------------------------------------------------------------------
-# Candidate → full strategy dict
+# Build a replacement strategy from a base + candidate
 # ---------------------------------------------------------------------------
 
-def build_candidate_strategy(base_strategy, step, candidate_config):
-    """Return a complete strategy dict with *candidate_config* inserted at *step*.
+def build_replacement_strategy(base_strategy, search_group, candidate, extra_condition=None):
+    """Deep-copy base strategy and insert candidate at the right component.
 
-    Steps:
-        1 – entry trigger
-        2 – entry condition (single)
-        3 – dynamic stop (exit_groups[0].stops)
-        4 – static / initial stop
-        5 – target (exit_groups[0].targets)
+    search_group: 'trigger' | 'condition' | 'static_stop' | 'dynamic_stop' | 'target'
+    extra_condition: optional condition dict to APPEND to entry conditions (for cross-combo).
     """
     strategy = copy.deepcopy(base_strategy)
 
-    if step == 1:
-        strategy["entry"]["trigger"] = candidate_config
-    elif step == 2:
-        if candidate_config is not None:
-            strategy["entry"]["conditions"] = [candidate_config]
-            strategy["entry"]["conditions_count"] = 1
-        else:
-            strategy["entry"]["conditions"] = []
-            strategy["entry"]["conditions_count"] = 0
-    elif step == 3:
-        if candidate_config is not None:
-            strategy["exit_groups"][0]["stops"] = [{
-                "type": "Stop",
-                "trigger": candidate_config,
-                "conditions": [],
-            }]
-        else:
-            strategy["exit_groups"][0]["stops"] = []
-    elif step == 4:
-        strategy["initial_stop"] = candidate_config
-    elif step == 5:
-        if candidate_config is not None:
-            strategy["exit_groups"][0]["targets"] = [{
-                "type": "Target",
-                "trigger": candidate_config,
-                "conditions": [],
-            }]
-        else:
-            strategy["exit_groups"][0]["targets"] = []
+    if search_group == "trigger":
+        strategy["entry"]["trigger"] = _candidate_to_entry_trigger(candidate)
+
+    elif search_group == "condition":
+        # APPEND to existing conditions (never replace)
+        cond = _candidate_to_condition(candidate)
+        strategy["entry"]["conditions"].append(cond)
+        strategy["entry"]["conditions_count"] = len(strategy["entry"]["conditions"])
+
+    elif search_group == "static_stop":
+        strategy["initial_stop"] = _candidate_to_static_stop(candidate, strategy["direction"])
+
+    elif search_group == "dynamic_stop":
+        trigger_dict = _candidate_to_exit_trigger(candidate)
+        strategy["exit_groups"][0]["stops"] = [{
+            "type": "Stop",
+            "trigger": trigger_dict,
+            "conditions": [],
+        }]
+
+    elif search_group == "target":
+        trigger_dict = _candidate_to_exit_trigger(candidate)
+        strategy["exit_groups"][0]["targets"] = [{
+            "type": "Target",
+            "trigger": trigger_dict,
+            "conditions": [],
+        }]
+
+    # Append extra condition if provided (cross-combination)
+    if extra_condition is not None:
+        cond = _candidate_to_condition(extra_condition)
+        strategy["entry"]["conditions"].append(cond)
+        strategy["entry"]["conditions_count"] = len(strategy["entry"]["conditions"])
 
     return strategy
 
 
 # ---------------------------------------------------------------------------
-# Readable label for a candidate
+# Generate all run configs (handles cross-combination)
 # ---------------------------------------------------------------------------
 
-def candidate_label(config, step):
-    """Generate a short human-readable label for a candidate dict."""
-    if config is None:
-        return "None"
+def generate_run_configs(base_strategy, search_group, search_candidates,
+                         condition_candidates=None):
+    """Return list of (label, strategy_dict) pairs.
 
-    if step == 4:  # static / initial stop
-        st_type = config.get("stop_type", "Indicator")
-        if st_type == "ATR":
-            return f"ATR({config.get('atr_period', 14)}) × {config.get('atr_multiplier', 2.0)}"
-        e2 = config.get("element2", "?")
-        return f"Price vs {e2}"
+    - trigger, condition, static_stop: one run per candidate.
+    - target, dynamic_stop: cross-combine with condition candidates if provided.
+      Each search candidate runs standalone + with each condition candidate added.
+    """
+    runs = []
 
-    # Steps 1, 2, 3, 5 all share a trigger-like shape
-    e1 = config.get("element1", "?")
+    if search_group in ("trigger", "condition", "static_stop"):
+        for candidate in search_candidates:
+            label = format_candidate_label(candidate, search_group)
+            strategy = build_replacement_strategy(base_strategy, search_group, candidate)
+            runs.append((label, strategy))
 
-    if step == 2:
-        op = config.get("operator", "?")
-    else:
-        op = config.get("event", "?")
+    elif search_group in ("target", "dynamic_stop"):
+        for candidate in search_candidates:
+            cand_label = format_candidate_label(candidate, search_group)
 
-    cmp = config.get("compare_type", "Indicator")
-    if cmp == "Indicator":
-        e2 = config.get("element2", "?")
-        return f"{e1} {op} {e2}"
-    else:
-        val = config.get("value", "?")
-        return f"{e1} {op} {val}"
+            # Standalone run (no extra condition)
+            strategy = build_replacement_strategy(base_strategy, search_group, candidate)
+            runs.append((cand_label, strategy))
+
+            # Cross-combination with each condition candidate
+            if condition_candidates:
+                for cond_cand in condition_candidates:
+                    strategy = build_replacement_strategy(
+                        base_strategy, search_group, candidate,
+                        extra_condition=cond_cand)
+                    cond_label = format_candidate_label(cond_cand, "condition")
+                    combined_label = f"{cand_label} + {cond_label}"
+                    runs.append((combined_label, strategy))
+
+    # Deduplicate labels
+    seen = {}
+    deduped = []
+    for label, strat in runs:
+        if label in seen:
+            seen[label] += 1
+            deduped.append((f"{label} ({seen[label]})", strat))
+        else:
+            seen[label] = 1
+            deduped.append((label, strat))
+
+    return deduped
 
 
 # ---------------------------------------------------------------------------
-# Collect indicator settings from gs_ prefixed session state
+# Candidate conversion helpers
+# ---------------------------------------------------------------------------
+
+def _candidate_to_entry_trigger(candidate):
+    """Convert a group set candidate dict to an entry trigger dict."""
+    return {
+        "group": candidate.get("group", "Price & Indicators"),
+        "element1": candidate.get("element1"),
+        "event": candidate.get("event"),
+        "compare_type": candidate.get("compare_type", "Indicator"),
+        "element2": candidate.get("element2"),
+        "value": candidate.get("value"),
+    }
+
+
+def _candidate_to_condition(candidate):
+    """Convert a group set candidate dict to an entry condition dict."""
+    return {
+        "group": candidate.get("group", "Price & Indicators"),
+        "element1": candidate.get("element1"),
+        "operator": candidate.get("operator", "Above"),
+        "compare_type": candidate.get("compare_type", "Indicator"),
+        "element2": candidate.get("element2"),
+        "value": candidate.get("value"),
+    }
+
+
+def _candidate_to_static_stop(candidate, direction):
+    """Convert a group set candidate dict to an initial_stop dict.
+
+    Ensures element1 and event are always present (the ATR fix).
+    """
+    stop_type = candidate.get("stop_type", "Indicator")
+    default_event = "Cross Below" if direction == "Long" else "Cross Above"
+
+    if stop_type == "ATR":
+        return {
+            "element1": "Price",
+            "stop_type": "ATR",
+            "event": candidate.get("event", default_event),
+            "atr_period": candidate.get("atr_period", 14),
+            "atr_multiplier": candidate.get("atr_multiplier", 2.0),
+        }
+    else:
+        return {
+            "stop_type": "Indicator",
+            "group": candidate.get("group", "Price & Indicators"),
+            "element1": candidate.get("element1", "Price"),
+            "element2": candidate.get("element2"),
+            "event": candidate.get("event", default_event),
+            "compare_type": candidate.get("compare_type", "Indicator"),
+        }
+
+
+def _candidate_to_exit_trigger(candidate):
+    """Convert a group set candidate dict to an exit trigger dict (target or dynamic stop)."""
+    result = {
+        "group": candidate.get("group", "Price & Indicators"),
+        "element1": candidate.get("element1"),
+        "event": candidate.get("event"),
+        "compare_type": candidate.get("compare_type", "Indicator"),
+        "element2": candidate.get("element2"),
+        "value": candidate.get("value"),
+    }
+    # ATR Target needs period and multiplier
+    if candidate.get("element1") == "ATR Target":
+        result["atr_period"] = candidate.get("atr_period", 14)
+        result["atr_multiplier"] = candidate.get("atr_multiplier", 2.0)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Collect gs_ prefixed indicator settings from session state
 # ---------------------------------------------------------------------------
 
 def collect_gs_indicator_settings(ss):
     """Read gs_ prefixed indicator params from Streamlit session state."""
+    from ui.performance_tab import _DEFAULT_INDICATOR_PARAMS
     pfx = "gs_"
     keys = [
         "rsi_window",
@@ -160,7 +241,6 @@ def collect_gs_indicator_settings(ss):
         "dc_upper_period", "dc_mid_period", "dc_lower_period", "dc_offset",
         "psar_af_start", "psar_af_increment", "psar_af_max",
     ]
-    from ui.performance_tab import _DEFAULT_INDICATOR_PARAMS
     result = dict(_DEFAULT_INDICATOR_PARAMS)
     for k in keys:
         val = ss.get(f"{pfx}{k}")
