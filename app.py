@@ -52,7 +52,7 @@ st.markdown("""
 # -------------------------------------------------
 # Main App
 # -------------------------------------------------
-st.title("Trading Analysis Platform")
+st.title("Trading Analysis Platform TEST")
 
 # Create tabs
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance", "🧪 Strategy Testing", "🎲 Monte Carlo", "🔍 Grid Search"])

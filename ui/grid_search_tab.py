@@ -305,7 +305,7 @@ def _render_group_set_management():
                     ec1, ec2 = st.columns(2)
                     with ec1:
                         if st.button("Save Changes", key=f"gs_edit_{gs_type}_save", type="primary"):
-                            edit_gs["candidates"] = copy.deepcopy(edited_candidates)
+                            edit_gs["candidates"] = _strip_uids(edited_candidates)
                             update_group_set(edit_idx, edit_gs)
                             st.session_state.pop(f"gs_editing_{gs_type}", None)
                             st.session_state.pop(f"gs_edit_{gs_type}_candidates", None)
@@ -353,12 +353,11 @@ def _render_group_set_management():
                         new_gs = {
                             "name": new_name.strip(),
                             "type": gs_type,
-                            "candidates": copy.deepcopy(new_candidates),
+                            "candidates": _strip_uids(new_candidates),
                         }
                         save_group_set(new_gs)
                         # Clear the "Create New" editor state so it resets
                         st.session_state.pop(f"gs_new_{gs_type}_candidates", None)
-                        _clear_candidate_widget_keys(f"gs_new_{gs_type}", 0, len(new_candidates))
                         st.success(f"Created **{new_name}** with {len(new_candidates)} candidates.")
                         st.rerun()
 
@@ -367,16 +366,39 @@ def _render_group_set_management():
 # Candidate Editor
 # ======================================================================
 
-def _clear_candidate_widget_keys(prefix, start_idx, end_idx):
-    """Clear widget keys for candidate indices [start_idx, end_idx) to prevent
-    stale values when candidates are removed and indices shift."""
+def _clear_candidate_widget_keys_by_uid(prefix, uid):
+    """Clear all widget keys for a candidate identified by unique ID."""
     suffixes = [
         "_grp", "_e1", "_ev", "_cmp", "_e2", "_op", "_val",
         "_stype", "_atr_p", "_atr_m", "_cmp_d", "_cmp_at", "_rm",
     ]
-    for i in range(start_idx, end_idx):
-        for sfx in suffixes:
-            st.session_state.pop(f"{prefix}_{i}{sfx}", None)
+    for sfx in suffixes:
+        st.session_state.pop(f"{prefix}_{uid}{sfx}", None)
+
+
+_candidate_uid_counter_key = "_gs_candidate_uid_counter"
+
+
+def _strip_uids(candidates):
+    """Return a deep copy of candidates with internal _uid fields removed."""
+    cleaned = copy.deepcopy(candidates)
+    for c in cleaned:
+        c.pop('_uid', None)
+    return cleaned
+
+
+def _next_candidate_uid():
+    """Generate a unique ID for a candidate (monotonically increasing integer)."""
+    uid = st.session_state.get(_candidate_uid_counter_key, 0)
+    st.session_state[_candidate_uid_counter_key] = uid + 1
+    return uid
+
+
+def _ensure_candidate_uids(candidates):
+    """Ensure every candidate dict has a '_uid' field."""
+    for cand in candidates:
+        if '_uid' not in cand:
+            cand['_uid'] = _next_candidate_uid()
 
 
 def _render_candidate_editor(group_type, initial_candidates, prefix):
@@ -387,28 +409,32 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
         st.session_state[state_key] = list(initial_candidates) if initial_candidates else []
 
     candidates = st.session_state[state_key]
+    _ensure_candidate_uids(candidates)
     ema_count = len(st.session_state.get("gs_ema_periods", []))
 
     to_remove = []
     for i, cand in enumerate(candidates):
+        uid = cand['_uid']
         st.markdown(f"**Candidate {i+1}**")
-        updated = _render_single_candidate(group_type, cand, f"{prefix}_{i}", ema_count)
+        updated = _render_single_candidate(group_type, cand, f"{prefix}_{uid}", ema_count)
+        # Preserve UID
+        updated['_uid'] = uid
         candidates[i] = updated
 
-        if st.button("Remove", key=f"{prefix}_{i}_rm"):
+        if st.button("Remove", key=f"{prefix}_{uid}_rm"):
             to_remove.append(i)
 
     if to_remove:
         for idx in sorted(to_remove, reverse=True):
-            candidates.pop(idx)
-        # Clear stale widget keys so remaining candidates don't pick up
-        # values from wrong indices after the list shifts
-        _clear_candidate_widget_keys(prefix, min(to_remove), len(candidates) + len(to_remove))
+            removed = candidates.pop(idx)
+            _clear_candidate_widget_keys_by_uid(prefix, removed['_uid'])
         st.session_state[state_key] = candidates
         st.rerun()
 
     if st.button("+ Add Candidate", key=f"{prefix}_add"):
-        candidates.append(_default_candidate(group_type))
+        new_cand = _default_candidate(group_type)
+        new_cand['_uid'] = _next_candidate_uid()
+        candidates.append(new_cand)
         st.session_state[state_key] = candidates
         st.rerun()
 
