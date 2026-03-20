@@ -7,12 +7,16 @@ import streamlit.components.v1 as _components
 import pandas as pd
 import copy
 import math
+import os
+import multiprocessing
+from collections import OrderedDict
 
 from data.loader import parse_drm_periods
 from data.helpers import (PRIMARY_SECONDARY_MAP, PRIMARY_LIST,
                           ALL_UNIQUE_SECONDARIES, expand_selection, selection_label)
 from indicators.calculate_indicators import slice_for_graph, migrate_indicator_settings
 from strategies.first_strategy import execute_custom_strategy
+from strategies.first_strategy_numpy import execute_custom_strategy_numpy as _execute_numpy
 from strategies.group_set_manager import (
     load_group_sets, save_group_set, update_group_set, delete_group_set,
     export_group_set, import_group_set, get_group_sets_by_type,
@@ -212,7 +216,13 @@ def render_grid_search_tab(sidebar_config):
     st.markdown("---")
 
     # ── Section G: Calculate + Results ──────────────────
-    calculate_clicked = st.button("Calculate", key="gs_calculate", type="primary")
+    calc_col1, calc_col2 = st.columns(2)
+    with calc_col1:
+        calculate_clicked = st.button("Calculate", key="gs_calculate", type="primary")
+    with calc_col2:
+        calculate_numpy_clicked = st.button("Calculate (NumPy) ⚡", key="gs_calculate_numpy",
+                                             type="secondary",
+                                             help="Faster engine using NumPy arrays instead of Pandas .iloc")
 
     # Cache invalidation
     cached = st.session_state.get("_gs_cached_results")
@@ -223,10 +233,12 @@ def render_grid_search_tab(sidebar_config):
             st.session_state.pop("_gs_cached_results", None)
             cached = None
 
-    if calculate_clicked:
+    any_calc = calculate_clicked or calculate_numpy_clicked
+    if any_calc:
+        use_numpy = calculate_numpy_clicked
         results = _run_grid_search(
             selected_strategy, search_group, search_set, condition_candidates,
-            sidebar_config, show_1h, df_key)
+            sidebar_config, show_1h, df_key, use_numpy=use_numpy)
         fp = _build_cache_fingerprint(selected_strategy, search_group,
                                        search_set, condition_candidates)
         # Include selection labels in fingerprint for cache invalidation on selection change
@@ -242,7 +254,7 @@ def render_grid_search_tab(sidebar_config):
     if cached and cached.get("results"):
         _display_results(cached["results"], cached["strategy_name"],
                          thresholds, sort_key, sort_descending)
-    elif not calculate_clicked:
+    elif not any_calc:
         st.info("Configure search and click **Calculate** to run.")
 
 
@@ -304,13 +316,15 @@ def _render_group_set_management():
                     ec1, ec2 = st.columns(2)
                     with ec1:
                         if st.button("Save Changes", key=f"gs_edit_{gs_type}_save", type="primary"):
-                            edit_gs["candidates"] = edited_candidates
+                            edit_gs["candidates"] = copy.deepcopy(edited_candidates)
                             update_group_set(edit_idx, edit_gs)
                             st.session_state.pop(f"gs_editing_{gs_type}", None)
+                            st.session_state.pop(f"gs_edit_{gs_type}_candidates", None)
                             st.rerun()
                     with ec2:
                         if st.button("Cancel", key=f"gs_edit_{gs_type}_cancel"):
                             st.session_state.pop(f"gs_editing_{gs_type}", None)
+                            st.session_state.pop(f"gs_edit_{gs_type}_candidates", None)
                             st.rerun()
             else:
                 st.caption(f"No {gs_label} group sets saved yet.")
@@ -321,14 +335,21 @@ def _render_group_set_management():
             uploaded = st.file_uploader(f"Import {gs_label} Group Set",
                                         type=["json"], key=f"gs_import_{gs_type}")
             if uploaded:
-                try:
-                    data = import_group_set(uploaded.read().decode("utf-8"))
-                    data["type"] = gs_type  # force correct type
-                    save_group_set(data)
-                    st.success(f"Imported **{data['name']}** with {len(data['candidates'])} candidates.")
-                    st.rerun()
-                except (ValueError, Exception) as e:
-                    st.error(f"Import failed: {e}")
+                # Prevent re-importing the same file on every rerun
+                import_id = f"{uploaded.name}_{uploaded.size}"
+                last_import_key = f"_gs_last_import_{gs_type}"
+                if st.session_state.get(last_import_key) != import_id:
+                    try:
+                        data = import_group_set(uploaded.read().decode("utf-8"))
+                        data["type"] = gs_type  # force correct type
+                        save_group_set(data)
+                        st.session_state[last_import_key] = import_id
+                        st.success(f"Imported **{data['name']}** with {len(data['candidates'])} candidates.")
+                        st.rerun()
+                    except (ValueError, Exception) as e:
+                        st.error(f"Import failed: {e}")
+                else:
+                    st.info("File already imported. Upload a different file or remove and re-upload.")
 
             # Create new
             with st.expander(f"Create New {gs_label} Set", expanded=False):
@@ -343,9 +364,12 @@ def _render_group_set_management():
                         new_gs = {
                             "name": new_name.strip(),
                             "type": gs_type,
-                            "candidates": new_candidates,
+                            "candidates": copy.deepcopy(new_candidates),
                         }
                         save_group_set(new_gs)
+                        # Clear the "Create New" editor state so it resets
+                        st.session_state.pop(f"gs_new_{gs_type}_candidates", None)
+                        _clear_candidate_widget_keys(f"gs_new_{gs_type}", 0, len(new_candidates))
                         st.success(f"Created **{new_name}** with {len(new_candidates)} candidates.")
                         st.rerun()
 
@@ -353,6 +377,18 @@ def _render_group_set_management():
 # ======================================================================
 # Candidate Editor
 # ======================================================================
+
+def _clear_candidate_widget_keys(prefix, start_idx, end_idx):
+    """Clear widget keys for candidate indices [start_idx, end_idx) to prevent
+    stale values when candidates are removed and indices shift."""
+    suffixes = [
+        "_grp", "_e1", "_ev", "_cmp", "_e2", "_op", "_val",
+        "_stype", "_atr_p", "_atr_m", "_cmp_d", "_cmp_at", "_rm",
+    ]
+    for i in range(start_idx, end_idx):
+        for sfx in suffixes:
+            st.session_state.pop(f"{prefix}_{i}{sfx}", None)
+
 
 def _render_candidate_editor(group_type, initial_candidates, prefix):
     """Render an editable list of candidates. Returns list of candidate dicts."""
@@ -376,6 +412,9 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
     if to_remove:
         for idx in sorted(to_remove, reverse=True):
             candidates.pop(idx)
+        # Clear stale widget keys so remaining candidates don't pick up
+        # values from wrong indices after the list shifts
+        _clear_candidate_widget_keys(prefix, min(to_remove), len(candidates) + len(to_remove))
         st.session_state[state_key] = candidates
         st.rerun()
 
@@ -809,11 +848,95 @@ def _render_indicator_settings():
 
 
 # ======================================================================
+# Dict-based aggregation (for multiprocessing — workers return dicts, not DataFrames)
+# ======================================================================
+
+def _aggregate_stats_dicts(all_stats_dicts):
+    """Same logic as _aggregate_stats but works with lightweight dicts from workers."""
+    import numpy as np
+
+    all_trade_pnls = []
+    total_win_pnl = 0.0
+    total_lose_pnl = 0.0
+    total_static_alloc = 0.0
+    total_dynamic_alloc = 0.0
+    total_target_alloc = 0.0
+
+    for sd in all_stats_dicts:
+        total_win_pnl += sd['win_pnl']
+        total_lose_pnl += sd['lose_pnl']
+        total_static_alloc += sd['total_static_alloc']
+        total_dynamic_alloc += sd['total_dynamic_alloc']
+        total_target_alloc += sd['total_target_alloc']
+        all_trade_pnls.extend(sd['trade_pnls_r'])
+
+    total_trades = len(all_trade_pnls)
+    total_wins = sum(pnl > 0 for pnl in all_trade_pnls)
+    total_losses = total_trades - total_wins
+    total_pnl = total_win_pnl + total_lose_pnl
+
+    if total_trades > 0:
+        win_pct = (total_wins / total_trades) * 100
+        lose_pct = (total_losses / total_trades) * 100
+        target_exit_pct = total_target_alloc / total_trades
+        static_exit_pct = total_static_alloc / total_trades
+        dynamic_exit_pct = total_dynamic_alloc / total_trades
+
+        avg_win_pnl = total_win_pnl / total_wins if total_wins > 0 else 0.0
+        avg_lose_pnl = total_lose_pnl / total_losses if total_losses > 0 else 0.0
+        expected_value = (win_pct / 100 * avg_win_pnl) + (lose_pct / 100 * avg_lose_pnl)
+
+        if len(all_trade_pnls) >= 2:
+            pnl_std = np.std(all_trade_pnls, ddof=1)
+            sharpe_ratio = (np.mean(all_trade_pnls) / pnl_std) if pnl_std > 0 else 0.0
+        else:
+            pnl_std = 0.0
+            sharpe_ratio = 0.0
+
+        if all_trade_pnls:
+            cumulative = np.cumsum(all_trade_pnls)
+            peak = np.maximum.accumulate(cumulative)
+            drawdowns = cumulative - peak
+            max_drawdown = abs(drawdowns.min())
+        else:
+            max_drawdown = 0.0
+
+        mar_ratio = (total_pnl / max_drawdown) if max_drawdown > 0 else 0.0
+
+        if len(all_trade_pnls) >= 2 and pnl_std > 0:
+            sqn = (np.mean(all_trade_pnls) / pnl_std * np.sqrt(len(all_trade_pnls)))
+        else:
+            sqn = 0.0
+    else:
+        win_pct = lose_pct = total_pnl = avg_win_pnl = avg_lose_pnl = 0.0
+        expected_value = target_exit_pct = static_exit_pct = dynamic_exit_pct = 0.0
+        sharpe_ratio = max_drawdown = mar_ratio = sqn = 0.0
+
+    return {
+        'num_trades': total_trades,
+        'win_pct': win_pct,
+        'lose_pct': lose_pct,
+        'avg_win_pnl': avg_win_pnl,
+        'avg_lose_pnl': avg_lose_pnl,
+        'total_pnl': total_pnl,
+        'expected_value': expected_value,
+        'target_exit_pct': target_exit_pct,
+        'static_exit_pct': static_exit_pct,
+        'dynamic_exit_pct': dynamic_exit_pct,
+        'sharpe_ratio': sharpe_ratio,
+        'max_drawdown': max_drawdown,
+        'mar_ratio': mar_ratio,
+        'sqn': sqn,
+    }
+
+
+# ======================================================================
 # Grid Search execution
 # ======================================================================
 
 def _run_grid_search(selected_strategy, search_group, search_set,
-                     condition_candidates, sidebar_config, show_1h, df_key):
+                     condition_candidates, sidebar_config, show_1h, df_key,
+                     use_numpy=False):
     """Run backtests for all candidate runs.
 
     Returns list of (label, global_agg, selection_results) where
@@ -907,15 +1030,25 @@ def _run_grid_search(selected_strategy, search_group, search_set,
         st.warning("No run configurations generated.")
         return []
 
-    # Run backtests — each unique combo run once per candidate, results assembled
+    # ==================================================================
+    # NumPy path: multiprocessing across CPU cores
+    # ==================================================================
+    if use_numpy:
+        return _run_grid_search_multiprocessing(
+            run_configs, combo_slices, global_combo_keys,
+            selection_combo_map)
+
+    # ==================================================================
+    # Original path: single-threaded
+    # ==================================================================
     total = len(run_configs) * len(all_unique_slices)
     progress = st.progress(0, text="Running grid search...")
     done = 0
+    progress_interval = max(1, total // 200)
 
     results = []
-    for label, strategy in run_configs:
-        # Run each unique combo's period slices once, cache stats per combo
-        combo_stats_cache = {}  # combo_key -> [stats, ...]
+    for run_idx, (label, strategy) in enumerate(run_configs):
+        combo_stats_cache = {}
         for combo_key in global_combo_keys:
             combo_stats = []
             for df_slice, ps, pe in combo_slices[combo_key]:
@@ -926,23 +1059,91 @@ def _run_grid_search(selected_strategy, search_group, search_set,
                 except Exception:
                     pass
                 done += 1
-                progress.progress(done / total,
-                                  text=f"Run {len(results)+1}/{len(run_configs)}")
+                if done % progress_interval == 0 or done == total:
+                    progress.progress(done / total,
+                                      text=f"Run {run_idx+1}/{len(run_configs)}")
             combo_stats_cache[combo_key] = combo_stats
 
-        # Assemble global stats (all unique combos)
         global_stats = []
         for ck in global_combo_keys:
             global_stats.extend(combo_stats_cache[ck])
         global_agg = _aggregate_stats(global_stats) if global_stats else _empty_agg()
 
-        # Assemble per-selection stats
         sel_results = OrderedDict()
         for sel_label, sel_combo_keys in selection_combo_map.items():
             sel_stats = []
             for ck in sel_combo_keys:
                 sel_stats.extend(combo_stats_cache[ck])
             sel_results[sel_label] = _aggregate_stats(sel_stats) if sel_stats else _empty_agg()
+
+        results.append((label, global_agg, sel_results))
+
+    progress.empty()
+    return results
+
+
+def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_keys,
+                                      selection_combo_map):
+    """Run grid search using multiprocessing Pool.
+    Each worker process handles one candidate across all combo/period slices.
+    """
+    from strategies.grid_search_worker import init_worker, run_candidate
+
+    n_candidates = len(run_configs)
+    n_workers = min(n_candidates, max(1, os.cpu_count() or 1))
+
+    progress = st.progress(0, text=f"Running grid search with {n_workers} processes...")
+    st.caption(f"Using {n_workers} CPU cores for {n_candidates} candidates")
+
+    # Convert combo_slices keys to plain tuples (ensure picklable)
+    combo_slices_dict = dict(combo_slices)
+    combo_keys_list = list(global_combo_keys)
+
+    # Build task args: (idx, label, strategy) per candidate — idx for safe keying
+    tasks = [(idx, label, strategy) for idx, (label, strategy) in enumerate(run_configs)]
+
+    # Run with Pool — shared data passed via initializer (pickled once per worker)
+    results = []
+    try:
+        with multiprocessing.Pool(
+            processes=n_workers,
+            initializer=init_worker,
+            initargs=(combo_slices_dict, combo_keys_list)
+        ) as pool:
+            # imap_unordered yields results as they complete
+            completed = 0
+            candidate_results = {}  # idx -> (label, combo_results)
+
+            for idx, label, combo_results in pool.imap_unordered(run_candidate, tasks):
+                candidate_results[idx] = (label, combo_results)
+                completed += 1
+                progress.progress(completed / n_candidates,
+                                  text=f"Completed {completed}/{n_candidates} candidates")
+
+    except Exception as e:
+        st.error(f"Multiprocessing error: {e}")
+        progress.empty()
+        return []
+
+    # Assemble results in original order
+    for idx in range(len(run_configs)):
+        if idx not in candidate_results:
+            continue
+        label, combo_results = candidate_results[idx]
+
+        # Global stats: all unique combos
+        global_stats_dicts = []
+        for ck in global_combo_keys:
+            global_stats_dicts.extend(combo_results.get(ck, []))
+        global_agg = _aggregate_stats_dicts(global_stats_dicts) if global_stats_dicts else _empty_agg()
+
+        # Per-selection stats
+        sel_results = OrderedDict()
+        for sel_label, sel_combo_keys in selection_combo_map.items():
+            sel_stats_dicts = []
+            for ck in sel_combo_keys:
+                sel_stats_dicts.extend(combo_results.get(ck, []))
+            sel_results[sel_label] = _aggregate_stats_dicts(sel_stats_dicts) if sel_stats_dicts else _empty_agg()
 
         results.append((label, global_agg, sel_results))
 
