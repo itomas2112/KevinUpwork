@@ -57,10 +57,10 @@ echo Creating desktop shortcut...
 set SCRIPT_DIR=%~dp0
 set SHORTCUT_NAME=Trading App.bat
 
-:: Create a launcher bat on the Desktop
+:: Create a launcher bat on the Desktop (cmd /k keeps window open on error)
 echo @echo off > "%USERPROFILE%\Desktop\%SHORTCUT_NAME%"
 echo cd /d "%SCRIPT_DIR%" >> "%USERPROFILE%\Desktop\%SHORTCUT_NAME%"
-echo call start_app.bat >> "%USERPROFILE%\Desktop\%SHORTCUT_NAME%"
+echo cmd /k start_app.bat >> "%USERPROFILE%\Desktop\%SHORTCUT_NAME%"
 
 echo [OK] Desktop shortcut created: "%SHORTCUT_NAME%"
 echo.
