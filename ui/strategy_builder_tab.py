@@ -435,23 +435,28 @@ def render_strategy_indicator_settings():
         if ema_state_key not in st.session_state:
             st.session_state[ema_state_key] = []
 
+        # Generation counter to guarantee fresh widget keys after deletions
+        sb_ema_gen_key = f"_sb_ema_gen_{pfx}"
+        sb_ema_gen = st.session_state.get(sb_ema_gen_key, 0)
+
         emas_to_remove = []
         for idx, ema_val in enumerate(st.session_state[ema_state_key]):
             line_col, remove_col = st.columns([3, 1])
             with line_col:
                 new_val = st.number_input(
                     f"EMA {idx + 1} Period", 2, 500, int(ema_val), step=1,
-                    key=f"{pfx}ema_p_{idx}",
+                    key=f"{pfx}ema_p_g{sb_ema_gen}_{idx}",
                 )
                 st.session_state[ema_state_key][idx] = new_val
             with remove_col:
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("X", key=f"{pfx}ema_rm_{idx}"):
+                if st.button("X", key=f"{pfx}ema_rm_g{sb_ema_gen}_{idx}"):
                     emas_to_remove.append(idx)
 
         if emas_to_remove:
             for idx in sorted(emas_to_remove, reverse=True):
                 st.session_state[ema_state_key].pop(idx)
+            st.session_state[sb_ema_gen_key] = sb_ema_gen + 1
             st.rerun()
 
         if st.button("+ Add EMA", key=f"{pfx}ema_add"):
@@ -1139,6 +1144,9 @@ def render_strategy_management():
     if st.session_state['saved_strategies']:
         st.caption(f"Total strategies saved: {len(st.session_state['saved_strategies'])}")
 
+        # Generation counter to guarantee fresh widget keys after deletions
+        strat_gen = st.session_state.get("_strat_list_gen", 0)
+
         # Create a table view of strategies
         for idx, strategy in enumerate(st.session_state['saved_strategies']):
             with st.container(border=True):
@@ -1159,14 +1167,15 @@ def render_strategy_management():
                         st.caption("Patterns: All")
 
                 with col4:
-                    if st.button("✏️", key=f"edit_strategy_{idx}", help="Edit this strategy"):
+                    if st.button("✏️", key=f"edit_strategy_g{strat_gen}_{idx}", help="Edit this strategy"):
                         # Load strategy into builder for editing
                         load_strategy_for_editing(strategy, idx)
                         st.rerun()
 
                 with col5:
-                    if st.button("🗑️", key=f"delete_strategy_{idx}", help="Delete this strategy"):
+                    if st.button("🗑️", key=f"delete_strategy_g{strat_gen}_{idx}", help="Delete this strategy"):
                         delete_strategy(idx)
+                        st.session_state["_strat_list_gen"] = strat_gen + 1
                         st.success(f"Strategy deleted!")
                         st.rerun()
 
@@ -1479,7 +1488,9 @@ def add_exit_to_group(group_idx, exit_type):
 
 def _clear_exit_group_widget_keys(group_idx):
     """Clear all widget keys for an exit group so they get re-populated from data."""
-    prefixes = (f"Target_{group_idx}_", f"Stop_{group_idx}_", f"exit_group_{group_idx}_")
+    prefixes = (f"Target_{group_idx}_", f"Stop_{group_idx}_",
+                f"exit_group_{group_idx}_", f"remove_exit_group_{group_idx}",
+                f"add_target_{group_idx}", f"add_stop_{group_idx}")
     for k in list(st.session_state.keys()):
         if any(k.startswith(p) for p in prefixes):
             del st.session_state[k]
@@ -1498,9 +1509,10 @@ def remove_exit_from_group(group_idx, exit_type, exit_idx):
             # Clear stale widget keys from removed index onward
             # (indices shift down after pop, so old keys become misaligned)
             for idx in range(exit_idx, total):
-                prefix = f"{exit_type}_{group_idx}_{idx}"
+                prefixes = (f"{exit_type}_{group_idx}_{idx}",
+                            f"remove_{exit_type}_{group_idx}_{idx}")
                 for k in list(st.session_state.keys()):
-                    if k.startswith(prefix):
+                    if any(k.startswith(p) for p in prefixes):
                         del st.session_state[k]
             items.pop(exit_idx)
 

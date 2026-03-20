@@ -178,25 +178,34 @@ def render_grid_search_tab(sidebar_config):
 
     # ── Section F: Filters & Sort ───────────────────────
     st.markdown("**Performance Filters**")
-    fc1, fc2, fc3, fc4 = st.columns(4)
-    with fc1:
-        min_trades = st.number_input("Min Trades", value=0, step=1, key="gs_thresh_min_trades")
-    with fc2:
-        min_ev = st.number_input("Min EV (R)", value=-999.0, step=0.01,
-                                 format="%.2f", key="gs_thresh_min_ev")
-    with fc3:
-        min_sharpe = st.number_input("Min Sharpe", value=-999.0, step=0.01,
-                                     format="%.2f", key="gs_thresh_min_sharpe")
-    with fc4:
-        min_sqn = st.number_input("Min SQN", value=-999.0, step=0.01,
-                                  format="%.2f", key="gs_thresh_min_sqn")
-
-    thresholds = {
-        "min_trades": min_trades,
-        "min_ev": min_ev,
-        "min_sharpe": min_sharpe,
-        "min_sqn": min_sqn,
-    }
+    # Build threshold inputs for every metric in SORT_METRICS
+    thresholds = {}
+    # Row 1 — first 4 metrics
+    cols_r1 = st.columns(4)
+    for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[:4]):
+        with cols_r1[ci]:
+            default = 0.0 if metric_key == "num_trades" else -999.0
+            step = 1.0 if metric_key == "num_trades" else 0.01
+            fmt = "%.0f" if metric_key == "num_trades" else "%.2f"
+            thresholds[metric_key] = st.number_input(
+                f"Min {metric_label}", value=default, step=step,
+                format=fmt, key=f"gs_thresh_{metric_key}")
+    # Row 2 — next 4 metrics
+    cols_r2 = st.columns(4)
+    for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[4:8]):
+        with cols_r2[ci]:
+            thresholds[metric_key] = st.number_input(
+                f"Min {metric_label}", value=-999.0, step=0.01,
+                format="%.2f", key=f"gs_thresh_{metric_key}")
+    # Row 3 — remaining metrics
+    remaining = SORT_METRICS[8:]
+    if remaining:
+        cols_r3 = st.columns(max(len(remaining), 1))
+        for ci, (metric_key, metric_label) in enumerate(remaining):
+            with cols_r3[ci]:
+                thresholds[metric_key] = st.number_input(
+                    f"Min {metric_label}", value=-999.0, step=0.01,
+                    format="%.2f", key=f"gs_thresh_{metric_key}")
 
     sort_col1, sort_col2 = st.columns(2)
     with sort_col1:
@@ -410,8 +419,11 @@ def _ensure_candidate_uids(candidates):
             cand['_uid'] = _next_candidate_uid()
 
 
+CANDIDATE_PAGE_SIZE = 20
+
+
 def _render_candidate_editor(group_type, initial_candidates, prefix):
-    """Render an editable list of candidates. Returns list of candidate dicts."""
+    """Render an editable list of candidates with pagination. Returns list of candidate dicts."""
     # Use session state to track candidates for this editor
     state_key = f"{prefix}_candidates"
     if state_key not in st.session_state:
@@ -421,8 +433,38 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
     _ensure_candidate_uids(candidates)
     ema_count = len(st.session_state.get("gs_ema_periods", []))
 
+    total = len(candidates)
+    page_key = f"{prefix}_page"
+    total_pages = max(1, math.ceil(total / CANDIDATE_PAGE_SIZE))
+
+    # Clamp page to valid range
+    current_page = st.session_state.get(page_key, 0)
+    if current_page >= total_pages:
+        current_page = max(0, total_pages - 1)
+        st.session_state[page_key] = current_page
+
+    start_idx = current_page * CANDIDATE_PAGE_SIZE
+    end_idx = min(start_idx + CANDIDATE_PAGE_SIZE, total)
+
+    # Pagination controls (top)
+    if total > CANDIDATE_PAGE_SIZE:
+        st.caption(f"Showing candidates {start_idx + 1}–{end_idx} of {total}")
+        p1, p2, p3 = st.columns([1, 1, 1])
+        with p1:
+            if st.button("◀ Previous", key=f"{prefix}_prev", disabled=current_page == 0):
+                st.session_state[page_key] = current_page - 1
+                st.rerun()
+        with p2:
+            st.markdown(f"Page **{current_page + 1}** / {total_pages}")
+        with p3:
+            if st.button("Next ▶", key=f"{prefix}_next", disabled=current_page >= total_pages - 1):
+                st.session_state[page_key] = current_page + 1
+                st.rerun()
+
+    # Render only the current page of candidates
     to_remove = []
-    for i, cand in enumerate(candidates):
+    for i in range(start_idx, end_idx):
+        cand = candidates[i]
         uid = cand['_uid']
         st.markdown(f"**Candidate {i+1}**")
         updated = _render_single_candidate(group_type, cand, f"{prefix}_{uid}", ema_count)
@@ -438,6 +480,10 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
             removed = candidates.pop(idx)
             _clear_candidate_widget_keys_by_uid(prefix, removed['_uid'])
         st.session_state[state_key] = candidates
+        # If we deleted all items on the last page, go back one page
+        new_total_pages = max(1, math.ceil(len(candidates) / CANDIDATE_PAGE_SIZE))
+        if st.session_state.get(page_key, 0) >= new_total_pages:
+            st.session_state[page_key] = max(0, new_total_pages - 1)
         st.rerun()
 
     if st.button("+ Add Candidate", key=f"{prefix}_add"):
@@ -445,6 +491,8 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
         new_cand['_uid'] = _next_candidate_uid()
         candidates.append(new_cand)
         st.session_state[state_key] = candidates
+        # Jump to the last page where the new candidate was added
+        st.session_state[page_key] = math.ceil(len(candidates) / CANDIDATE_PAGE_SIZE) - 1
         st.rerun()
 
     return candidates
@@ -654,22 +702,27 @@ def _render_pattern_selection():
     """Pattern selection UI identical to Performance tab."""
     selections = st.session_state.get("gs_selections", [])
 
+    # Generation counter to guarantee fresh widget keys after deletions
+    gen = st.session_state.get("_gs_sel_gen", 0)
+
     for idx, sel in enumerate(selections):
         c_mode, c_pt, c_prim, c_sec, c_rm = st.columns([2, 1.5, 2, 2, 0.5])
 
+        kp = f"gs_sel_g{gen}_{idx}"
+
         with c_mode:
-            mode = st.selectbox("Mode", SELECTION_MODES, key=f"gs_sel_{idx}_mode",
+            mode = st.selectbox("Mode", SELECTION_MODES, key=f"{kp}_mode",
                                 index=SELECTION_MODES.index(sel.get("mode", SELECTION_MODES[0])))
         sel["mode"] = mode
 
         with c_pt:
             need_pt = mode not in ("All Patterns",)
             if need_pt:
-                pt = st.selectbox("Type", ["Bullish", "Bearish"], key=f"gs_sel_{idx}_pt",
+                pt = st.selectbox("Type", ["Bullish", "Bearish"], key=f"{kp}_pt",
                                   index=["Bullish", "Bearish"].index(sel.get("pattern_type", "Bullish")))
             else:
                 pt = sel.get("pattern_type", "Bullish")
-                st.selectbox("Type", ["—"], key=f"gs_sel_{idx}_pt_d", disabled=True)
+                st.selectbox("Type", ["—"], key=f"{kp}_pt_d", disabled=True)
             sel["pattern_type"] = pt
 
         with c_prim:
@@ -679,11 +732,11 @@ def _render_pattern_selection():
                 prim_val = sel.get("primary") or prim_opts[0]
                 if prim_val not in prim_opts:
                     prim_val = prim_opts[0]
-                prim = st.selectbox("Primary", prim_opts, key=f"gs_sel_{idx}_prim",
+                prim = st.selectbox("Primary", prim_opts, key=f"{kp}_prim",
                                     index=prim_opts.index(prim_val))
             else:
                 prim = sel.get("primary")
-                st.selectbox("Primary", ["—"], key=f"gs_sel_{idx}_prim_d", disabled=True)
+                st.selectbox("Primary", ["—"], key=f"{kp}_prim_d", disabled=True)
             sel["primary"] = prim
 
         with c_sec:
@@ -696,18 +749,20 @@ def _render_pattern_selection():
                 sec_val = sel.get("secondary") or (sec_opts[0] if sec_opts else None)
                 if sec_val not in sec_opts:
                     sec_val = sec_opts[0] if sec_opts else None
-                sec = st.selectbox("Secondary", sec_opts, key=f"gs_sel_{idx}_sec",
+                sec = st.selectbox("Secondary", sec_opts, key=f"{kp}_sec",
                                    index=sec_opts.index(sec_val) if sec_val in sec_opts else 0)
             else:
                 sec = sel.get("secondary")
-                st.selectbox("Secondary", ["—"], key=f"gs_sel_{idx}_sec_d", disabled=True)
+                st.selectbox("Secondary", ["—"], key=f"{kp}_sec_d", disabled=True)
             sel["secondary"] = sec
 
         with c_rm:
             st.markdown("<br>", unsafe_allow_html=True)
-            if len(selections) > 1 and st.button("X", key=f"gs_sel_{idx}_rm"):
+            if len(selections) > 1 and st.button("X", key=f"{kp}_rm"):
                 selections.pop(idx)
                 st.session_state["gs_selections"] = selections
+                # Bump generation so all widget keys are fresh on next render
+                st.session_state["_gs_sel_gen"] = gen + 1
                 st.rerun()
 
     if st.button("+ Add Selection", key="gs_add_sel"):
@@ -822,20 +877,24 @@ def _render_indicator_settings():
         ema_key = f'{pfx}ema_periods'
         if ema_key not in st.session_state:
             st.session_state[ema_key] = []
+        gs_ema_gen_key = f"_gs_ema_gen_{pfx}"
+        gs_ema_gen = st.session_state.get(gs_ema_gen_key, 0)
+
         emas_to_remove = []
         for idx, ema_val in enumerate(st.session_state[ema_key]):
             lc, rc = st.columns([3, 1])
             with lc:
                 new_val = st.number_input(f"EMA {idx+1} Period", 2, 500, int(ema_val),
-                                          step=1, key=f"{pfx}ema_p_{idx}")
+                                          step=1, key=f"{pfx}ema_p_g{gs_ema_gen}_{idx}")
                 st.session_state[ema_key][idx] = new_val
             with rc:
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("X", key=f"{pfx}ema_rm_{idx}"):
+                if st.button("X", key=f"{pfx}ema_rm_g{gs_ema_gen}_{idx}"):
                     emas_to_remove.append(idx)
         if emas_to_remove:
             for i in sorted(emas_to_remove, reverse=True):
                 st.session_state[ema_key].pop(i)
+            st.session_state[gs_ema_gen_key] = gs_ema_gen + 1
             st.rerun()
         if st.button("+ Add EMA", key=f"{pfx}ema_add"):
             st.session_state[ema_key].append(20)
@@ -1128,13 +1187,15 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
 def _display_results(results, strategy_name, thresholds, sort_key, sort_descending):
     """Display filtered, sorted, paginated results with Global + per-selection breakdown."""
 
-    # Filter based on Global metrics
+    # Filter based on Global metrics — all thresholds applied dynamically
     filtered = []
     for label, global_agg, sel_results in results:
-        if (global_agg["num_trades"] >= thresholds["min_trades"]
-                and global_agg["expected_value"] >= thresholds["min_ev"]
-                and global_agg["sharpe_ratio"] >= thresholds["min_sharpe"]
-                and global_agg["sqn"] >= thresholds["min_sqn"]):
+        passes = True
+        for metric_key, threshold_val in thresholds.items():
+            if global_agg.get(metric_key, 0) < threshold_val:
+                passes = False
+                break
+        if passes:
             filtered.append((label, global_agg, sel_results))
 
     st.subheader(f"Results — {strategy_name}")
@@ -1176,10 +1237,35 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
     st.caption(f"{len(filtered)} results (Global Performance)")
     st.dataframe(df_results, use_container_width=True, hide_index=True)
 
-    # Expandable detail view for each candidate
+    # Expandable detail view for each candidate (paginated)
     st.markdown("---")
     st.subheader("Detailed Performance")
-    for idx in range(len(filtered)):
+
+    detail_page_size = PAGE_SIZE
+    total_detail_pages = max(1, math.ceil(len(filtered) / detail_page_size))
+    detail_page = st.session_state.get("_gs_detail_page", 0)
+    if detail_page >= total_detail_pages:
+        detail_page = max(0, total_detail_pages - 1)
+        st.session_state["_gs_detail_page"] = detail_page
+
+    detail_start = detail_page * detail_page_size
+    detail_end = min(detail_start + detail_page_size, len(filtered))
+
+    if len(filtered) > detail_page_size:
+        st.caption(f"Showing {detail_start + 1}–{detail_end} of {len(filtered)}")
+        dp1, dp2, dp3 = st.columns([1, 1, 1])
+        with dp1:
+            if st.button("◀ Previous", key="gs_detail_prev", disabled=detail_page == 0):
+                st.session_state["_gs_detail_page"] = detail_page - 1
+                st.rerun()
+        with dp2:
+            st.markdown(f"Page **{detail_page + 1}** / {total_detail_pages}")
+        with dp3:
+            if st.button("Next ▶", key="gs_detail_next", disabled=detail_page >= total_detail_pages - 1):
+                st.session_state["_gs_detail_page"] = detail_page + 1
+                st.rerun()
+
+    for idx in range(detail_start, detail_end):
         label, global_agg, sel_results = filtered[idx]
         with st.expander(f"**{label}**", expanded=False):
             # Build table: Global on the left + per-selection columns (if multiple)

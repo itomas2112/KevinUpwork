@@ -94,15 +94,20 @@ def render_sidebar():
     with st.sidebar.expander("Pattern Parameters", expanded=False):
         selections = st.session_state['charting_selections']
 
+        # Generation counter to guarantee fresh widget keys after deletions
+        gen = st.session_state.get("_chart_sel_gen", 0)
+
         rows_to_remove = []
         for idx, sel in enumerate(selections):
+            kp = f"chart_sel_g{gen}_{idx}"
+
             # Mode
             current_mode = sel.get("mode", "Specified Secondary")
             mode = st.selectbox(
                 "Mode",
                 CHARTING_MODES,
                 index=CHARTING_MODES.index(current_mode) if current_mode in CHARTING_MODES else 1,
-                key=f"chart_sel_{idx}_mode",
+                key=f"{kp}_mode",
             )
             selections[idx]["mode"] = mode
 
@@ -113,7 +118,7 @@ def render_sidebar():
                 "Pattern Type",
                 ptype_options,
                 index=ptype_options.index(current_ptype) if current_ptype in ptype_options else 0,
-                key=f"chart_sel_{idx}_pattern_type",
+                key=f"{kp}_pattern_type",
             )
             selections[idx]["pattern_type"] = ptype
 
@@ -128,7 +133,7 @@ def render_sidebar():
                     "Primary",
                     PRIMARY_LIST,
                     index=primary_idx,
-                    key=f"chart_sel_{idx}_primary",
+                    key=f"{kp}_primary",
                 )
                 selections[idx]["primary"] = primary
 
@@ -147,12 +152,12 @@ def render_sidebar():
                         "Secondary",
                         sec_options,
                         index=sec_idx,
-                        key=f"chart_sel_{idx}_secondary",
+                        key=f"{kp}_secondary",
                     )
                     selections[idx]["secondary"] = secondary
 
             # Delete button
-            if st.button("Remove", key=f"chart_sel_{idx}_remove", type="primary"):
+            if st.button("Remove", key=f"{kp}_remove", type="primary"):
                 rows_to_remove.append(idx)
 
             if idx < len(selections) - 1:
@@ -169,6 +174,8 @@ def render_sidebar():
                     "primary": None,
                     "secondary": None,
                 }]
+            # Bump generation so all widget keys are fresh on next render
+            st.session_state["_chart_sel_gen"] = gen + 1
             st.rerun()
 
         # Add selection button
@@ -383,6 +390,10 @@ def render_timeframe_parameters(timeframe, disabled=False):
         if cmb_state_key not in st.session_state:
             st.session_state[cmb_state_key] = []
 
+        # Generation counter to guarantee fresh widget keys after deletions
+        cmb_gen_key = f"_cmb_gen_{key_prefix}"
+        cmb_gen = st.session_state.get(cmb_gen_key, 0)
+
         # Render existing lines with remove buttons
         lines_to_remove = []
         for idx, line_val in enumerate(st.session_state[cmb_state_key]):
@@ -390,18 +401,19 @@ def render_timeframe_parameters(timeframe, disabled=False):
             with line_col:
                 new_val = st.number_input(
                     f"Line {idx + 1}", -200.0, 200.0, float(line_val), step=1.0,
-                    key=f"cmb_line_{key_prefix}_{idx}"
+                    key=f"cmb_line_{key_prefix}_g{cmb_gen}_{idx}"
                 )
                 st.session_state[cmb_state_key][idx] = new_val
             with remove_col:
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("X", key=f"cmb_rm_{key_prefix}_{idx}"):
+                if st.button("X", key=f"cmb_rm_{key_prefix}_g{cmb_gen}_{idx}"):
                     lines_to_remove.append(idx)
 
         # Remove lines (in reverse to preserve indices)
         if lines_to_remove:
             for idx in sorted(lines_to_remove, reverse=True):
                 st.session_state[cmb_state_key].pop(idx)
+            st.session_state[cmb_gen_key] = cmb_gen + 1
             st.rerun()
 
         # Add line button
@@ -477,24 +489,29 @@ def render_timeframe_parameters(timeframe, disabled=False):
         if ema_state_key not in st.session_state:
             st.session_state[ema_state_key] = []
 
+        # Generation counter to guarantee fresh widget keys after deletions
+        ema_gen_key = f"_ema_gen_{key_prefix}"
+        ema_gen = st.session_state.get(ema_gen_key, 0)
+
         emas_to_remove = []
         for idx, ema_val in enumerate(st.session_state[ema_state_key]):
             line_col, remove_col = st.columns([3, 1])
             with line_col:
                 new_val = st.number_input(
                     f"EMA {idx + 1} Period", 2, 500, int(ema_val), step=1,
-                    key=f"ema_p_{key_prefix}_{idx}",
+                    key=f"ema_p_{key_prefix}_g{ema_gen}_{idx}",
                     disabled=disabled,
                 )
                 st.session_state[ema_state_key][idx] = new_val
             with remove_col:
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("X", key=f"ema_rm_{key_prefix}_{idx}"):
+                if st.button("X", key=f"ema_rm_{key_prefix}_g{ema_gen}_{idx}"):
                     emas_to_remove.append(idx)
 
         if emas_to_remove:
             for idx in sorted(emas_to_remove, reverse=True):
                 st.session_state[ema_state_key].pop(idx)
+            st.session_state[ema_gen_key] = ema_gen + 1
             st.rerun()
 
         if st.button("+ Add EMA", key=f"ema_add_{key_prefix}"):

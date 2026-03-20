@@ -111,9 +111,14 @@ def render_strategy_testing_tab(sidebar_config):
     h_primary.markdown("**Primary**")
     h_secondary.markdown("**Secondary**")
 
+    # Generation counter to guarantee fresh widget keys after deletions
+    gen = st.session_state.get("_testing_sel_gen", 0)
+
     rows_to_remove = []
     for idx, sel in enumerate(selections):
         c_mode, c_ptype, c_primary, c_secondary, c_delete = st.columns([2, 2, 2, 2, 0.5])
+
+        kp = f"testing_sel_g{gen}_{idx}"
 
         with c_mode:
             current_mode = sel.get("mode", "All Patterns")
@@ -121,7 +126,7 @@ def render_strategy_testing_tab(sidebar_config):
                 "Mode",
                 SELECTION_MODES,
                 index=SELECTION_MODES.index(current_mode) if current_mode in SELECTION_MODES else 0,
-                key=f"testing_sel_{idx}_mode",
+                key=f"{kp}_mode",
                 label_visibility="collapsed",
             )
             selections[idx]["mode"] = mode
@@ -138,7 +143,7 @@ def render_strategy_testing_tab(sidebar_config):
                     "Pattern Type",
                     ptype_options,
                     index=ptype_options.index(current_ptype) if current_ptype in ptype_options else 0,
-                    key=f"testing_sel_{idx}_pattern_type",
+                    key=f"{kp}_pattern_type",
                     label_visibility="collapsed",
                 )
                 selections[idx]["pattern_type"] = ptype
@@ -151,7 +156,7 @@ def render_strategy_testing_tab(sidebar_config):
                     "Primary",
                     PRIMARY_LIST,
                     index=primary_idx,
-                    key=f"testing_sel_{idx}_primary",
+                    key=f"{kp}_primary",
                     label_visibility="collapsed",
                 )
                 selections[idx]["primary"] = primary
@@ -171,13 +176,13 @@ def render_strategy_testing_tab(sidebar_config):
                         "Secondary",
                         sec_options,
                         index=sec_idx,
-                        key=f"testing_sel_{idx}_secondary",
+                        key=f"{kp}_secondary",
                         label_visibility="collapsed",
                     )
                     selections[idx]["secondary"] = secondary
 
         with c_delete:
-            if st.button("X", key=f"testing_sel_{idx}_remove", type="primary"):
+            if st.button("X", key=f"{kp}_remove", type="primary"):
                 rows_to_remove.append(idx)
 
     # Remove rows
@@ -191,6 +196,8 @@ def render_strategy_testing_tab(sidebar_config):
                 "primary": None,
                 "secondary": None,
             }]
+        # Bump generation so all widget keys are fresh on next render
+        st.session_state["_testing_sel_gen"] = gen + 1
         st.rerun()
 
     # Add selection button
