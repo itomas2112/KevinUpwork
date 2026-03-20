@@ -306,7 +306,9 @@ def _render_group_set_management():
                     with ec1:
                         if st.button("Save Changes", key=f"gs_edit_{gs_type}_save", type="primary"):
                             edit_gs["candidates"] = _strip_uids(edited_candidates)
-                            update_group_set(edit_idx, edit_gs)
+                            dupes = update_group_set(edit_idx, edit_gs)
+                            if dupes:
+                                st.warning(f"{dupes} duplicate candidate(s) removed.")
                             st.session_state.pop(f"gs_editing_{gs_type}", None)
                             st.session_state.pop(f"gs_edit_{gs_type}_candidates", None)
                             st.rerun()
@@ -331,9 +333,13 @@ def _render_group_set_management():
                     try:
                         data = import_group_set(uploaded.read().decode("utf-8"))
                         data["type"] = gs_type  # force correct type
+                        dupes_removed = data.pop("_duplicates_removed", 0)
                         save_group_set(data)
                         st.session_state[last_import_key] = import_id
-                        st.success(f"Imported **{data['name']}** with {len(data['candidates'])} candidates.")
+                        msg = f"Imported **{data['name']}** with {len(data['candidates'])} candidates."
+                        if dupes_removed:
+                            msg += f" ({dupes_removed} duplicate(s) removed.)"
+                        st.success(msg)
                         st.rerun()
                     except (ValueError, Exception) as e:
                         st.error(f"Import failed: {e}")
@@ -355,10 +361,13 @@ def _render_group_set_management():
                             "type": gs_type,
                             "candidates": _strip_uids(new_candidates),
                         }
-                        save_group_set(new_gs)
+                        dupes = save_group_set(new_gs)
                         # Clear the "Create New" editor state so it resets
                         st.session_state.pop(f"gs_new_{gs_type}_candidates", None)
-                        st.success(f"Created **{new_name}** with {len(new_candidates)} candidates.")
+                        msg = f"Created **{new_name}** with {len(new_gs['candidates'])} candidates."
+                        if dupes:
+                            msg += f" ({dupes} duplicate(s) removed.)"
+                        st.success(msg)
                         st.rerun()
 
 

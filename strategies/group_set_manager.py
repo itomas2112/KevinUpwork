@@ -8,6 +8,21 @@ import os
 GROUP_SETS_FILE = "saved_group_sets.json"
 
 
+def _deduplicate_candidates(group_set):
+    """Remove duplicate candidates from a group set in-place. Returns count of removed duplicates."""
+    candidates = group_set.get("candidates", [])
+    seen = set()
+    unique = []
+    for c in candidates:
+        key = json.dumps(c, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+    removed = len(candidates) - len(unique)
+    group_set["candidates"] = unique
+    return removed
+
+
 def load_group_sets():
     """Load group sets from disk. Returns list of dicts."""
     if os.path.exists(GROUP_SETS_FILE):
@@ -26,17 +41,21 @@ def save_group_sets_to_file():
 
 
 def save_group_set(group_set):
-    """Append a group set and persist."""
+    """Append a group set (after deduplication) and persist. Returns number of duplicates removed."""
+    removed = _deduplicate_candidates(group_set)
     st.session_state.setdefault("saved_group_sets", []).append(group_set)
     save_group_sets_to_file()
+    return removed
 
 
 def update_group_set(idx, group_set):
-    """Replace a group set at index and persist."""
+    """Replace a group set at index (after deduplication) and persist. Returns number of duplicates removed."""
+    removed = _deduplicate_candidates(group_set)
     sets = st.session_state.get("saved_group_sets", [])
     if 0 <= idx < len(sets):
         sets[idx] = group_set
         save_group_sets_to_file()
+    return removed
 
 
 def delete_group_set(idx):
@@ -65,6 +84,9 @@ def import_group_set(json_str):
         raise ValueError(f"Invalid type '{data['type']}'. Must be one of: {valid_types}")
     if not isinstance(data["candidates"], list):
         raise ValueError("'candidates' must be a list.")
+    removed = _deduplicate_candidates(data)
+    if removed:
+        data["_duplicates_removed"] = removed
     return data
 
 
