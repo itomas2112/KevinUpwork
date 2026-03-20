@@ -63,12 +63,11 @@ def render_performance_tab(sidebar_config):
     # --------------------------------------------------
     # Prerequisites — only need OHLC data and DRM uploaded
     # --------------------------------------------------
-    show_1h = sidebar_config['analysis_mode'] == "1H"
-    df_key = 'df_1h' if show_1h else 'df_15m'
-    tf_label = "1H" if show_1h else "15m"
+    df_key = 'df_ohlc'
+    tf_label = st.session_state.get("_agg_timeframe", "15m")
 
     if df_key not in st.session_state:
-        st.info(f"Please upload {tf_label} OHLC data in the Charting tab first.")
+        st.info("Please upload OHLC data in the Charting tab first.")
         return
 
     drm_bullish = st.session_state.get('drm_bullish')

@@ -785,19 +785,14 @@ def _render_persistent_chart(fig, config, chart_key, height, draw_mode):
 
 
 def render_charts(
-    df_slice_1h,
-    df_slice_15m,
-    start_1h,
-    end_1h,
-    start_15m,
-    end_15m,
+    df_slice,
+    period_start,
+    period_end,
     show_ichimoku,
     show_bb,
     show_kc,
     show_strategy,
-    rsi_zones_1h=None,
-    rsi_zones_15m=None,
-    show_1h=True,
+    chart_params=None,
     chart_key=None,
     draw_mode=False,
     chart_height=920,
@@ -816,8 +811,7 @@ def render_charts(
     show_psar=False,
 ):
     """Renders charts."""
-    rsi_zones_1h = rsi_zones_1h or {}
-    rsi_zones_15m = rsi_zones_15m or {}
+    chart_params = chart_params or {}
 
     panel_kwargs = dict(
         show_rsi=show_rsi, show_cmb=show_cmb, show_stoch=show_stoch,
@@ -831,29 +825,14 @@ def render_charts(
     if draw_mode:
         config["modeBarButtonsToAdd"] = ["drawrect", "eraseshape"]
 
-    chart_html = None
-    if show_1h:
-        st.subheader("1H Chart")
-        fig_1h = build_main_chart(
-            df_slice=df_slice_1h, period_start=start_1h, period_end=end_1h,
-            show_ichimoku=show_ichimoku, show_bb=show_bb, show_kc=show_kc,
-            show_strategy=show_strategy, draw_mode=draw_mode,
-            chart_height=chart_height, chart_key=chart_key,
-            **panel_kwargs, **(rsi_zones_1h or {}),
-        )
-        chart_html = _render_persistent_chart(fig_1h, config,
-                                 f"1h_{chart_key}" if chart_key else "1h",
-                                 chart_height, draw_mode)
-    else:
-        st.subheader("15m Chart")
-        fig_15m = build_main_chart(
-            df_slice=df_slice_15m, period_start=start_15m, period_end=end_15m,
-            show_ichimoku=show_ichimoku, show_bb=show_bb, show_kc=show_kc,
-            show_strategy=show_strategy, draw_mode=draw_mode,
-            chart_height=chart_height, chart_key=chart_key,
-            **panel_kwargs, **(rsi_zones_15m or {}),
-        )
-        chart_html = _render_persistent_chart(fig_15m, config,
-                                 f"15m_{chart_key}" if chart_key else "15m",
-                                 chart_height, draw_mode)
+    fig = build_main_chart(
+        df_slice=df_slice, period_start=period_start, period_end=period_end,
+        show_ichimoku=show_ichimoku, show_bb=show_bb, show_kc=show_kc,
+        show_strategy=show_strategy, draw_mode=draw_mode,
+        chart_height=chart_height, chart_key=chart_key,
+        **panel_kwargs, **chart_params,
+    )
+    chart_html = _render_persistent_chart(fig, config,
+                             f"chart_{chart_key}" if chart_key else "chart",
+                             chart_height, draw_mode)
     return chart_html

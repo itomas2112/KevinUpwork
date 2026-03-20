@@ -73,7 +73,7 @@ def _get_or_calculate(raw_df_key, features_key, params_key, current_params,
     return df_features
 
 
-def _build_charting_fingerprint(sidebar_config, show_1h):
+def _build_charting_fingerprint(sidebar_config):
     """Build a fingerprint of all inputs that affect charting output.
 
     When this fingerprint differs from the last calculated one, the user
@@ -89,8 +89,7 @@ def _build_charting_fingerprint(sidebar_config, show_1h):
                          'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
                          'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
 
-    params_key = 'params_1h' if show_1h else 'params_15m'
-    indicator_params = {k: v for k, v in sidebar_config[params_key].items() if k not in display_only_keys}
+    indicator_params = {k: v for k, v in sidebar_config['params'].items() if k not in display_only_keys}
 
     # Include strategy settings
     strategy_settings = None
@@ -111,8 +110,8 @@ def _build_charting_fingerprint(sidebar_config, show_1h):
 
     # Include display-only keys (RSI zones, visibility toggles) so toggling
     # a line also triggers the recalculate bar
-    display_params = {k: sidebar_config[params_key].get(k) for k in display_only_keys
-                      if k in sidebar_config[params_key]}
+    display_params = {k: sidebar_config['params'].get(k) for k in display_only_keys
+                      if k in sidebar_config['params']}
     display_str = json.dumps(display_params, sort_keys=True, default=str)
 
     overlay_keys = ('show_ichimoku', 'show_bb', 'show_kc', 'show_donchian', 'show_psar',
@@ -131,13 +130,11 @@ def _build_charting_fingerprint(sidebar_config, show_1h):
 def render_charting_tab(sidebar_config):
     """Render the charting tab content"""
 
-    show_1h = sidebar_config['analysis_mode'] == "1H"
-
     # File uploaders
-    render_file_uploaders(show_1h)
+    render_file_uploaders()
 
     # Check if data is loaded
-    if not check_data_loaded(show_1h):
+    if not check_data_loaded():
         return
 
     # Require date range before proceeding
@@ -163,7 +160,7 @@ def render_charting_tab(sidebar_config):
     # Build a fingerprint of the current inputs.  When it differs from
     # the last-calculated fingerprint, show a sticky "Recalculate" bar
     # instead of re-running the expensive pipeline automatically.
-    current_fp = _build_charting_fingerprint(sidebar_config, show_1h)
+    current_fp = _build_charting_fingerprint(sidebar_config)
     last_calc_fp = st.session_state.get('_charting_calc_fp')
 
     calculate_clicked = st.button("Calculate", key="charting_calculate", type="primary")
@@ -183,7 +180,7 @@ def render_charting_tab(sidebar_config):
         # Show cached charting results without recalculating
         cached = st.session_state.get('_charting_cached_output')
         if cached:
-            _display_cached_output(cached, sidebar_config, show_1h)
+            _display_cached_output(cached, sidebar_config)
             return
 
     # ── Expensive pipeline (only runs on Calculate click) ────────────
@@ -217,37 +214,23 @@ def render_charting_tab(sidebar_config):
                          'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
                          'dc_show_upper', 'dc_show_middle', 'dc_show_lower'}
 
-    df_features_1h = None
-    df_features_15m = None
-    indicator_params_1h = None
-    indicator_params_15m = None
     g_start = sidebar_config.get('global_start_date')
     g_end = sidebar_config.get('global_end_date')
-    if show_1h:
-        indicator_params_1h = {k: v for k, v in sidebar_config['params_1h'].items() if k not in display_only_keys}
-        if strategy_indicator_settings:
-            indicator_params_1h.update(strategy_indicator_settings)
-        df_features_1h = _get_or_calculate(
-            "df_1h", "df_features_1h", "_indicator_params_1h", indicator_params_1h,
-            global_start_date=g_start, global_end_date=g_end,
-        )
-    else:
-        indicator_params_15m = {k: v for k, v in sidebar_config['params_15m'].items() if k not in display_only_keys}
-        if strategy_indicator_settings:
-            indicator_params_15m.update(strategy_indicator_settings)
-        df_features_15m = _get_or_calculate(
-            "df_15m", "df_features_15m", "_indicator_params_15m", indicator_params_15m,
-            global_start_date=g_start, global_end_date=g_end,
-        )
+    indicator_params = {k: v for k, v in sidebar_config['params'].items() if k not in display_only_keys}
+    if strategy_indicator_settings:
+        indicator_params.update(strategy_indicator_settings)
+    df_features = _get_or_calculate(
+        "df_ohlc", "df_features", "_indicator_params", indicator_params,
+        global_start_date=g_start, global_end_date=g_end,
+    )
 
     # Collect stats from all periods for global aggregation
-    all_stats_1h = []
-    all_stats_15m = []
+    all_stats = []
     strategy_label = None
     total_periods = 0
 
     # Build backtest cache fingerprint — invalidate when strategy or params change
-    active_indicator_params = indicator_params_1h if show_1h else indicator_params_15m
+    active_indicator_params = indicator_params
     bt_fingerprint = _backtest_fingerprint(
         selected_custom_strategy, active_indicator_params,
         show_ichimoku=sidebar_config['show_ichimoku'],
@@ -271,8 +254,7 @@ def render_charting_tab(sidebar_config):
     # Collect rendered output for caching
     cached_output = {
         'combo_sections': [],
-        'all_stats_1h': [],
-        'all_stats_15m': [],
+        'all_stats': [],
         'strategy_label': None,
         'total_periods': 0,
     }
@@ -301,13 +283,12 @@ def render_charting_tab(sidebar_config):
 
         for i, (start_dt, end_dt) in enumerate(drm_periods, start=1):
             chart_key = f"{pattern_type}_{primary}_{secondary}_{i}"
-            stats_1h, stats_15m = render_period(
+            stats = render_period(
                 i, start_dt, end_dt,
-                df_features_1h, df_features_15m,
+                df_features,
                 sidebar_config,
                 show_custom_strategy,
                 selected_custom_strategy,
-                show_1h,
                 chart_key=chart_key,
             )
 
@@ -317,10 +298,8 @@ def render_charting_tab(sidebar_config):
                 'chart_key': chart_key,
             })
 
-            if stats_1h is not None:
-                all_stats_1h.append(stats_1h)
-            if stats_15m is not None:
-                all_stats_15m.append(stats_15m)
+            if stats is not None:
+                all_stats.append(stats)
 
         cached_output['combo_sections'].append(section)
         total_periods += len(drm_periods)
@@ -329,14 +308,12 @@ def render_charting_tab(sidebar_config):
         strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
 
     # Render global performance summary at the top
-    has_stats = bool(all_stats_1h) if show_1h else bool(all_stats_15m)
-    if has_stats:
+    if all_stats:
         with global_perf_container:
-            render_global_performance(all_stats_1h, all_stats_15m, strategy_label, total_periods, show_1h)
+            render_global_performance(all_stats, strategy_label, total_periods)
 
     # Cache the output and fingerprint
-    cached_output['all_stats_1h'] = all_stats_1h
-    cached_output['all_stats_15m'] = all_stats_15m
+    cached_output['all_stats'] = all_stats
     cached_output['strategy_label'] = strategy_label
     cached_output['total_periods'] = total_periods
     cached_output['show_custom_strategy'] = show_custom_strategy
@@ -346,10 +323,9 @@ def render_charting_tab(sidebar_config):
     st.session_state['_charting_calc_fp'] = current_fp
 
 
-def _display_cached_output(cached, sidebar_config, show_1h):
+def _display_cached_output(cached, sidebar_config):
     """Display charts from cached HTML strings — no chart construction or data processing."""
-    all_stats_1h = cached.get('all_stats_1h', [])
-    all_stats_15m = cached.get('all_stats_15m', [])
+    all_stats = cached.get('all_stats', [])
     strategy_label = cached.get('strategy_label')
     total_periods = cached.get('total_periods', 0)
     show_custom_strategy = cached.get('show_custom_strategy', False)
@@ -386,10 +362,7 @@ def _display_cached_output(cached, sidebar_config, show_1h):
                     with col_charts:
                         _components.html(html_str, height=chart_height, scrolling=False)
                     with col_stats:
-                        render_strategy_stats(
-                            stats_data if show_1h else None,
-                            stats_data if not show_1h else None,
-                            strat_label, show_1h)
+                        render_strategy_stats(stats_data, strat_label)
                 else:
                     _components.html(html_str, height=chart_height, scrolling=False)
             else:
@@ -398,10 +371,9 @@ def _display_cached_output(cached, sidebar_config, show_1h):
             st.divider()
 
     # Render global performance summary
-    has_stats = bool(all_stats_1h) if show_1h else bool(all_stats_15m)
-    if has_stats:
+    if all_stats:
         with global_perf_container:
-            render_global_performance(all_stats_1h, all_stats_15m, strategy_label, total_periods, show_1h)
+            render_global_performance(all_stats, strategy_label, total_periods)
 
 
 def _inject_sticky_recalculate_bar():
@@ -435,31 +407,27 @@ def _inject_sticky_recalculate_bar():
     """, unsafe_allow_html=True)
 
 
-def render_file_uploaders(show_1h=False):
+def render_file_uploaders():
     """Render file upload section"""
     col_data, col_drm = st.columns([1, 1], gap="small")
 
     with col_data:
-        if show_1h:
-            uploaded_file_1h = st.file_uploader(
-                "1H OHLC", type=["csv"], key="1h", label_visibility="collapsed"
-            )
-            st.caption("1H OHLC (.csv)")
+        uploaded_file = st.file_uploader(
+            "15m OHLC", type=["csv"], key="ohlc_upload", label_visibility="collapsed"
+        )
+        st.caption("15m OHLC (.csv)")
 
-            if uploaded_file_1h is not None:
-                df_1h = load_ohlc(uploaded_file_1h)
-                st.session_state["df_1h"] = df_1h
-                st.success("1H data loaded")
-        else:
-            uploaded_file_15m = st.file_uploader(
-                "15m OHLC", type=["csv"], key="15m", label_visibility="collapsed"
-            )
-            st.caption("15m OHLC (.csv)")
-
-            if uploaded_file_15m is not None:
-                df_15m = load_ohlc(uploaded_file_15m)
-                st.session_state["df_15m"] = df_15m
-                st.success("15m data loaded")
+        if uploaded_file is not None:
+            df_raw = load_ohlc(uploaded_file)
+            st.session_state["df_raw"] = df_raw
+            # Apply current aggregation (default 15m = just a copy)
+            from data.loader import resample_ohlc
+            agg_tf = st.session_state.get("_agg_timeframe", "15m")
+            st.session_state["df_ohlc"] = resample_ohlc(df_raw, agg_tf)
+            # Clear indicator caches
+            for k in ["df_features", "_indicator_params", "_indicator_params_data_fp"]:
+                st.session_state.pop(k, None)
+            st.success(f"Data loaded ({agg_tf})")
 
     with col_drm:
         uploaded_drm = st.file_uploader(
@@ -487,16 +455,11 @@ def render_file_uploaders(show_1h=False):
 
             st.success("Date Range Manager loaded")
 
-def check_data_loaded(show_1h=False):
+def check_data_loaded():
     """Check if all required data is loaded"""
-    if show_1h:
-        if "df_1h" not in st.session_state:
-            st.info("Please upload 1H data file and DRM file.")
-            return False
-    else:
-        if "df_15m" not in st.session_state:
-            st.info("Please upload 15m data file and DRM file.")
-            return False
+    if "df_ohlc" not in st.session_state:
+        st.info("Please upload 15m OHLC data file and DRM file.")
+        return False
 
     drm_bullish = st.session_state.get('drm_bullish')
     drm_bearish = st.session_state.get('drm_bearish')
@@ -507,42 +470,28 @@ def check_data_loaded(show_1h=False):
     return True
 
 
-def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
-                  sidebar_config, show_custom_strategy, selected_custom_strategy, show_1h=True,
+def render_period(period_num, start_dt, end_dt, df_features,
+                  sidebar_config, show_custom_strategy, selected_custom_strategy,
                   chart_key=None):
-    """Render a single period with charts and stats. Returns (stats_1h, stats_15m) or (None, None)."""
+    """Render a single period with charts and stats. Returns stats or None."""
 
     st.markdown(f"### Period {period_num}: {start_dt} → {end_dt}")
 
-    # Slice data for the active timeframe only
-    df_slice_1h, period_start_1h, period_end_1h = None, None, None
-    df_slice_15m, period_start_15m, period_end_15m = None, None, None
-    if show_1h:
-        df_slice_1h, period_start_1h, period_end_1h = slice_for_graph(
-            df=df_features_1h, start_date=start_dt, end_date=end_dt,
-            show_ichimoku=sidebar_config['show_ichimoku'],
-            show_bb=sidebar_config['show_bb'],
-            show_kc=sidebar_config['show_kc'],
-            show_donchian=sidebar_config.get('show_donchian', False),
-            show_psar=sidebar_config.get('show_psar', False),
-        )
-    else:
-        df_slice_15m, period_start_15m, period_end_15m = slice_for_graph(
-            df=df_features_15m, start_date=start_dt, end_date=end_dt,
-            show_ichimoku=sidebar_config['show_ichimoku'],
-            show_bb=sidebar_config['show_bb'],
-            show_kc=sidebar_config['show_kc'],
-            show_donchian=sidebar_config.get('show_donchian', False),
-            show_psar=sidebar_config.get('show_psar', False),
-        )
+    df_slice, period_start, period_end = slice_for_graph(
+        df=df_features, start_date=start_dt, end_date=end_dt,
+        show_ichimoku=sidebar_config['show_ichimoku'],
+        show_bb=sidebar_config['show_bb'],
+        show_kc=sidebar_config['show_kc'],
+        show_donchian=sidebar_config.get('show_donchian', False),
+        show_psar=sidebar_config.get('show_psar', False),
+    )
 
-    active_slice = df_slice_1h if show_1h else df_slice_15m
-    if active_slice.empty:
+    if df_slice.empty:
         st.info("No data for this period.")
-        return None, None
+        return None
 
     # Execute strategies (with caching)
-    stats_1h, stats_15m = None, None
+    stats = None
     strategy_label = None
 
     if show_custom_strategy and selected_custom_strategy is not None:
@@ -550,25 +499,15 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
         cache_hit = chart_key in bt_cache
 
         if cache_hit:
-            # Use cached backtest results
-            cached_df, cached_stats = bt_cache[chart_key]
-            if show_1h:
-                df_slice_1h, stats_1h = cached_df, cached_stats
-            else:
-                df_slice_15m, stats_15m = cached_df, cached_stats
+            df_slice, stats = bt_cache[chart_key]
         else:
-            # Run backtest and cache results
-            if show_1h:
-                df_slice_1h, stats_1h = execute_custom_strategy(df_slice_1h, selected_custom_strategy, period_start_1h, period_end_1h)
-                bt_cache[chart_key] = (df_slice_1h, stats_1h)
-            else:
-                df_slice_15m, stats_15m = execute_custom_strategy(df_slice_15m, selected_custom_strategy, period_start_15m, period_end_15m)
-                bt_cache[chart_key] = (df_slice_15m, stats_15m)
+            df_slice, stats = execute_custom_strategy(df_slice, selected_custom_strategy, period_start, period_end)
+            bt_cache[chart_key] = (df_slice, stats)
             st.session_state['_bt_cache'] = bt_cache
 
         strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')
 
-    # RSI zone and CMB line parameters per timeframe
+    # Chart display parameters
     chart_param_keys = ['rsi_upper_1', 'rsi_upper_2', 'rsi_lower_1', 'rsi_lower_2',
                         'cmb_lines',
                         'ichi_show_tenkan', 'ichi_show_kijun', 'ichi_show_senkou_a',
@@ -579,13 +518,11 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                         'kc_show_upper', 'kc_show_middle', 'kc_show_lower',
                         'dc_show_upper', 'dc_show_middle', 'dc_show_lower',
                         'ema_periods']
-    rsi_zones_1h = {k: sidebar_config['params_1h'][k] for k in chart_param_keys} if show_1h else None
-    rsi_zones_15m = {k: sidebar_config['params_15m'][k] for k in chart_param_keys} if not show_1h else None
+    chart_params = {k: sidebar_config['params'][k] for k in chart_param_keys}
 
     # Render charts
     draw_mode = sidebar_config.get('draw_mode', False)
-    active_stats = stats_1h if show_1h else stats_15m
-    show_strategy = show_custom_strategy and active_stats is not None
+    show_strategy = show_custom_strategy and stats is not None
 
     panel_kwargs = {k: sidebar_config[k] for k in
                     ['show_rsi', 'show_cmb', 'show_stoch', 'show_adx', 'show_atr',
@@ -593,15 +530,12 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
                      'show_donchian', 'show_psar']}
 
     chart_kwargs = dict(
-        df_slice_1h=df_slice_1h, df_slice_15m=df_slice_15m,
-        start_1h=period_start_1h, end_1h=period_end_1h,
-        start_15m=period_start_15m, end_15m=period_end_15m,
+        df_slice=df_slice,
+        period_start=period_start, period_end=period_end,
         show_ichimoku=sidebar_config['show_ichimoku'],
         show_bb=sidebar_config['show_bb'],
         show_kc=sidebar_config['show_kc'],
-        rsi_zones_1h=rsi_zones_1h,
-        rsi_zones_15m=rsi_zones_15m,
-        show_1h=show_1h,
+        chart_params=chart_params,
         chart_key=chart_key,
         draw_mode=draw_mode,
         chart_height=sidebar_config['chart_height'],
@@ -615,7 +549,7 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
             chart_html = render_charts(show_strategy=True, **chart_kwargs)
 
         with col_stats:
-            render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h)
+            render_strategy_stats(stats, strategy_label)
     else:
         chart_html = render_charts(show_strategy=False, **chart_kwargs)
 
@@ -623,51 +557,49 @@ def render_period(period_num, start_dt, end_dt, df_features_1h, df_features_15m,
     html_cache = st.session_state.get('_charting_html_cache', {})
     html_cache[chart_key] = {
         'html': chart_html,
-        'stats': active_stats,
+        'stats': stats,
         'strategy_label': strategy_label,
     }
     st.session_state['_charting_html_cache'] = html_cache
 
     st.divider()
 
-    return stats_1h, stats_15m
+    return stats
 
 
-def render_strategy_stats(stats_1h, stats_15m, strategy_label, show_1h=True):
+def render_strategy_stats(stats, strategy_label):
     """Render strategy statistics table"""
     st.subheader("Strategy Statistics")
 
     if strategy_label:
         st.caption(f"**{strategy_label}**")
 
-    def _format_stats(stats):
-        n = int(stats.loc['Number of trades', 'value'])
-        win_rate = stats.loc['Win rate (%)', 'value']
+    def _format_stats(s):
+        n = int(s.loc['Number of trades', 'value'])
+        win_rate = s.loc['Win rate (%)', 'value']
         wins = round(n * win_rate / 100) if n > 0 else 0
         losses = n - wins
-        total_win = stats.loc['Winning trades P&L (R)', 'value']
-        total_lose = stats.loc['Losing trades P&L (R)', 'value']
+        total_win = s.loc['Winning trades P&L (R)', 'value']
+        total_lose = s.loc['Losing trades P&L (R)', 'value']
         avg_profit = total_win / wins if wins > 0 else 0.0
         avg_loss = total_lose / losses if losses > 0 else 0.0
         return [
             f"{n}",
             f"{round(win_rate):.0f}%",
-            f"{round(stats.loc['Loss rate (%)', 'value']):.0f}%",
+            f"{round(s.loc['Loss rate (%)', 'value']):.0f}%",
             f"{avg_profit:.2f}R",
             f"{avg_loss:.2f}R",
-            f"{stats.loc['Total P&L (R)', 'value']:.2f}R",
-            f"{round(stats.loc['Target exit (%)', 'value']):.0f}%",
-            f"{round(stats.loc['Static exit (%)', 'value']):.0f}%",
-            f"{round(stats.loc['Dynamic exit (%)', 'value']):.0f}%",
-            f"{stats.loc['Sharpe Ratio', 'value']:.2f}",
-            f"{stats.loc['MAR Ratio', 'value']:.2f}",
-            f"{stats.loc['SQN', 'value']:.2f}",
+            f"{s.loc['Total P&L (R)', 'value']:.2f}R",
+            f"{round(s.loc['Target exit (%)', 'value']):.0f}%",
+            f"{round(s.loc['Static exit (%)', 'value']):.0f}%",
+            f"{round(s.loc['Dynamic exit (%)', 'value']):.0f}%",
+            f"{s.loc['Sharpe Ratio', 'value']:.2f}",
+            f"{s.loc['MAR Ratio', 'value']:.2f}",
+            f"{s.loc['SQN', 'value']:.2f}",
         ]
 
-    if show_1h:
-        data = {"1H": _format_stats(stats_1h)}
-    else:
-        data = {"15m": _format_stats(stats_15m)}
+    tf_label = st.session_state.get("_agg_timeframe", "15m")
+    data = {tf_label: _format_stats(stats)}
 
     stats_table = pd.DataFrame(
         data,
@@ -801,7 +733,7 @@ def _aggregate_stats(all_stats):
     }
 
 
-def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_periods, show_1h=True):
+def render_global_performance(all_stats, strategy_label, num_periods):
     """Render the global performance summary across all date ranges"""
 
     st.markdown("---")
@@ -828,12 +760,9 @@ def render_global_performance(all_stats_1h, all_stats_15m, strategy_label, num_p
             f"{agg['sqn']:.2f}",
         ]
 
-    if show_1h:
-        agg = _aggregate_stats(all_stats_1h)
-        data = {"1H": _format_agg(agg)}
-    else:
-        agg = _aggregate_stats(all_stats_15m)
-        data = {"15m": _format_agg(agg)}
+    tf_label = st.session_state.get("_agg_timeframe", "15m")
+    agg = _aggregate_stats(all_stats)
+    data = {tf_label: _format_agg(agg)}
 
     global_table = pd.DataFrame(
         data,

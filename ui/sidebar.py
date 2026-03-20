@@ -18,14 +18,31 @@ CHARTING_MODES = [
 def render_sidebar():
     """Render the complete sidebar with all controls"""
 
-    # Analysis Mode Toggle
-    analysis_mode = st.sidebar.radio(
-        "Analysis Mode",
-        options=["15m", "1H"],
-        index=0,
-        key="analysis_mode",
-        horizontal=True,
-    )
+    # Historical Data Aggregation
+    with st.sidebar.expander("Historical Data Aggregation", expanded=False):
+        agg_options = ["15m", "1H", "4H", "1D"]
+        current_agg = st.session_state.get("_agg_timeframe", "15m")
+        agg_tf = st.selectbox("Timeframe", agg_options,
+                               index=agg_options.index(current_agg) if current_agg in agg_options else 0,
+                               key="agg_tf_select")
+        if st.button("Apply", key="agg_apply"):
+            if "df_raw" in st.session_state:
+                from data.loader import resample_ohlc
+                st.session_state["df_ohlc"] = resample_ohlc(st.session_state["df_raw"], agg_tf)
+                st.session_state["_agg_timeframe"] = agg_tf
+                # Clear indicator caches so they recompute on new timeframe
+                for k in ["df_features", "_indicator_params", "_indicator_params_data_fp"]:
+                    st.session_state.pop(k, None)
+                # Clear backtest caches
+                for k in list(st.session_state.keys()):
+                    if k.startswith("_bt_cache_") or k.startswith("_perf_") or k.startswith("_gs_") or k.startswith("_cv_") or k.startswith("_test_"):
+                        st.session_state.pop(k, None)
+                st.success(f"Data aggregated to **{agg_tf}**")
+                st.rerun()
+            else:
+                st.warning("Upload OHLC data first.")
+        if st.session_state.get("_agg_timeframe", "15m") != "15m":
+            st.caption(f"Currently using: **{st.session_state['_agg_timeframe']}**")
 
     # Training Set — required before any calculations
     with st.sidebar.expander("Training Set", expanded=False):
@@ -293,12 +310,10 @@ def render_sidebar():
 
     # Indicator Parameters
     # In strategy mode, sidebar settings are disabled — strategy's saved settings are used
-    show_1h = analysis_mode == "1H"
-    params_1h = render_timeframe_parameters("1H", disabled=strategy_active) if show_1h else None
-    params_15m = render_timeframe_parameters("15m", disabled=strategy_active) if not show_1h else None
+    tf_label = st.session_state.get("_agg_timeframe", "15m")
+    params = render_timeframe_parameters(tf_label, disabled=strategy_active)
 
     return {
-        'analysis_mode': analysis_mode,
         'global_start_date': global_start_date,
         'global_end_date': global_end_date,
         'date_range_applied': st.session_state.get('date_range_applied', False),
@@ -321,8 +336,7 @@ def render_sidebar():
         'show_tenkan_kijun': show_tenkan_kijun,
         'draw_mode': draw_mode,
         'chart_height': chart_height,
-        'params_1h': params_1h,
-        'params_15m': params_15m,
+        'params': params,
         'test_start_date': test_start_date,
         'test_end_date': test_end_date,
         'test_set_applied': st.session_state.get('test_set_applied', False),

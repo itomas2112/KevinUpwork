@@ -68,8 +68,7 @@ def render_grid_search_tab(sidebar_config):
     st.subheader("Grid Search")
 
     # ── Data checks ─────────────────────────────────────
-    show_1h = sidebar_config["analysis_mode"] == "1H"
-    df_key = "df_1h" if show_1h else "df_15m"
+    df_key = "df_ohlc"
     if df_key not in st.session_state:
         st.info("Please upload OHLC data in the Charting tab.")
         return
@@ -229,7 +228,7 @@ def render_grid_search_tab(sidebar_config):
     if calculate_clicked:
         results = _run_grid_search(
             selected_strategy, search_group, search_set, condition_candidates,
-            sidebar_config, show_1h, df_key)
+            sidebar_config)
         fp = _build_cache_fingerprint(selected_strategy, search_group,
                                        search_set, condition_candidates)
         sel_labels = [selection_label(s) for s in st.session_state.get("gs_selections", [])]
@@ -925,7 +924,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
 # ======================================================================
 
 def _run_grid_search(selected_strategy, search_group, search_set,
-                     condition_candidates, sidebar_config, show_1h, df_key):
+                     condition_candidates, sidebar_config):
     """Run backtests for all candidate runs.
 
     Returns list of (label, global_agg, selection_results) where
@@ -947,7 +946,7 @@ def _run_grid_search(selected_strategy, search_group, search_set,
     g_end = sidebar_config.get("global_end_date")
 
     df_full = _get_or_calculate(
-        df_key, "_gs_features", "_gs_params",
+        "df_ohlc", "_gs_features", "_gs_params",
         indicator_params, global_start_date=g_start, global_end_date=g_end)
 
     if df_full.empty:
