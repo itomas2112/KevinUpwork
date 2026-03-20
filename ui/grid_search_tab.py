@@ -15,14 +15,12 @@ from data.loader import parse_drm_periods
 from data.helpers import (PRIMARY_SECONDARY_MAP, PRIMARY_LIST,
                           ALL_UNIQUE_SECONDARIES, expand_selection, selection_label)
 from indicators.calculate_indicators import slice_for_graph, migrate_indicator_settings
-from strategies.first_strategy import execute_custom_strategy
-from strategies.first_strategy_numpy import execute_custom_strategy_numpy as _execute_numpy
 from strategies.group_set_manager import (
     load_group_sets, save_group_set, update_group_set, delete_group_set,
     export_group_set, import_group_set, get_group_sets_by_type,
     save_group_sets_to_file,
 )
-from ui.charting_tab import _aggregate_stats, _get_or_calculate
+from ui.charting_tab import _get_or_calculate
 from ui.performance_tab import (_DEFAULT_INDICATOR_PARAMS, SELECTION_MODES,
                                  _build_metrics_table, _copy_to_clipboard, _empty_agg)
 from ui.grid_search_helpers import (
@@ -216,13 +214,8 @@ def render_grid_search_tab(sidebar_config):
     st.markdown("---")
 
     # ── Section G: Calculate + Results ──────────────────
-    calc_col1, calc_col2 = st.columns(2)
-    with calc_col1:
-        calculate_clicked = st.button("Calculate", key="gs_calculate", type="primary")
-    with calc_col2:
-        calculate_numpy_clicked = st.button("Calculate (NumPy) ⚡", key="gs_calculate_numpy",
-                                             type="secondary",
-                                             help="Faster engine using NumPy arrays instead of Pandas .iloc")
+    calculate_clicked = st.button("Calculate", key="gs_calculate", type="primary")
+    st.caption("To stop a running calculation, click the **Stop** button (top-right corner) or refresh the page.")
 
     # Cache invalidation
     cached = st.session_state.get("_gs_cached_results")
@@ -233,15 +226,12 @@ def render_grid_search_tab(sidebar_config):
             st.session_state.pop("_gs_cached_results", None)
             cached = None
 
-    any_calc = calculate_clicked or calculate_numpy_clicked
-    if any_calc:
-        use_numpy = calculate_numpy_clicked
+    if calculate_clicked:
         results = _run_grid_search(
             selected_strategy, search_group, search_set, condition_candidates,
-            sidebar_config, show_1h, df_key, use_numpy=use_numpy)
+            sidebar_config, show_1h, df_key)
         fp = _build_cache_fingerprint(selected_strategy, search_group,
                                        search_set, condition_candidates)
-        # Include selection labels in fingerprint for cache invalidation on selection change
         sel_labels = [selection_label(s) for s in st.session_state.get("gs_selections", [])]
         st.session_state["_gs_cached_results"] = {
             "fingerprint": fp,
@@ -254,7 +244,7 @@ def render_grid_search_tab(sidebar_config):
     if cached and cached.get("results"):
         _display_results(cached["results"], cached["strategy_name"],
                          thresholds, sort_key, sort_descending)
-    elif not any_calc:
+    elif not calculate_clicked:
         st.info("Configure search and click **Calculate** to run.")
 
 
@@ -935,8 +925,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
 # ======================================================================
 
 def _run_grid_search(selected_strategy, search_group, search_set,
-                     condition_candidates, sidebar_config, show_1h, df_key,
-                     use_numpy=False):
+                     condition_candidates, sidebar_config, show_1h, df_key):
     """Run backtests for all candidate runs.
 
     Returns list of (label, global_agg, selection_results) where
@@ -1009,12 +998,7 @@ def _run_grid_search(selected_strategy, search_group, search_set,
 
         selection_combo_map[label] = sel_combo_keys
 
-    # Flatten all unique period slices
-    all_unique_slices = []
-    for ck in global_combo_keys:
-        all_unique_slices.extend(combo_slices[ck])
-
-    if not all_unique_slices:
+    if not any(combo_slices[ck] for ck in global_combo_keys):
         st.warning("No valid DRM periods found for selected patterns.")
         return []
 
@@ -1030,56 +1014,9 @@ def _run_grid_search(selected_strategy, search_group, search_set,
         st.warning("No run configurations generated.")
         return []
 
-    # ==================================================================
-    # NumPy path: multiprocessing across CPU cores
-    # ==================================================================
-    if use_numpy:
-        return _run_grid_search_multiprocessing(
-            run_configs, combo_slices, global_combo_keys,
-            selection_combo_map)
-
-    # ==================================================================
-    # Original path: single-threaded
-    # ==================================================================
-    total = len(run_configs) * len(all_unique_slices)
-    progress = st.progress(0, text="Running grid search...")
-    done = 0
-    progress_interval = max(1, total // 200)
-
-    results = []
-    for run_idx, (label, strategy) in enumerate(run_configs):
-        combo_stats_cache = {}
-        for combo_key in global_combo_keys:
-            combo_stats = []
-            for df_slice, ps, pe in combo_slices[combo_key]:
-                try:
-                    _, stats = execute_custom_strategy(df_slice.copy(), strategy, ps, pe)
-                    if stats is not None:
-                        combo_stats.append(stats)
-                except Exception:
-                    pass
-                done += 1
-                if done % progress_interval == 0 or done == total:
-                    progress.progress(done / total,
-                                      text=f"Run {run_idx+1}/{len(run_configs)}")
-            combo_stats_cache[combo_key] = combo_stats
-
-        global_stats = []
-        for ck in global_combo_keys:
-            global_stats.extend(combo_stats_cache[ck])
-        global_agg = _aggregate_stats(global_stats) if global_stats else _empty_agg()
-
-        sel_results = OrderedDict()
-        for sel_label, sel_combo_keys in selection_combo_map.items():
-            sel_stats = []
-            for ck in sel_combo_keys:
-                sel_stats.extend(combo_stats_cache[ck])
-            sel_results[sel_label] = _aggregate_stats(sel_stats) if sel_stats else _empty_agg()
-
-        results.append((label, global_agg, sel_results))
-
-    progress.empty()
-    return results
+    return _run_grid_search_multiprocessing(
+        run_configs, combo_slices, global_combo_keys,
+        selection_combo_map)
 
 
 def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_keys,
@@ -1110,9 +1047,8 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
             initializer=init_worker,
             initargs=(combo_slices_dict, combo_keys_list)
         ) as pool:
-            # imap_unordered yields results as they complete
             completed = 0
-            candidate_results = {}  # idx -> (label, combo_results)
+            candidate_results = {}
 
             for idx, label, combo_results in pool.imap_unordered(run_candidate, tasks):
                 candidate_results[idx] = (label, combo_results)
@@ -1203,27 +1139,13 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
     tsv_data = df_results.to_csv(sep='\t', index=False)
     _copy_to_clipboard(tsv_data, key="gs_copy_results")
 
-    # Pagination
-    total_pages = max(1, math.ceil(len(filtered) / PAGE_SIZE))
-    if total_pages > 1:
-        page = st.number_input("Page", min_value=1, max_value=total_pages, value=1,
-                               step=1, key="gs_page")
-    else:
-        page = 1
+    st.caption(f"{len(filtered)} results (Global Performance)")
+    st.dataframe(df_results, use_container_width=True, hide_index=True)
 
-    start_idx = (page - 1) * PAGE_SIZE
-    end_idx = min(start_idx + PAGE_SIZE, len(filtered))
-
-    st.caption(f"Showing {start_idx + 1}–{end_idx} of {len(filtered)} results (Global Performance)")
-
-    # Display page slice
-    page_df = df_results.iloc[start_idx:end_idx]
-    st.dataframe(page_df, use_container_width=True, hide_index=True)
-
-    # Expandable detail view for each candidate on current page
+    # Expandable detail view for each candidate
     st.markdown("---")
     st.subheader("Detailed Performance")
-    for idx in range(start_idx, end_idx):
+    for idx in range(len(filtered)):
         label, global_agg, sel_results = filtered[idx]
         with st.expander(f"**{label}**", expanded=False):
             # Build table: Global on the left + per-selection columns (if multiple)
