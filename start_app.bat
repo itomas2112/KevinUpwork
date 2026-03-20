@@ -36,4 +36,12 @@ python -c "import os; print(f'CPU cores available: {os.cpu_count()}')"
 echo.
 
 :: Launch Streamlit
+echo Launching Streamlit...
+echo (If the app crashes, the error will be shown above)
+echo.
 streamlit run app.py
+echo.
+echo ============================================
+echo   App has stopped.
+echo ============================================
+pause
