@@ -19,16 +19,22 @@ def render_sidebar():
     """Render the complete sidebar with all controls"""
 
     # Historical Data Aggregation
+    base_tf = st.session_state.get("base_timeframe", "15m")
     with st.sidebar.expander("Historical Data Aggregation", expanded=False):
-        agg_options = ["15m", "1H", "4H", "1D"]
-        current_agg = st.session_state.get("_agg_timeframe", "15m")
+        ALL_AGG = ["15m", "1H", "4H", "1D"]
+        base_idx = ALL_AGG.index(base_tf)
+        agg_options = ALL_AGG[base_idx:]
+        current_agg = st.session_state.get("_agg_timeframe", base_tf)
+        if current_agg not in agg_options:
+            current_agg = agg_options[0]
+            st.session_state["_agg_timeframe"] = current_agg
         agg_tf = st.selectbox("Timeframe", agg_options,
                                index=agg_options.index(current_agg) if current_agg in agg_options else 0,
                                key="agg_tf_select")
         if st.button("Apply", key="agg_apply"):
             if "df_raw" in st.session_state:
                 from data.loader import resample_ohlc
-                st.session_state["df_ohlc"] = resample_ohlc(st.session_state["df_raw"], agg_tf)
+                st.session_state["df_ohlc"] = resample_ohlc(st.session_state["df_raw"], agg_tf, base_timeframe=base_tf)
                 st.session_state["_agg_timeframe"] = agg_tf
                 # Clear indicator caches so they recompute on new timeframe
                 for k in ["df_features", "_indicator_params", "_indicator_params_data_fp"]:
@@ -41,7 +47,7 @@ def render_sidebar():
                 st.rerun()
             else:
                 st.warning("Upload OHLC data first.")
-        if st.session_state.get("_agg_timeframe", "15m") != "15m":
+        if st.session_state.get("_agg_timeframe", base_tf) != base_tf:
             st.caption(f"Currently using: **{st.session_state['_agg_timeframe']}**")
 
     # Training Set — required before any calculations

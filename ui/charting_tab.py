@@ -409,21 +409,22 @@ def _inject_sticky_recalculate_bar():
 
 def render_file_uploaders():
     """Render file upload section"""
+    base_tf = st.session_state.get("base_timeframe", "15m")
     col_data, col_drm = st.columns([1, 1], gap="small")
 
     with col_data:
         uploaded_file = st.file_uploader(
-            "15m OHLC", type=["csv"], key="ohlc_upload", label_visibility="collapsed"
+            f"{base_tf} OHLC", type=["csv"], key="ohlc_upload", label_visibility="collapsed"
         )
-        st.caption("15m OHLC (.csv)")
+        st.caption(f"{base_tf} OHLC (.csv)")
 
         if uploaded_file is not None:
             df_raw = load_ohlc(uploaded_file)
             st.session_state["df_raw"] = df_raw
-            # Apply current aggregation (default 15m = just a copy)
+            # Apply current aggregation (default = base timeframe, just a copy)
             from data.loader import resample_ohlc
-            agg_tf = st.session_state.get("_agg_timeframe", "15m")
-            st.session_state["df_ohlc"] = resample_ohlc(df_raw, agg_tf)
+            agg_tf = st.session_state.get("_agg_timeframe", base_tf)
+            st.session_state["df_ohlc"] = resample_ohlc(df_raw, agg_tf, base_timeframe=base_tf)
             # Clear indicator caches
             for k in ["df_features", "_indicator_params", "_indicator_params_data_fp"]:
                 st.session_state.pop(k, None)
@@ -458,7 +459,8 @@ def render_file_uploaders():
 def check_data_loaded():
     """Check if all required data is loaded"""
     if "df_ohlc" not in st.session_state:
-        st.info("Please upload 15m OHLC data file and DRM file.")
+        base_tf = st.session_state.get("base_timeframe", "15m")
+        st.info(f"Please upload {base_tf} OHLC data file and DRM file.")
         return False
 
     drm_bullish = st.session_state.get('drm_bullish')

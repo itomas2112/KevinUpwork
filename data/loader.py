@@ -15,17 +15,18 @@ def load_ohlc(file):
     return df.set_index("time").sort_index()
 
 
-def resample_ohlc(df, timeframe):
-    """Resample 15m OHLC data to a higher timeframe.
+def resample_ohlc(df, timeframe, base_timeframe="15m"):
+    """Resample OHLC data to a higher timeframe.
 
     Args:
         df: DataFrame with OHLC data indexed by datetime (from load_ohlc)
         timeframe: "15m", "1H", "4H", or "1D"
+        base_timeframe: the native timeframe of the uploaded data
 
     Returns:
-        Resampled DataFrame in the same format. If "15m", returns a copy unchanged.
+        Resampled DataFrame in the same format. If timeframe matches base, returns a copy unchanged.
     """
-    if timeframe == "15m":
+    if timeframe == base_timeframe:
         return df.copy()
 
     tf_map = {"1H": "1h", "4H": "4h", "1D": "1D"}

@@ -52,7 +52,24 @@ st.markdown("""
 # -------------------------------------------------
 # Main App
 # -------------------------------------------------
-st.title("Trading Analysis Platform TEST")
+col_title, col_tf = st.columns([4, 1])
+with col_title:
+    st.title("Trading Analysis Platform TEST")
+with col_tf:
+    st.radio("Base Timeframe", ["15m", "1H"], horizontal=True, key="base_timeframe")
+
+# Clear data when base timeframe changes
+base_tf = st.session_state.get("base_timeframe", "15m")
+prev_base = st.session_state.get("_prev_base_timeframe", "15m")
+if base_tf != prev_base:
+    st.session_state["_prev_base_timeframe"] = base_tf
+    for k in ["df_raw", "df_ohlc", "df_features", "_indicator_params",
+              "_indicator_params_data_fp", "_agg_timeframe"]:
+        st.session_state.pop(k, None)
+    for k in list(st.session_state.keys()):
+        if k.startswith(("_bt_cache_", "_perf_", "_gs_", "_cv_", "_test_")):
+            st.session_state.pop(k, None)
+    st.rerun()
 
 # Create tabs
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance", "🧪 Strategy Testing", "🎲 Monte Carlo", "🔍 Grid Search"])
