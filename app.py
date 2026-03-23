@@ -54,7 +54,7 @@ st.markdown("""
 # -------------------------------------------------
 col_title, col_tf = st.columns([4, 1])
 with col_title:
-    st.title("Trading Analysis Platform TEST")
+    st.title("Trading Analysis Platform")
 with col_tf:
     st.radio("Base Timeframe", ["15m", "1H"], horizontal=True, key="base_timeframe")
 

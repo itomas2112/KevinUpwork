@@ -426,6 +426,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
         if locked_price is None or i == 0:
             return False
         event = trigger.get('event')
+        # Default event when None: Long targets fire on Cross Above, Short on Cross Below
+        if event is None:
+            event = "Cross Above" if strategy_direction == 'Long' else "Cross Below"
         price = _high[i] if strategy_direction == 'Long' else _low[i]
         prev_price = _close[i - 1]
 
@@ -468,14 +471,26 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
             if initial_stop_config:
                 stop_type = initial_stop_config.get('stop_type', 'Indicator')
                 if stop_type == 'ATR':
-                    # ATR stop: check Price cross locked ATR level
+                    # ATR stop: check Price cross locked ATR level using event from config
                     locked = pos['locked_stop_value']
                     if locked is not None and i > 0:
                         prev_close = _close[i - 1]
-                        if strategy_direction == 'Long':
-                            triggered = (prev_close >= locked) and (_low[i] < locked)
-                        else:
+                        stop_event = initial_stop_config.get('event', '')
+                        triggered = False
+
+                        if stop_event == "Cross Above":
                             triggered = (prev_close <= locked) and (_high[i] > locked)
+                        elif stop_event == "Cross Below":
+                            triggered = (prev_close >= locked) and (_low[i] < locked)
+                        elif stop_event == "Close Above":
+                            triggered = _close[i] > locked
+                        elif stop_event == "Close Below":
+                            triggered = _close[i] < locked
+                        elif stop_event in ("Cross", "Close"):
+                            ca = (prev_close <= locked) and (_high[i] > locked)
+                            cb = (prev_close >= locked) and (_low[i] < locked)
+                            triggered = ca or cb
+
                         if triggered:
                             pos_exit_type = "Initial Stop"
                             pos_exit_triggered = True

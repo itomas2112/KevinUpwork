@@ -1,8 +1,10 @@
 """
 Grid Search helpers — strategy replacement logic, candidate labeling,
-cross-combination generation.
+cross-combination generation, group set type conversion.
 """
 import copy
+
+from config.constants import R_PROFIT_LOSS_ELEMENTS, ATR_TARGET_ELEMENTS
 
 
 # ---------------------------------------------------------------------------
@@ -247,3 +249,237 @@ def collect_gs_indicator_settings(ss):
         if val is not None:
             result[k] = val
     return result
+
+
+# ---------------------------------------------------------------------------
+# Operator ↔ Event mapping for conversions between conditions and triggers
+# ---------------------------------------------------------------------------
+
+_OPERATOR_TO_EVENT = {
+    "Above": "Cross Above",
+    "Below": "Cross Below",
+}
+
+_EVENT_TO_OPERATOR = {
+    "Cross Above": "Above",
+    "Cross Below": "Below",
+    "Close Above": "Above",
+    "Close Below": "Below",
+    "Cross": "Above",      # default fallback
+    "Close": "Above",      # default fallback
+}
+
+
+# ---------------------------------------------------------------------------
+# Convert a single candidate from one type to another
+# ---------------------------------------------------------------------------
+
+def convert_candidate(candidate, from_type, to_type):
+    """Convert a single candidate dict from one group set type to another.
+
+    Returns the converted dict, or None if conversion is not possible
+    (e.g. ATR Target → condition, R Profit → static stop).
+    """
+    c = copy.deepcopy(candidate)
+
+    e1 = c.get("element1", "")
+
+    # ATR Target and R Profit/Loss can only live in target/dynamic_stop
+    if e1 in ATR_TARGET_ELEMENTS or e1 in R_PROFIT_LOSS_ELEMENTS:
+        if to_type in ("trigger", "condition", "static_stop"):
+            return None  # not convertible
+        # target ↔ dynamic_stop: same structure, just return as-is
+        return c
+
+    # ── FROM condition ────────────────────────────────────
+    if from_type == "condition":
+        operator = c.pop("operator", "Above")
+        event = _OPERATOR_TO_EVENT.get(operator, "Cross Above")
+
+        if to_type == "trigger":
+            c["event"] = event
+            return c
+
+        if to_type == "dynamic_stop" or to_type == "target":
+            c["event"] = event
+            return c
+
+        if to_type == "static_stop":
+            c.pop("stop_type", None)  # shouldn't exist, but clean up
+            compare_type = c.get("compare_type", "Indicator")
+            if compare_type == "Fixed Value":
+                return None  # fixed value conditions can't become indicator stops
+            return {
+                "stop_type": "Indicator",
+                "group": c.get("group", "Price & Indicators"),
+                "element1": c.get("element1", "Price"),
+                "element2": c.get("element2"),
+                "event": event,
+                "compare_type": "Indicator",
+            }
+
+    # ── FROM trigger / dynamic_stop / target ──────────────
+    if from_type in ("trigger", "dynamic_stop", "target"):
+        event = c.get("event", "Cross Above")
+
+        if to_type == "condition":
+            operator = _EVENT_TO_OPERATOR.get(event, "Above")
+            c.pop("event", None)
+            c["operator"] = operator
+            # Remove fields not used by conditions
+            c.pop("atr_period", None)
+            c.pop("atr_multiplier", None)
+            return c
+
+        if to_type in ("trigger", "dynamic_stop", "target"):
+            # Same structure — just return
+            return c
+
+        if to_type == "static_stop":
+            compare_type = c.get("compare_type", "Indicator")
+            if compare_type == "Fixed Value":
+                return None
+            return {
+                "stop_type": "Indicator",
+                "group": c.get("group", "Price & Indicators"),
+                "element1": c.get("element1", "Price"),
+                "element2": c.get("element2"),
+                "event": event,
+                "compare_type": "Indicator",
+            }
+
+    # ── FROM static_stop ──────────────────────────────────
+    if from_type == "static_stop":
+        stop_type = c.get("stop_type", "ATR")
+
+        if stop_type == "ATR":
+            # ATR stops can't become triggers/conditions/targets meaningfully
+            return None
+
+        # Indicator-based static stop
+        event = c.get("event", "Cross Below")
+        group = c.get("group", "Price & Indicators")
+        element1 = c.get("element1", "Price")
+        element2 = c.get("element2")
+        compare_type = c.get("compare_type", "Indicator")
+
+        if to_type == "condition":
+            operator = _EVENT_TO_OPERATOR.get(event, "Below")
+            return {
+                "group": group,
+                "element1": element1,
+                "operator": operator,
+                "compare_type": compare_type,
+                "element2": element2,
+                "value": None,
+            }
+
+        if to_type in ("trigger", "dynamic_stop", "target"):
+            return {
+                "group": group,
+                "element1": element1,
+                "event": event,
+                "compare_type": compare_type,
+                "element2": element2,
+                "value": None,
+            }
+
+        if to_type == "static_stop":
+            return c  # same type
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Batch-convert all candidates in a group set to a new type
+# ---------------------------------------------------------------------------
+
+def convert_group_set_candidates(candidates, from_type, to_type):
+    """Convert a list of candidates from one type to another.
+
+    Returns (converted_list, skipped_count).
+    Skipped candidates are ones that cannot be converted (ATR stops, ATR targets, etc.).
+    """
+    converted = []
+    skipped = 0
+
+    for cand in candidates:
+        result = convert_candidate(cand, from_type, to_type)
+        if result is not None:
+            converted.append(result)
+        else:
+            skipped += 1
+
+    return converted, skipped
+
+
+# ---------------------------------------------------------------------------
+# Event type conversion: Cross ↔ Close within the same group set
+# ---------------------------------------------------------------------------
+
+_CROSS_TO_CLOSE = {
+    "Cross": "Close",
+    "Cross Above": "Close Above",
+    "Cross Below": "Close Below",
+}
+
+_CLOSE_TO_CROSS = {
+    "Close": "Cross",
+    "Close Above": "Cross Above",
+    "Close Below": "Cross Below",
+}
+
+EVENT_CONVERSION_MODES = [
+    ("cross_to_close", "Cross → Close"),
+    ("close_to_cross", "Close → Cross"),
+]
+
+
+def convert_candidate_event(candidate, group_type, mode):
+    """Convert a single candidate's event from Cross↔Close.
+
+    mode: 'cross_to_close' or 'close_to_cross'
+    Returns (converted_candidate, was_changed).
+    Conditions use operator (Above/Below) which has no Cross/Close distinction — returned unchanged.
+    """
+    c = copy.deepcopy(candidate)
+    mapping = _CROSS_TO_CLOSE if mode == "cross_to_close" else _CLOSE_TO_CROSS
+
+    if group_type == "condition":
+        # Conditions don't have events, only operators — nothing to convert
+        return c, False
+
+    if group_type == "static_stop":
+        event = c.get("event")
+        if event and event in mapping:
+            c["event"] = mapping[event]
+            return c, True
+        return c, False
+
+    # trigger, dynamic_stop, target
+    event = c.get("event")
+    if event and event in mapping:
+        c["event"] = mapping[event]
+        return c, True
+
+    return c, False
+
+
+def convert_group_set_events(candidates, group_type, mode):
+    """Convert all candidates' events from Cross↔Close.
+
+    Returns (converted_list, changed_count, unchanged_count).
+    """
+    converted = []
+    changed = 0
+    unchanged = 0
+
+    for cand in candidates:
+        result, was_changed = convert_candidate_event(cand, group_type, mode)
+        converted.append(result)
+        if was_changed:
+            changed += 1
+        else:
+            unchanged += 1
+
+    return converted, changed, unchanged

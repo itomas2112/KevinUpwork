@@ -437,6 +437,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             return False
 
         event = trigger_config.get('event')
+        # Default event when None: Long targets fire on Cross Above, Short on Cross Below
+        if event is None:
+            event = "Cross Above" if strategy_direction == 'Long' else "Cross Below"
 
         # Current bar: use high for Long (best-case profit), low for Short
         if strategy_direction == 'Long':

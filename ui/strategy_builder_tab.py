@@ -1788,13 +1788,23 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
         st.session_state[f'{prefix}_trigger_group1'] = trigger.get('group', 'Price & Indicators')
 
     st.session_state[f'{prefix}_trigger_element1'] = element1
-    st.session_state[f'{prefix}_trigger_event'] = trigger.get('event')
+    # Only set event if it has a real value; None would poison session state
+    # and prevent the selectbox widget from initializing its own default
+    event_val = trigger.get('event')
+    if event_val is not None:
+        st.session_state[f'{prefix}_trigger_event'] = event_val
     st.session_state[f'{prefix}_trigger_compare_type'] = trigger.get('compare_type', 'Indicator')
 
     if element1 == 'ATR Target':
         st.session_state[f'{prefix}_trigger_compare_type'] = 'ATR'
         st.session_state[f'{prefix}_atr_period'] = trigger.get('atr_period', 14)
         st.session_state[f'{prefix}_atr_multiplier'] = trigger.get('atr_multiplier', 2.0)
+        # Default event for ATR Target if missing
+        if trigger.get('event') is None:
+            direction = st.session_state.get('strategy_direction', 'Long')
+            st.session_state[f'{prefix}_trigger_event'] = (
+                'Cross Above' if direction == 'Long' else 'Cross Below'
+            )
     elif trigger.get('compare_type') == 'Indicator':
         st.session_state[f'{prefix}_trigger_element2'] = trigger.get('element2')
     else:

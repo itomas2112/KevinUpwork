@@ -25,7 +25,8 @@ from ui.performance_tab import (_DEFAULT_INDICATOR_PARAMS, SELECTION_MODES,
                                  _build_metrics_table, _copy_to_clipboard, _empty_agg)
 from ui.grid_search_helpers import (
     format_candidate_label, generate_run_configs,
-    collect_gs_indicator_settings,
+    collect_gs_indicator_settings, convert_group_set_candidates,
+    convert_group_set_events, EVENT_CONVERSION_MODES,
 )
 from config.constants import (GROUP_NAMES, EVENT_TYPES, STOP_EVENT_TYPES,
                                CONDITION_OPERATORS, get_group_elements,
@@ -222,6 +223,8 @@ def render_grid_search_tab(sidebar_config):
     st.markdown("---")
 
     # ── Section G: Calculate + Results ──────────────────
+    # Hidden debug toggle — set gs_use_original_engine in session state to True to use original engine
+    use_original_engine = st.session_state.get("gs_use_original_engine", False)
     calculate_clicked = st.button("Calculate", key="gs_calculate", type="primary")
     st.caption("To stop a running calculation, click the **Stop** button (top-right corner) or refresh the page.")
 
@@ -237,7 +240,7 @@ def render_grid_search_tab(sidebar_config):
     if calculate_clicked:
         results = _run_grid_search(
             selected_strategy, search_group, search_set, condition_candidates,
-            sidebar_config)
+            sidebar_config, use_original_engine=use_original_engine)
         fp = _build_cache_fingerprint(selected_strategy, search_group,
                                        search_set, condition_candidates)
         sel_labels = [selection_label(s) for s in st.session_state.get("gs_selections", [])]
@@ -378,6 +381,138 @@ def _render_group_set_management():
                             msg += f" ({dupes} duplicate(s) removed.)"
                         st.success(msg)
                         st.rerun()
+
+    # ── Convert Group Set section (outside the per-type tabs) ──
+    st.markdown("---")
+    st.markdown("**Convert Group Set Type**")
+    st.caption("Convert all candidates from one saved group set into a different type (e.g. Conditions → Triggers, Conditions → Static Stops).")
+
+    all_sets = st.session_state.get("saved_group_sets", [])
+    if not all_sets:
+        st.info("No group sets available to convert.")
+    else:
+        conv_c1, conv_c2, conv_c3 = st.columns([3, 2, 2])
+
+        with conv_c1:
+            conv_source_labels = [
+                f"{gs['name']}  ({dict(GROUP_TYPES).get(gs['type'], gs['type'])})"
+                for gs in all_sets
+            ]
+            conv_src_idx = st.selectbox(
+                "Source Group Set", range(len(all_sets)),
+                format_func=lambda x: conv_source_labels[x],
+                key="gs_conv_source")
+            source_gs = all_sets[conv_src_idx]
+            source_type = source_gs["type"]
+
+        with conv_c2:
+            # Show all target types except the source type
+            target_types = [(k, v) for k, v in GROUP_TYPES if k != source_type]
+            conv_target_idx = st.selectbox(
+                "Convert To", range(len(target_types)),
+                format_func=lambda x: target_types[x][1],
+                key="gs_conv_target")
+            target_type_key, target_type_label = target_types[conv_target_idx]
+
+        with conv_c3:
+            conv_name = st.text_input(
+                "New Set Name",
+                value=f"{source_gs['name']} ({target_type_label})",
+                key="gs_conv_name")
+
+        if st.button("Convert & Save", key="gs_conv_btn", type="primary"):
+            source_candidates = source_gs.get("candidates", [])
+            if not source_candidates:
+                st.error("Source group set has no candidates.")
+            else:
+                converted, skipped = convert_group_set_candidates(
+                    source_candidates, source_type, target_type_key)
+
+                if not converted:
+                    st.error(f"No candidates could be converted. "
+                             f"All {skipped} candidate(s) are incompatible "
+                             f"(e.g. ATR stops, ATR targets, R Profit/Loss, or Fixed Value comparisons).")
+                else:
+                    new_gs = {
+                        "name": conv_name.strip() or f"{source_gs['name']} ({target_type_label})",
+                        "type": target_type_key,
+                        "candidates": converted,
+                    }
+                    dupes = save_group_set(new_gs)
+                    msg = (f"Converted **{len(converted)}** candidates from "
+                           f"**{dict(GROUP_TYPES).get(source_type, source_type)}** "
+                           f"to **{target_type_label}** and saved as **{new_gs['name']}**.")
+                    if skipped:
+                        msg += f" ({skipped} candidate(s) skipped — incompatible.)"
+                    if dupes:
+                        msg += f" ({dupes} duplicate(s) removed.)"
+                    st.success(msg)
+                    st.rerun()
+
+    # ── Convert Event Type (Cross ↔ Close) ────────────────
+    st.markdown("---")
+    st.markdown("**Convert Event Type (Cross ↔ Close)**")
+    st.caption("Create a copy of a group set with all Cross events converted to Close (or vice versa). "
+               "Conditions (Above/Below) have no Cross/Close distinction and are kept unchanged.")
+
+    if not all_sets:
+        st.info("No group sets available.")
+    else:
+        ev_c1, ev_c2, ev_c3 = st.columns([3, 2, 2])
+
+        with ev_c1:
+            ev_source_labels = [
+                f"{gs['name']}  ({dict(GROUP_TYPES).get(gs['type'], gs['type'])})"
+                for gs in all_sets
+            ]
+            ev_src_idx = st.selectbox(
+                "Source Group Set", range(len(all_sets)),
+                format_func=lambda x: ev_source_labels[x],
+                key="gs_ev_source")
+            ev_source_gs = all_sets[ev_src_idx]
+
+        with ev_c2:
+            ev_mode_idx = st.selectbox(
+                "Conversion", range(len(EVENT_CONVERSION_MODES)),
+                format_func=lambda x: EVENT_CONVERSION_MODES[x][1],
+                key="gs_ev_mode")
+            ev_mode_key, ev_mode_label = EVENT_CONVERSION_MODES[ev_mode_idx]
+
+        with ev_c3:
+            ev_name = st.text_input(
+                "New Set Name",
+                value=f"{ev_source_gs['name']} ({ev_mode_label})",
+                key="gs_ev_name")
+
+        if st.button("Convert Events & Save", key="gs_ev_btn", type="primary"):
+            ev_candidates = ev_source_gs.get("candidates", [])
+            ev_type = ev_source_gs["type"]
+            if not ev_candidates:
+                st.error("Source group set has no candidates.")
+            elif ev_type == "condition":
+                st.warning("Conditions use Above/Below operators, not Cross/Close events. "
+                           "Nothing to convert.")
+            else:
+                converted, changed, unchanged = convert_group_set_events(
+                    ev_candidates, ev_type, ev_mode_key)
+                if changed == 0:
+                    st.warning(f"No events matched the conversion. All {unchanged} candidate(s) "
+                               f"already use the target event type or are incompatible.")
+                else:
+                    new_gs = {
+                        "name": ev_name.strip() or f"{ev_source_gs['name']} ({ev_mode_label})",
+                        "type": ev_type,
+                        "candidates": converted,
+                    }
+                    dupes = save_group_set(new_gs)
+                    msg = (f"Converted events for **{changed}** candidate(s) "
+                           f"({ev_mode_label}) and saved as **{new_gs['name']}**.")
+                    if unchanged:
+                        msg += f" ({unchanged} candidate(s) unchanged — already target type or no event field.)"
+                    if dupes:
+                        msg += f" ({dupes} duplicate(s) removed.)"
+                    st.success(msg)
+                    st.rerun()
 
 
 # ======================================================================
@@ -1018,7 +1153,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
 # ======================================================================
 
 def _run_grid_search(selected_strategy, search_group, search_set,
-                     condition_candidates, sidebar_config):
+                     condition_candidates, sidebar_config, use_original_engine=False):
     """Run backtests for all candidate runs.
 
     Returns list of (label, global_agg, selection_results) where
@@ -1082,8 +1217,11 @@ def _run_grid_search(selected_strategy, search_group, search_set,
                     for start_dt, end_dt in periods:
                         df_slice, ps, pe = slice_for_graph(
                             df=df_full, start_date=start_dt, end_date=end_dt,
-                            show_ichimoku=True, show_bb=True, show_kc=True,
-                            show_donchian=True, show_psar=True)
+                            show_ichimoku=False,
+                            show_bb=False,
+                            show_kc=False,
+                            show_donchian=False,
+                            show_psar=False)
                         if not df_slice.empty:
                             slices.append((df_slice, ps, pe))
                 combo_slices[combo_key] = slices
@@ -1107,9 +1245,71 @@ def _run_grid_search(selected_strategy, search_group, search_set,
         st.warning("No run configurations generated.")
         return []
 
+    if use_original_engine:
+        return _run_grid_search_original_engine(
+            run_configs, combo_slices, global_combo_keys,
+            selection_combo_map)
+
     return _run_grid_search_multiprocessing(
         run_configs, combo_slices, global_combo_keys,
         selection_combo_map)
+
+
+def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_keys,
+                                      selection_combo_map):
+    """Run grid search using the ORIGINAL (non-numpy) engine, single-process.
+    Used for debugging to compare results with the numpy engine.
+    """
+    from strategies.first_strategy import execute_custom_strategy
+
+    def _extract_stats(stats_df):
+        return {
+            'win_pnl': float(stats_df.loc['Winning trades P&L (R)', 'value']),
+            'lose_pnl': float(stats_df.loc['Losing trades P&L (R)', 'value']),
+            'trade_pnls_r': list(stats_df.attrs.get('trade_pnls_r', [])),
+            'total_static_alloc': float(stats_df.attrs.get('total_static_alloc', 0.0)),
+            'total_dynamic_alloc': float(stats_df.attrs.get('total_dynamic_alloc', 0.0)),
+            'total_target_alloc': float(stats_df.attrs.get('total_target_alloc', 0.0)),
+        }
+
+    n_candidates = len(run_configs)
+    progress = st.progress(0, text=f"Running grid search (original engine, single-process)...")
+
+    results = []
+    for idx, (label, strategy) in enumerate(run_configs):
+        combo_results = {}
+        for combo_key in global_combo_keys:
+            slices = combo_slices.get(combo_key, [])
+            stats_list = []
+            for df_slice, ps, pe in slices:
+                try:
+                    _, stats_df = execute_custom_strategy(df_slice.copy(), strategy, ps, pe)
+                    if stats_df is not None:
+                        stats_list.append(_extract_stats(stats_df))
+                except Exception:
+                    pass
+            combo_results[combo_key] = stats_list
+
+        # Global stats
+        global_stats_dicts = []
+        for ck in global_combo_keys:
+            global_stats_dicts.extend(combo_results.get(ck, []))
+        global_agg = _aggregate_stats_dicts(global_stats_dicts) if global_stats_dicts else _empty_agg()
+
+        # Per-selection stats
+        sel_results = OrderedDict()
+        for sel_label, sel_combo_keys in selection_combo_map.items():
+            sel_stats_dicts = []
+            for ck in sel_combo_keys:
+                sel_stats_dicts.extend(combo_results.get(ck, []))
+            sel_results[sel_label] = _aggregate_stats_dicts(sel_stats_dicts) if sel_stats_dicts else _empty_agg()
+
+        results.append((label, global_agg, sel_results))
+        progress.progress((idx + 1) / n_candidates,
+                          text=f"Completed {idx + 1}/{n_candidates} candidates")
+
+    progress.empty()
+    return results
 
 
 def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_keys,
