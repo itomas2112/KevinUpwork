@@ -973,9 +973,14 @@ def render_save_button(strategy_name_input: str):
                 # Update existing strategy
                 editing_idx = st.session_state.get('editing_strategy_idx')
                 # Delete the old version
-                st.session_state['saved_strategies'].pop(editing_idx)
+                old_strategy = st.session_state['saved_strategies'].pop(editing_idx)
                 # Save the updated version
                 count = save_strategy_to_session(strategy_name_input)
+
+                if count is None:
+                    # Validation failed — restore the old strategy
+                    st.session_state['saved_strategies'].insert(editing_idx, old_strategy)
+                    return
 
                 # Clear editing flags
                 st.session_state['editing_strategy'] = False
@@ -985,6 +990,11 @@ def render_save_button(strategy_name_input: str):
             else:
                 # Create new strategy
                 count = save_strategy_to_session(strategy_name_input)
+
+                if count is None:
+                    # Validation failed — errors already shown by save_strategy_to_session
+                    return
+
                 st.success(f"✅ Strategy saved! Total: {count}")
 
             # Reset the strategy builder
@@ -1015,6 +1025,19 @@ def render_export_import_section():
         st.markdown("#### ⬇️ Export Strategies")
 
         if st.session_state.get('saved_strategies'):
+            # Validate all strategies before export
+            from strategies.strategy_validator import validate_strategy as _validate_export
+            invalid_export = []
+            for idx, s in enumerate(st.session_state['saved_strategies']):
+                is_valid, errors = _validate_export(s)
+                if not is_valid:
+                    invalid_export.append((s.get('strategy_name', f'Strategy_{idx+1}'), errors))
+
+            if invalid_export:
+                st.warning(f"⚠️ {len(invalid_export)} strategy(ies) have validation issues:")
+                for name, errors in invalid_export:
+                    st.caption(f"**{name}**: {'; '.join(errors)}")
+
             # Prepare export data
             export_data = {
                 'export_date': datetime.now().isoformat(),
@@ -1108,8 +1131,18 @@ def render_export_import_section():
                     imported_count = 0
                     skipped_count = 0
 
+                    invalid_strategies = []
+
                     for strategy in strategies_to_import:
                         strategy_name = strategy.get('strategy_name', '')
+
+                        # Validate before importing
+                        from strategies.strategy_validator import validate_strategy
+                        is_valid, errors = validate_strategy(strategy)
+                        if not is_valid:
+                            invalid_strategies.append((strategy_name, errors))
+                            skipped_count += 1
+                            continue
 
                         # Check for duplicates in merge mode
                         if import_mode == "Merge (add to existing)" and strategy_name in existing_names:
@@ -1128,7 +1161,14 @@ def render_export_import_section():
                     # Save to file for persistence
                     save_strategies_to_file()
 
-                    st.success(f"✅ Successfully imported {imported_count} strategy(ies)!")
+                    if imported_count > 0:
+                        st.success(f"✅ Successfully imported {imported_count} strategy(ies)!")
+
+                    if invalid_strategies:
+                        st.warning(f"⚠️ {len(invalid_strategies)} strategy(ies) skipped due to validation errors:")
+                        for name, errors in invalid_strategies:
+                            st.error(f"**{name or 'Unnamed'}**: {'; '.join(errors)}")
+
                     st.rerun()
 
             except json.JSONDecodeError as e:

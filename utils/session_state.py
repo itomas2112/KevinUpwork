@@ -6,21 +6,43 @@ import json
 import os
 from config.constants import STRATEGIES_FILE
 from strategies.group_set_manager import load_group_sets
+from strategies.strategy_validator import validate_strategy
 
 
 def initialize_session_state():
     """Initialize all session state variables"""
 
-    # Saved strategies
+    # Saved strategies — validate on load, skip invalid ones
     if 'saved_strategies' not in st.session_state:
         if os.path.exists(STRATEGIES_FILE):
             try:
                 with open(STRATEGIES_FILE, 'r') as f:
-                    st.session_state['saved_strategies'] = json.load(f)
+                    raw_strategies = json.load(f)
+
+                valid_strategies = []
+                invalid_count = 0
+                for strategy in raw_strategies:
+                    is_valid, errors = validate_strategy(strategy)
+                    if is_valid:
+                        valid_strategies.append(strategy)
+                    else:
+                        invalid_count += 1
+
+                st.session_state['saved_strategies'] = valid_strategies
+
+                if invalid_count > 0:
+                    st.session_state['_invalid_strategies_on_load'] = invalid_count
+
             except (json.JSONDecodeError, ValueError):
                 st.session_state['saved_strategies'] = []
         else:
             st.session_state['saved_strategies'] = []
+
+    # Show one-time warning for invalid strategies skipped on load
+    invalid_count = st.session_state.pop('_invalid_strategies_on_load', 0)
+    if invalid_count > 0:
+        st.warning(f"⚠️ {invalid_count} invalid strategy(ies) were skipped during load. "
+                   f"They had missing or incorrect fields.")
 
     # Selected strategies
     if 'selected_strategies' not in st.session_state:

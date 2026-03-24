@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from config.constants import get_indicator_map
 from indicators.atr_indicator import atr_indicator
+from strategies.strategy_validator import validate_strategy
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +230,24 @@ def ichimoku_tenkan_kijun_strategy(df: pd.DataFrame):
     return df, stats_df
 
 
+def _empty_stats_df():
+    """Return an empty stats DataFrame with the standard structure."""
+    stats_df = pd.DataFrame(
+        {"value": [0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+        index=[
+            "Number of trades", "Win rate (%)", "Loss rate (%)", "Total return (%)",
+            "Total P&L (R)", "Avg P&L per trade (R)", "Winning trades P&L (R)",
+            "Losing trades P&L (R)", "Target exit (%)", "Static exit (%)",
+            "Dynamic exit (%)", "Sharpe Ratio", "Max Drawdown (R)", "MAR Ratio", "SQN",
+        ],
+    )
+    stats_df.attrs['trade_pnls_r'] = []
+    stats_df.attrs['total_static_alloc'] = 0.0
+    stats_df.attrs['total_dynamic_alloc'] = 0.0
+    stats_df.attrs['total_target_alloc'] = 0.0
+    return stats_df
+
+
 def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_start=None, period_end=None):
     """
     Execute a custom strategy based on the saved strategy configuration.
@@ -258,19 +277,25 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     strategy_config = copy.deepcopy(strategy_config)  # avoid mutating caller's data
 
     # -------------------------------------------------
+    # Validate strategy before execution
+    # -------------------------------------------------
+    ema_count = 0
+    while f"ema_{ema_count}" in df.columns:
+        ema_count += 1
+
+    is_valid, errors = validate_strategy(strategy_config, ema_count=ema_count)
+    if not is_valid:
+        import warnings
+        warnings.warn(f"Invalid strategy skipped: {'; '.join(errors)}")
+        return df, _empty_stats_df()
+
+    # -------------------------------------------------
     # Clean existing signals
     # -------------------------------------------------
     for col in ["entry_signal", "exit_signal"]:
         if col in df.columns:
             df.drop(columns=col, inplace=True)
 
-    # -------------------------------------------------
-    # Use global indicator mapping
-    # -------------------------------------------------
-    # Count EMA columns in the DataFrame to build the full indicator map
-    ema_count = 0
-    while f"ema_{ema_count}" in df.columns:
-        ema_count += 1
     indicator_map = get_indicator_map(ema_count)
 
     # -------------------------------------------------
@@ -545,6 +570,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 value1_prev = series1.iloc[current_idx - 1]
                 value2_prev = series2.iloc[current_idx - 1]
 
+        # Guard: if current values are NaN, no event can fire
+        if pd.isna(value1) or pd.isna(value2):
+            return False
+
         # Check the event type
         if event == "Close Above":
             # Simply check if current close is above the value
@@ -558,6 +587,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             # Close in either direction (previous bar on other side)
             if current_idx == 0:
                 return False
+            if pd.isna(value1_prev) or pd.isna(value2_prev):
+                return False
             cross_above = (value1 > value2) and (value1_prev <= value2_prev)
             cross_below = (value1 < value2) and (value1_prev >= value2_prev)
             return cross_above or cross_below
@@ -565,6 +596,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         elif event == "Cross Above":
             # Previous bar must have been below, current bar's high exceeds the value
             if current_idx == 0:
+                return False
+            if pd.isna(value1_prev) or pd.isna(value2_prev):
                 return False
             if value1_prev > value2_prev:
                 return False
@@ -579,6 +612,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             # Previous bar must have been above, current bar's low goes below the value
             if current_idx == 0:
                 return False
+            if pd.isna(value1_prev) or pd.isna(value2_prev):
+                return False
             if value1_prev < value2_prev:
                 return False
             # Use low price for element1 if it's Price, otherwise use the indicator value
@@ -591,6 +626,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         elif event == "Cross":
             # Cross in either direction
             if current_idx == 0:
+                return False
+            if pd.isna(value1_prev) or pd.isna(value2_prev):
                 return False
             if col1 == "latest":
                 high_val = df["high"].iloc[current_idx]

@@ -33,9 +33,9 @@ def supertrend(
     st_line = np.full(n, np.nan)
     direction = np.full(n, 1)  # 1 = up (bullish), -1 = down (bearish)
 
-    close_arr = close.values
-    upper_arr = upper_band.values
-    lower_arr = lower_band.values
+    close_arr = close.values.copy()
+    upper_arr = upper_band.values.copy()
+    lower_arr = lower_band.values.copy()
 
     for i in range(1, n):
         if np.isnan(upper_arr[i]) or np.isnan(lower_arr[i]):

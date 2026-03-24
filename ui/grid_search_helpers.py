@@ -5,6 +5,7 @@ cross-combination generation, group set type conversion.
 import copy
 
 from config.constants import R_PROFIT_LOSS_ELEMENTS, ATR_TARGET_ELEMENTS
+from strategies.strategy_validator import validate_strategy
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +136,24 @@ def generate_run_configs(base_strategy, search_group, search_candidates,
                     combined_label = f"{cand_label} + {cond_label}"
                     runs.append((combined_label, strategy))
 
+    # Validate and filter out invalid strategies
+    validated = []
+    skipped = 0
+    for label, strat in runs:
+        is_valid, errors = validate_strategy(strat)
+        if is_valid:
+            validated.append((label, strat))
+        else:
+            skipped += 1
+
+    if skipped > 0:
+        import streamlit as st
+        st.warning(f"⚠️ {skipped} candidate(s) skipped due to invalid strategy configuration.")
+
     # Deduplicate labels
     seen = {}
     deduped = []
-    for label, strat in runs:
+    for label, strat in validated:
         if label in seen:
             seen[label] += 1
             deduped.append((f"{label} ({seen[label]})", strat))

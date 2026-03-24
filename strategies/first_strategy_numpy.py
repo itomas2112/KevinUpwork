@@ -4,10 +4,12 @@
 # The main loop only handles stateful position management + pre-computed lookups.
 
 import copy
+import warnings
 import pandas as pd
 import numpy as np
 from config.constants import get_indicator_map
 from indicators.atr_indicator import atr_indicator
+from strategies.strategy_validator import validate_strategy
 from strategies.first_strategy import _prepare_ichimoku_columns
 
 
@@ -197,13 +199,21 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
     df = df.copy()
     strategy_config = copy.deepcopy(strategy_config)
 
+    # Validate strategy before execution
+    ema_count = 0
+    while f"ema_{ema_count}" in df.columns:
+        ema_count += 1
+
+    is_valid, errors = validate_strategy(strategy_config, ema_count=ema_count)
+    if not is_valid:
+        warnings.warn(f"Invalid strategy skipped: {'; '.join(errors)}")
+        from strategies.first_strategy import _empty_stats_df
+        return None, _empty_stats_df()
+
     for col in ["entry_signal", "exit_signal"]:
         if col in df.columns:
             df.drop(columns=col, inplace=True)
 
-    ema_count = 0
-    while f"ema_{ema_count}" in df.columns:
-        ema_count += 1
     indicator_map = get_indicator_map(ema_count)
 
     _prepare_ichimoku_columns(df, indicator_map, strategy_config)

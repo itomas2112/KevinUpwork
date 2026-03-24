@@ -5,6 +5,7 @@ import streamlit as st
 import json
 import pandas as pd
 from config.constants import STRATEGIES_FILE
+from strategies.strategy_validator import validate_strategy
 
 
 def save_strategy_to_session(strategy_name):
@@ -123,6 +124,14 @@ def save_strategy_to_session(strategy_name):
                 group_data["stops"].append(stop)
 
         strategy_data["exit_groups"].append(group_data)
+
+    # Validate before saving
+    ema_count = len(strategy_data.get("indicator_settings", {}).get("ema_periods", []))
+    is_valid, errors = validate_strategy(strategy_data, ema_count=ema_count)
+    if not is_valid:
+        for error in errors:
+            st.error(f"⚠️ {error}")
+        return None
 
     # Save to session state
     st.session_state['saved_strategies'].append(strategy_data)
