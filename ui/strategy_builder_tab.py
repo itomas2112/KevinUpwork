@@ -1161,15 +1161,26 @@ def render_export_import_section():
                     # Save to file for persistence
                     save_strategies_to_file()
 
+                    # Store import results in session state so they persist after rerun
+                    import_result = {}
                     if imported_count > 0:
-                        st.success(f"✅ Successfully imported {imported_count} strategy(ies)!")
-
+                        import_result['success'] = f"Successfully imported {imported_count} strategy(ies)!"
                     if invalid_strategies:
-                        st.warning(f"⚠️ {len(invalid_strategies)} strategy(ies) skipped due to validation errors:")
-                        for name, errors in invalid_strategies:
-                            st.error(f"**{name or 'Unnamed'}**: {'; '.join(errors)}")
+                        import_result['invalid'] = invalid_strategies
+                    st.session_state['_import_result'] = import_result
 
                     st.rerun()
+
+                # Display import results persisted from previous run
+                import_result = st.session_state.pop('_import_result', None)
+                if import_result:
+                    if 'success' in import_result:
+                        st.success(f"✅ {import_result['success']}")
+                    if 'invalid' in import_result:
+                        invalid = import_result['invalid']
+                        st.warning(f"⚠️ {len(invalid)} strategy(ies) skipped due to validation errors:")
+                        for name, errors in invalid:
+                            st.error(f"**{name or 'Unnamed'}**: {'; '.join(errors)}")
 
             except json.JSONDecodeError as e:
                 st.error(f"❌ Invalid JSON file: {str(e)}")
