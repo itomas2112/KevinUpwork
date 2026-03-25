@@ -233,8 +233,21 @@ def delete_strategy(idx):
 
     # Reset selected strategy if it was deleted
     if 'selected_custom_strategy_idx' in st.session_state:
-        if st.session_state['selected_custom_strategy_idx'] > len(st.session_state['saved_strategies']):
+        if st.session_state['selected_custom_strategy_idx'] >= len(st.session_state['saved_strategies']):
             st.session_state['selected_custom_strategy_idx'] = 0
+            st.session_state['selected_custom_strategy_actual_idx'] = None
+
+    # Adjust editing index if we're currently editing a strategy
+    if st.session_state.get('editing_strategy') and 'editing_strategy_idx' in st.session_state:
+        editing_idx = st.session_state['editing_strategy_idx']
+        if editing_idx is not None:
+            if idx < editing_idx:
+                # Deleted a strategy before the one being edited — shift index down
+                st.session_state['editing_strategy_idx'] = editing_idx - 1
+            elif idx == editing_idx:
+                # Deleted the strategy being edited — cancel the edit
+                st.session_state['editing_strategy'] = False
+                st.session_state['editing_strategy_idx'] = None
 
 
 def delete_all_strategies():

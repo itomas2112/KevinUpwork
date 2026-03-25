@@ -4,6 +4,7 @@ Own pattern selection UI, own strategy selector, manual calculate buttons.
 Strategy pattern filtering applied: combos are intersected with the strategy's
 saved patterns so a strategy only runs on the patterns it was designed for.
 """
+import json
 import streamlit as st
 import pandas as pd
 
@@ -12,7 +13,7 @@ from data.helpers import (
     PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
     expand_selection, selection_label,
 )
-from indicators.calculate_indicators import slice_for_graph, migrate_indicator_settings
+from indicators.calculate_indicators import slice_for_graph, migrate_indicator_settings, strategy_indicator_flags
 from strategies.first_strategy import execute_custom_strategy
 from ui.charting_tab import _aggregate_stats, _get_or_calculate
 
@@ -242,7 +243,8 @@ def render_strategy_testing_tab(sidebar_config):
 
         # Invalidate cache if strategy changed
         cv_cache = st.session_state.get('_cv_cached_results')
-        if cv_cache and cv_cache.get('strategy_name') != strategy_name:
+        strategy_fingerprint = json.dumps(selected_strategy, sort_keys=True, default=str)
+        if cv_cache and cv_cache.get('_strategy_fingerprint') != strategy_fingerprint:
             st.session_state.pop('_cv_cached_results', None)
             cv_cache = None
 
@@ -274,7 +276,7 @@ def render_strategy_testing_tab(sidebar_config):
 
         # Invalidate cache if strategy changed
         test_cache = st.session_state.get('_test_cached_results')
-        if test_cache and test_cache.get('strategy_name') != strategy_name:
+        if test_cache and test_cache.get('_strategy_fingerprint') != strategy_fingerprint:
             st.session_state.pop('_test_cached_results', None)
             test_cache = None
 
@@ -391,6 +393,7 @@ def _run_cross_validation(df_key, indicator_params, selected_strategy, strategy_
 
     cache = {
         'strategy_name': strategy_name,
+        '_strategy_fingerprint': json.dumps(selected_strategy, sort_keys=True, default=str),
         'fold_results': fold_results,
         'overall_agg': overall_agg,
     }
@@ -454,6 +457,7 @@ def _run_test_set(df_key, indicator_params, selected_strategy, strategy_name,
 
     cache = {
         'strategy_name': strategy_name,
+        '_strategy_fingerprint': json.dumps(selected_strategy, sort_keys=True, default=str),
         'agg': agg,
     }
     st.session_state['_test_cached_results'] = cache
@@ -502,6 +506,7 @@ def _run_on_date_range(df_full, selected_strategy, all_combos,
     """
     all_stats = []
     total = len(all_combos)
+    ind_flags = strategy_indicator_flags(selected_strategy)
 
     for idx, (pattern_type, primary, secondary) in enumerate(all_combos):
         drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
@@ -519,11 +524,7 @@ def _run_on_date_range(df_full, selected_strategy, all_combos,
 
             df_slice, period_start, period_end = slice_for_graph(
                 df=df_full, start_date=start_dt, end_date=end_dt,
-                show_ichimoku=False,
-                show_bb=False,
-                show_kc=False,
-                show_donchian=False,
-                show_psar=False,
+                **ind_flags,
             )
             if df_slice.empty:
                 continue

@@ -17,23 +17,22 @@ from data.helpers import (PRIMARY_SECONDARY_MAP, PRIMARY_LIST,
 from indicators.calculate_indicators import slice_for_graph, migrate_indicator_settings
 from strategies.group_set_manager import (
     load_group_sets, save_group_set, update_group_set, delete_group_set,
-    export_group_set, import_group_set, get_group_sets_by_type,
+    export_group_set, import_group_set,
     save_group_sets_to_file,
 )
 from ui.charting_tab import _get_or_calculate
 from ui.performance_tab import (_DEFAULT_INDICATOR_PARAMS, SELECTION_MODES,
                                  _build_metrics_table, _copy_to_clipboard, _empty_agg)
 from ui.grid_search_helpers import (
-    format_candidate_label, generate_run_configs,
-    collect_gs_indicator_settings, convert_group_set_candidates,
-    convert_group_set_events, EVENT_CONVERSION_MODES,
+    format_candidate_label, format_run_label, generate_run_configs,
+    collect_gs_indicator_settings,
 )
 from config.constants import (GROUP_NAMES, EVENT_TYPES, STOP_EVENT_TYPES,
                                CONDITION_OPERATORS, get_group_elements,
                                R_PROFIT_LOSS_ELEMENTS, ATR_TARGET_ELEMENTS)
 
-# Group types for the group set manager
-GROUP_TYPES = [
+# Search component types (what part of the strategy to swap)
+SEARCH_COMPONENTS = [
     ("trigger", "Trigger"),
     ("condition", "Condition"),
     ("static_stop", "Static Stop"),
@@ -114,54 +113,78 @@ def render_grid_search_tab(sidebar_config):
     # ── Section C: Search Configuration ─────────────────
     st.markdown("**Search Configuration**")
 
+    all_group_sets = st.session_state.get("saved_group_sets", [])
+    if not all_group_sets:
+        st.warning("No group sets saved. Create one in **Group Set Management** above.")
+        return
+
     sc1, sc2 = st.columns(2)
     with sc1:
-        search_type_labels = [label for _, label in GROUP_TYPES]
+        search_type_labels = [label for _, label in SEARCH_COMPONENTS]
         search_type_idx = st.selectbox(
             "Component to Search",
-            range(len(GROUP_TYPES)),
+            range(len(SEARCH_COMPONENTS)),
             format_func=lambda x: search_type_labels[x],
             key="gs_search_type_idx")
-        search_group = GROUP_TYPES[search_type_idx][0]
+        search_group = SEARCH_COMPONENTS[search_type_idx][0]
 
     with sc2:
-        available = get_group_sets_by_type(search_group)
-        if not available:
-            st.warning(f"No group sets saved for **{GROUP_TYPES[search_type_idx][1]}**. Create one above.")
-            return
-        gs_options = [(i, gs["name"]) for i, gs in available]
+        gs_names = [gs["name"] for gs in all_group_sets]
         gs_sel = st.selectbox(
             "Group Set to Use",
-            range(len(gs_options)),
-            format_func=lambda x: gs_options[x][1],
+            range(len(gs_names)),
+            format_func=lambda x: gs_names[x],
             key="gs_search_set_sel")
-        search_set_global_idx = gs_options[gs_sel][0]
-        search_set = st.session_state["saved_group_sets"][search_set_global_idx]
+        search_set = all_group_sets[gs_sel]
+
+    # Event / Operator multi-select (depends on search component)
+    if search_group == "condition":
+        selected_events = st.multiselect(
+            "Operators", CONDITION_OPERATORS,
+            default=CONDITION_OPERATORS,
+            key="gs_events")
+    elif search_group == "trigger":
+        selected_events = st.multiselect(
+            "Events", EVENT_TYPES,
+            default=["Cross Above", "Cross Below"],
+            key="gs_events")
+    else:
+        selected_events = st.multiselect(
+            "Events", STOP_EVENT_TYPES,
+            default=["Cross Above", "Cross Below"],
+            key="gs_events")
+
+    if not selected_events:
+        st.warning("Select at least one event/operator.")
+        return
 
     # Cross-combination: condition group set for target/dynamic
     condition_candidates = None
+    condition_event = None
     if search_group in ("target", "dynamic_stop"):
-        cond_available = get_group_sets_by_type("condition")
-        if cond_available:
-            cond_options = [("none", "No cross-combination")] + \
-                           [(i, gs["name"]) for i, gs in cond_available]
-            cond_sel = st.selectbox(
-                "Condition Group Set (cross-combine)",
-                range(len(cond_options)),
-                format_func=lambda x: cond_options[x][1],
-                key="gs_cross_cond_sel")
-            if cond_sel > 0:
-                cond_global_idx = cond_options[cond_sel][0]
-                condition_candidates = st.session_state["saved_group_sets"][cond_global_idx]["candidates"]
+        cond_options_names = ["No cross-combination"] + gs_names
+        cond_sel = st.selectbox(
+            "Condition Group Set (cross-combine)",
+            range(len(cond_options_names)),
+            format_func=lambda x: cond_options_names[x],
+            key="gs_cross_cond_sel")
+        if cond_sel > 0:
+            condition_candidates = all_group_sets[cond_sel - 1]["candidates"]
+            condition_event = st.selectbox(
+                "Condition Operator",
+                CONDITION_OPERATORS,
+                key="gs_cond_event")
 
     # Show run count
     n_search = len(search_set.get("candidates", []))
+    n_events = len(selected_events)
     n_cond = len(condition_candidates) if condition_candidates else 0
     if search_group in ("target", "dynamic_stop") and n_cond > 0:
-        total_runs = n_search * (n_cond + 1)
-        st.info(f"**{n_search}** candidates x **{n_cond + 1}** (standalone + {n_cond} conditions) = **{total_runs}** total runs")
+        total_runs = n_search * n_events * (n_cond + 1)
+        st.info(f"**{n_search}** candidates x **{n_events}** events x **{n_cond + 1}** (standalone + {n_cond} conditions) = **{total_runs}** total runs")
     else:
-        st.info(f"**{n_search}** candidates to test")
+        total_runs = n_search * n_events
+        st.info(f"**{n_search}** candidates x **{n_events}** events = **{total_runs}** total runs")
 
     st.markdown("---")
 
@@ -232,17 +255,18 @@ def render_grid_search_tab(sidebar_config):
     cached = st.session_state.get("_gs_cached_results")
     if cached:
         fp = _build_cache_fingerprint(selected_strategy, search_group,
-                                       search_set, condition_candidates)
+                                       search_set, selected_events, condition_candidates)
         if cached.get("fingerprint") != fp:
             st.session_state.pop("_gs_cached_results", None)
             cached = None
 
     if calculate_clicked:
         results = _run_grid_search(
-            selected_strategy, search_group, search_set, condition_candidates,
-            sidebar_config, use_original_engine=use_original_engine)
+            selected_strategy, search_group, search_set, selected_events,
+            condition_candidates, condition_event, sidebar_config,
+            use_original_engine=use_original_engine)
         fp = _build_cache_fingerprint(selected_strategy, search_group,
-                                       search_set, condition_candidates)
+                                       search_set, selected_events, condition_candidates)
         sel_labels = [selection_label(s) for s in st.session_state.get("gs_selections", [])]
         st.session_state["_gs_cached_results"] = {
             "fingerprint": fp,
@@ -264,255 +288,113 @@ def render_grid_search_tab(sidebar_config):
 # ======================================================================
 
 def _render_group_set_management():
-    """Render the group set create/edit/delete/import/export UI."""
-    tabs = st.tabs([label for _, label in GROUP_TYPES])
-
-    for tab, (gs_type, gs_label) in zip(tabs, GROUP_TYPES):
-        with tab:
-            available = get_group_sets_by_type(gs_type)
-
-            if available:
-                gs_names = [gs["name"] for _, gs in available]
-                sel = st.selectbox(f"Saved {gs_label} Sets", range(len(gs_names)),
-                                   format_func=lambda x, n=gs_names: n[x],
-                                   key=f"gs_mgmt_{gs_type}_sel")
-                global_idx, selected_gs = available[sel]
-
-                # Show candidates
-                if selected_gs.get("candidates"):
-                    cand_labels = []
-                    for c in selected_gs["candidates"]:
-                        cand_labels.append(format_candidate_label(c, gs_type))
-                    st.caption(f"{len(cand_labels)} candidates")
-                    with st.expander("View candidates", expanded=False):
-                        for i, lbl in enumerate(cand_labels):
-                            st.text(f"{i+1}. {lbl}")
-
-                # Action buttons
-                bc1, bc2, bc3 = st.columns(3)
-                with bc1:
-                    if st.button("Delete", key=f"gs_mgmt_{gs_type}_del", type="secondary"):
-                        delete_group_set(global_idx)
-                        st.rerun()
-                with bc2:
-                    json_data = export_group_set(selected_gs)
-                    st.download_button("Export JSON", json_data,
-                                       file_name=f"{selected_gs['name']}.json",
-                                       mime="application/json",
-                                       key=f"gs_mgmt_{gs_type}_export")
-                with bc3:
-                    if st.button("Edit", key=f"gs_mgmt_{gs_type}_edit_btn"):
-                        st.session_state[f"gs_editing_{gs_type}"] = global_idx
-                        st.rerun()
-
-                # Edit mode
-                if st.session_state.get(f"gs_editing_{gs_type}") is not None:
-                    edit_idx = st.session_state[f"gs_editing_{gs_type}"]
-                    edit_gs = st.session_state["saved_group_sets"][edit_idx]
-                    st.markdown("---")
-                    st.markdown(f"**Editing: {edit_gs['name']}**")
-                    edited_candidates = _render_candidate_editor(
-                        gs_type, list(edit_gs.get("candidates", [])),
-                        f"gs_edit_{gs_type}")
-                    ec1, ec2 = st.columns(2)
-                    with ec1:
-                        if st.button("Save Changes", key=f"gs_edit_{gs_type}_save", type="primary"):
-                            edit_gs["candidates"] = _strip_uids(edited_candidates)
-                            dupes = update_group_set(edit_idx, edit_gs)
-                            if dupes:
-                                st.warning(f"{dupes} duplicate candidate(s) removed.")
-                            st.session_state.pop(f"gs_editing_{gs_type}", None)
-                            st.session_state.pop(f"gs_edit_{gs_type}_candidates", None)
-                            st.rerun()
-                    with ec2:
-                        if st.button("Cancel", key=f"gs_edit_{gs_type}_cancel"):
-                            st.session_state.pop(f"gs_editing_{gs_type}", None)
-                            st.session_state.pop(f"gs_edit_{gs_type}_candidates", None)
-                            st.rerun()
-            else:
-                st.caption(f"No {gs_label} group sets saved yet.")
-
-            st.markdown("---")
-
-            # Import
-            uploaded = st.file_uploader(f"Import {gs_label} Group Set",
-                                        type=["json"], key=f"gs_import_{gs_type}")
-            if uploaded:
-                # Prevent re-importing the same file on every rerun
-                import_id = f"{uploaded.name}_{uploaded.size}"
-                last_import_key = f"_gs_last_import_{gs_type}"
-                if st.session_state.get(last_import_key) != import_id:
-                    try:
-                        data = import_group_set(uploaded.read().decode("utf-8"))
-                        data["type"] = gs_type  # force correct type
-                        dupes_removed = data.pop("_duplicates_removed", 0)
-                        save_group_set(data)
-                        st.session_state[last_import_key] = import_id
-                        msg = f"Imported **{data['name']}** with {len(data['candidates'])} candidates."
-                        if dupes_removed:
-                            msg += f" ({dupes_removed} duplicate(s) removed.)"
-                        st.success(msg)
-                        st.rerun()
-                    except (ValueError, Exception) as e:
-                        st.error(f"Import failed: {e}")
-                else:
-                    st.info("File already imported. Upload a different file or remove and re-upload.")
-
-            # Create new
-            with st.expander(f"Create New {gs_label} Set", expanded=False):
-                new_name = st.text_input("Name", key=f"gs_new_{gs_type}_name")
-                new_candidates = _render_candidate_editor(gs_type, [], f"gs_new_{gs_type}")
-                if st.button("Save New Set", key=f"gs_new_{gs_type}_save", type="primary"):
-                    if not new_name.strip():
-                        st.error("Please provide a name.")
-                    elif not new_candidates:
-                        st.error("Add at least one candidate.")
-                    else:
-                        new_gs = {
-                            "name": new_name.strip(),
-                            "type": gs_type,
-                            "candidates": _strip_uids(new_candidates),
-                        }
-                        dupes = save_group_set(new_gs)
-                        # Clear the "Create New" editor state so it resets
-                        st.session_state.pop(f"gs_new_{gs_type}_candidates", None)
-                        msg = f"Created **{new_name}** with {len(new_gs['candidates'])} candidates."
-                        if dupes:
-                            msg += f" ({dupes} duplicate(s) removed.)"
-                        st.success(msg)
-                        st.rerun()
-
-    # ── Convert Group Set section (outside the per-type tabs) ──
-    st.markdown("---")
-    st.markdown("**Convert Group Set Type**")
-    st.caption("Convert all candidates from one saved group set into a different type (e.g. Conditions → Triggers, Conditions → Static Stops).")
-
+    """Render the universal group set create/edit/delete/import/export UI."""
     all_sets = st.session_state.get("saved_group_sets", [])
-    if not all_sets:
-        st.info("No group sets available to convert.")
+
+    if all_sets:
+        gs_names = [gs["name"] for gs in all_sets]
+        sel = st.selectbox("Saved Group Sets", range(len(gs_names)),
+                           format_func=lambda x, n=gs_names: n[x],
+                           key="gs_mgmt_sel")
+        selected_gs = all_sets[sel]
+
+        # Show candidates
+        if selected_gs.get("candidates"):
+            cand_labels = [format_candidate_label(c) for c in selected_gs["candidates"]]
+            st.caption(f"{len(cand_labels)} candidates")
+            with st.expander("View candidates", expanded=False):
+                for i, lbl in enumerate(cand_labels):
+                    st.text(f"{i+1}. {lbl}")
+
+        # Action buttons
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1:
+            if st.button("Delete", key="gs_mgmt_del", type="secondary"):
+                delete_group_set(sel)
+                st.rerun()
+        with bc2:
+            json_data = export_group_set(selected_gs)
+            st.download_button("Export JSON", json_data,
+                               file_name=f"{selected_gs['name']}.json",
+                               mime="application/json",
+                               key="gs_mgmt_export")
+        with bc3:
+            if st.button("Edit", key="gs_mgmt_edit_btn"):
+                st.session_state["gs_editing"] = sel
+                st.rerun()
+
+        # Edit mode
+        if st.session_state.get("gs_editing") is not None:
+            edit_idx = st.session_state["gs_editing"]
+            if edit_idx < len(all_sets):
+                edit_gs = all_sets[edit_idx]
+                st.markdown("---")
+                st.markdown(f"**Editing: {edit_gs['name']}**")
+                edited_candidates = _render_candidate_editor(
+                    list(edit_gs.get("candidates", [])), "gs_edit")
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    if st.button("Save Changes", key="gs_edit_save", type="primary"):
+                        edit_gs["candidates"] = _strip_uids(edited_candidates)
+                        dupes = update_group_set(edit_idx, edit_gs)
+                        if dupes:
+                            st.warning(f"{dupes} duplicate candidate(s) removed.")
+                        st.session_state.pop("gs_editing", None)
+                        st.session_state.pop("gs_edit_candidates", None)
+                        st.rerun()
+                with ec2:
+                    if st.button("Cancel", key="gs_edit_cancel"):
+                        st.session_state.pop("gs_editing", None)
+                        st.session_state.pop("gs_edit_candidates", None)
+                        st.rerun()
     else:
-        conv_c1, conv_c2, conv_c3 = st.columns([3, 2, 2])
+        st.caption("No group sets saved yet.")
 
-        with conv_c1:
-            conv_source_labels = [
-                f"{gs['name']}  ({dict(GROUP_TYPES).get(gs['type'], gs['type'])})"
-                for gs in all_sets
-            ]
-            conv_src_idx = st.selectbox(
-                "Source Group Set", range(len(all_sets)),
-                format_func=lambda x: conv_source_labels[x],
-                key="gs_conv_source")
-            source_gs = all_sets[conv_src_idx]
-            source_type = source_gs["type"]
-
-        with conv_c2:
-            # Show all target types except the source type
-            target_types = [(k, v) for k, v in GROUP_TYPES if k != source_type]
-            conv_target_idx = st.selectbox(
-                "Convert To", range(len(target_types)),
-                format_func=lambda x: target_types[x][1],
-                key="gs_conv_target")
-            target_type_key, target_type_label = target_types[conv_target_idx]
-
-        with conv_c3:
-            conv_name = st.text_input(
-                "New Set Name",
-                value=f"{source_gs['name']} ({target_type_label})",
-                key="gs_conv_name")
-
-        if st.button("Convert & Save", key="gs_conv_btn", type="primary"):
-            source_candidates = source_gs.get("candidates", [])
-            if not source_candidates:
-                st.error("Source group set has no candidates.")
-            else:
-                converted, skipped = convert_group_set_candidates(
-                    source_candidates, source_type, target_type_key)
-
-                if not converted:
-                    st.error(f"No candidates could be converted. "
-                             f"All {skipped} candidate(s) are incompatible "
-                             f"(e.g. ATR stops, ATR targets, R Profit/Loss, or Fixed Value comparisons).")
-                else:
-                    new_gs = {
-                        "name": conv_name.strip() or f"{source_gs['name']} ({target_type_label})",
-                        "type": target_type_key,
-                        "candidates": converted,
-                    }
-                    dupes = save_group_set(new_gs)
-                    msg = (f"Converted **{len(converted)}** candidates from "
-                           f"**{dict(GROUP_TYPES).get(source_type, source_type)}** "
-                           f"to **{target_type_label}** and saved as **{new_gs['name']}**.")
-                    if skipped:
-                        msg += f" ({skipped} candidate(s) skipped — incompatible.)"
-                    if dupes:
-                        msg += f" ({dupes} duplicate(s) removed.)"
-                    st.success(msg)
-                    st.rerun()
-
-    # ── Convert Event Type (Cross ↔ Close) ────────────────
     st.markdown("---")
-    st.markdown("**Convert Event Type (Cross ↔ Close)**")
-    st.caption("Create a copy of a group set with all Cross events converted to Close (or vice versa). "
-               "Conditions (Above/Below) have no Cross/Close distinction and are kept unchanged.")
 
-    if not all_sets:
-        st.info("No group sets available.")
-    else:
-        ev_c1, ev_c2, ev_c3 = st.columns([3, 2, 2])
+    # Import
+    uploaded = st.file_uploader("Import Group Set",
+                                type=["json"], key="gs_import")
+    if uploaded:
+        import_id = f"{uploaded.name}_{uploaded.size}"
+        last_import_key = "_gs_last_import"
+        if st.session_state.get(last_import_key) != import_id:
+            try:
+                data = import_group_set(uploaded.read().decode("utf-8"))
+                dupes_removed = data.pop("_duplicates_removed", 0)
+                save_group_set(data)
+                st.session_state[last_import_key] = import_id
+                msg = f"Imported **{data['name']}** with {len(data['candidates'])} candidates."
+                if dupes_removed:
+                    msg += f" ({dupes_removed} duplicate(s) removed.)"
+                st.success(msg)
+                st.rerun()
+            except (ValueError, Exception) as e:
+                st.error(f"Import failed: {e}")
+        else:
+            st.info("File already imported. Upload a different file or remove and re-upload.")
 
-        with ev_c1:
-            ev_source_labels = [
-                f"{gs['name']}  ({dict(GROUP_TYPES).get(gs['type'], gs['type'])})"
-                for gs in all_sets
-            ]
-            ev_src_idx = st.selectbox(
-                "Source Group Set", range(len(all_sets)),
-                format_func=lambda x: ev_source_labels[x],
-                key="gs_ev_source")
-            ev_source_gs = all_sets[ev_src_idx]
-
-        with ev_c2:
-            ev_mode_idx = st.selectbox(
-                "Conversion", range(len(EVENT_CONVERSION_MODES)),
-                format_func=lambda x: EVENT_CONVERSION_MODES[x][1],
-                key="gs_ev_mode")
-            ev_mode_key, ev_mode_label = EVENT_CONVERSION_MODES[ev_mode_idx]
-
-        with ev_c3:
-            ev_name = st.text_input(
-                "New Set Name",
-                value=f"{ev_source_gs['name']} ({ev_mode_label})",
-                key="gs_ev_name")
-
-        if st.button("Convert Events & Save", key="gs_ev_btn", type="primary"):
-            ev_candidates = ev_source_gs.get("candidates", [])
-            ev_type = ev_source_gs["type"]
-            if not ev_candidates:
-                st.error("Source group set has no candidates.")
-            elif ev_type == "condition":
-                st.warning("Conditions use Above/Below operators, not Cross/Close events. "
-                           "Nothing to convert.")
+    # Create new
+    with st.expander("Create New Group Set", expanded=False):
+        new_name = st.text_input("Name", key="gs_new_name")
+        new_candidates = _render_candidate_editor([], "gs_new")
+        if st.button("Save New Set", key="gs_new_save", type="primary"):
+            if not new_name.strip():
+                st.error("Please provide a name.")
+            elif not new_candidates:
+                st.error("Add at least one candidate.")
             else:
-                converted, changed, unchanged = convert_group_set_events(
-                    ev_candidates, ev_type, ev_mode_key)
-                if changed == 0:
-                    st.warning(f"No events matched the conversion. All {unchanged} candidate(s) "
-                               f"already use the target event type or are incompatible.")
-                else:
-                    new_gs = {
-                        "name": ev_name.strip() or f"{ev_source_gs['name']} ({ev_mode_label})",
-                        "type": ev_type,
-                        "candidates": converted,
-                    }
-                    dupes = save_group_set(new_gs)
-                    msg = (f"Converted events for **{changed}** candidate(s) "
-                           f"({ev_mode_label}) and saved as **{new_gs['name']}**.")
-                    if unchanged:
-                        msg += f" ({unchanged} candidate(s) unchanged — already target type or no event field.)"
-                    if dupes:
-                        msg += f" ({dupes} duplicate(s) removed.)"
-                    st.success(msg)
-                    st.rerun()
+                new_gs = {
+                    "name": new_name.strip(),
+                    "candidates": _strip_uids(new_candidates),
+                }
+                dupes = save_group_set(new_gs)
+                st.session_state.pop("gs_new_candidates", None)
+                msg = f"Created **{new_name}** with {len(new_gs['candidates'])} candidates."
+                if dupes:
+                    msg += f" ({dupes} duplicate(s) removed.)"
+                st.success(msg)
+                st.rerun()
 
 
 # ======================================================================
@@ -557,7 +439,7 @@ def _ensure_candidate_uids(candidates):
 CANDIDATE_PAGE_SIZE = 20
 
 
-def _render_candidate_editor(group_type, initial_candidates, prefix):
+def _render_candidate_editor(initial_candidates, prefix):
     """Render an editable list of candidates with pagination. Returns list of candidate dicts."""
     # Use session state to track candidates for this editor
     state_key = f"{prefix}_candidates"
@@ -602,7 +484,7 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
         cand = candidates[i]
         uid = cand['_uid']
         st.markdown(f"**Candidate {i+1}**")
-        updated = _render_single_candidate(group_type, cand, f"{prefix}_{uid}", ema_count)
+        updated = _render_single_candidate(cand, f"{prefix}_{uid}", ema_count)
         # Preserve UID
         updated['_uid'] = uid
         candidates[i] = updated
@@ -622,7 +504,7 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
         st.rerun()
 
     if st.button("+ Add Candidate", key=f"{prefix}_add"):
-        new_cand = _default_candidate(group_type)
+        new_cand = _default_candidate()
         new_cand['_uid'] = _next_candidate_uid()
         candidates.append(new_cand)
         st.session_state[state_key] = candidates
@@ -633,48 +515,46 @@ def _render_candidate_editor(group_type, initial_candidates, prefix):
     return candidates
 
 
-def _default_candidate(group_type):
-    """Return a default empty candidate dict for a given group type."""
-    if group_type == "condition":
-        return {
-            "group": "Price & Indicators",
-            "element1": "Price",
-            "operator": "Above",
-            "compare_type": "Indicator",
-            "element2": "Tenkan",
-            "value": None,
-        }
-    elif group_type == "static_stop":
+def _default_candidate():
+    """Return a default universal candidate dict."""
+    return {
+        "group": "Price & Indicators",
+        "element1": "Price",
+        "compare_type": "Indicator",
+        "element2": "Tenkan",
+        "value": None,
+    }
+
+
+def _render_single_candidate(cand, prefix, ema_count):
+    """Render widgets for a single universal candidate and return updated dict.
+
+    No event/operator — those are selected at search time.
+    """
+    # Check if this is an ATR stop candidate
+    is_atr_stop = cand.get("stop_type") == "ATR"
+
+    # ATR Stop toggle
+    atr_stop_checked = st.checkbox("ATR Stop", value=is_atr_stop, key=f"{prefix}_atr_stop")
+
+    if atr_stop_checked:
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            atr_period = st.number_input("ATR Period", 1, 200,
+                                         value=int(cand.get("atr_period", 14)),
+                                         step=1, key=f"{prefix}_atr_p")
+        with ac2:
+            atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
+                                        value=float(cand.get("atr_multiplier", 2.0)),
+                                        step=0.1, format="%.1f", key=f"{prefix}_atr_m")
         return {
             "stop_type": "ATR",
-            "element1": "Price",
-            "event": "Cross Below",
-            "atr_period": 14,
-            "atr_multiplier": 2.0,
-        }
-    else:
-        return {
-            "group": "Price & Indicators",
-            "element1": "Price",
-            "event": "Cross Above",
-            "compare_type": "Indicator",
-            "element2": "Tenkan",
-            "value": None,
+            "atr_period": atr_period,
+            "atr_multiplier": atr_mult,
         }
 
-
-def _render_single_candidate(group_type, cand, prefix, ema_count):
-    """Render widgets for a single candidate and return updated dict."""
-
-    if group_type == "static_stop":
-        return _render_static_stop_edit(cand, prefix, ema_count)
-
-    # Common layout for trigger, condition, dynamic_stop, target
-    include_r = group_type in ("dynamic_stop", "target")
-    include_atr_target = group_type == "target"
-    is_condition = group_type == "condition"
-
-    c_grp, c_e1, c_ev, c_cmp, c_e2 = st.columns([2, 2, 2, 1.5, 2])
+    # Standard candidate: Group, Element 1, Compare, Element 2/Value
+    c_grp, c_e1, c_cmp, c_e2 = st.columns([2, 2, 1.5, 2])
 
     with c_grp:
         group_idx = GROUP_NAMES.index(cand.get("group", GROUP_NAMES[0])) if cand.get("group") in GROUP_NAMES else 0
@@ -682,11 +562,8 @@ def _render_single_candidate(group_type, cand, prefix, ema_count):
 
     with c_e1:
         elements = get_group_elements(group, ema_count)
-        extra = []
-        if include_r:
-            extra.extend(R_PROFIT_LOSS_ELEMENTS)
-        if include_atr_target:
-            extra.extend(ATR_TARGET_ELEMENTS)
+        # Include special elements (R Profit/Loss, ATR Target) — universal
+        extra = list(R_PROFIT_LOSS_ELEMENTS) + list(ATR_TARGET_ELEMENTS)
         all_e1 = elements + extra
         e1_val = cand.get("element1", all_e1[0])
         if e1_val not in all_e1:
@@ -695,20 +572,6 @@ def _render_single_candidate(group_type, cand, prefix, ema_count):
 
     is_r = element1 in R_PROFIT_LOSS_ELEMENTS
     is_atr_target = element1 in ATR_TARGET_ELEMENTS
-
-    with c_ev:
-        if is_condition:
-            ops = CONDITION_OPERATORS
-            op_val = cand.get("operator", ops[0])
-            if op_val not in ops:
-                op_val = ops[0]
-            operator = st.selectbox("Operator", ops, index=ops.index(op_val), key=f"{prefix}_op")
-        else:
-            evts = STOP_EVENT_TYPES if group_type in ("dynamic_stop", "target") else EVENT_TYPES
-            ev_val = cand.get("event", evts[0])
-            if ev_val not in evts:
-                ev_val = evts[0]
-            event = st.selectbox("Event", evts, index=evts.index(ev_val), key=f"{prefix}_ev")
 
     with c_cmp:
         if is_r:
@@ -732,19 +595,11 @@ def _render_single_candidate(group_type, cand, prefix, ema_count):
             atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
                                         value=float(cand.get("atr_multiplier", 2.0)),
                                         step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-            result = {
-                "group": group,
+            return {
                 "element1": element1,
-                "event": event if not is_condition else None,
-                "compare_type": "Indicator",
-                "element2": None,
-                "value": None,
                 "atr_period": atr_period,
                 "atr_multiplier": atr_mult,
             }
-            if is_condition:
-                result["operator"] = operator
-            return result
 
         elif compare == "Indicator":
             all_elements = []
@@ -761,72 +616,13 @@ def _render_single_candidate(group_type, cand, prefix, ema_count):
             value = st.number_input("Value", value=float(cand.get("value") or 0.0),
                                     step=0.01, format="%.4f", key=f"{prefix}_val")
 
-    result = {
+    return {
         "group": group,
         "element1": element1,
         "compare_type": compare,
         "element2": element2,
         "value": value,
     }
-    if is_condition:
-        result["operator"] = operator
-    else:
-        result["event"] = event
-    return result
-
-
-def _render_static_stop_edit(cand, prefix, ema_count):
-    """Render a static stop candidate editor."""
-    c_type, c_detail = st.columns([1.5, 3])
-    with c_type:
-        st_val = cand.get("stop_type", "ATR")
-        st_opts = ["ATR", "Indicator"]
-        stop_type = st.selectbox("Stop Type", st_opts,
-                                 index=st_opts.index(st_val) if st_val in st_opts else 0,
-                                 key=f"{prefix}_stype")
-
-    with c_detail:
-        if stop_type == "ATR":
-            ac1, ac2 = st.columns(2)
-            with ac1:
-                atr_period = st.number_input("ATR Period", 1, 200,
-                                             value=int(cand.get("atr_period", 14)),
-                                             step=1, key=f"{prefix}_atr_p")
-            with ac2:
-                atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
-                                           value=float(cand.get("atr_multiplier", 2.0)),
-                                           step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-            return {
-                "element1": "Price",
-                "stop_type": "ATR",
-                "event": cand.get("event", "Cross Below"),
-                "atr_period": atr_period,
-                "atr_multiplier": atr_mult,
-            }
-        else:
-            all_elements = []
-            for g in GROUP_NAMES:
-                all_elements.extend(get_group_elements(g, ema_count))
-            e2_val = cand.get("element2", all_elements[0] if all_elements else "Tenkan")
-            if e2_val not in all_elements:
-                e2_val = all_elements[0]
-            element2 = st.selectbox("Stop Element", all_elements,
-                                    index=all_elements.index(e2_val),
-                                    key=f"{prefix}_e2")
-            ev_val = cand.get("event", STOP_EVENT_TYPES[0])
-            if ev_val not in STOP_EVENT_TYPES:
-                ev_val = STOP_EVENT_TYPES[0]
-            event = st.selectbox("Event", STOP_EVENT_TYPES,
-                                 index=STOP_EVENT_TYPES.index(ev_val),
-                                 key=f"{prefix}_ev")
-            return {
-                "stop_type": "Indicator",
-                "group": "Price & Indicators",
-                "element1": "Price",
-                "element2": element2,
-                "event": event,
-                "compare_type": "Indicator",
-            }
 
 
 # ======================================================================
@@ -1152,8 +948,9 @@ def _aggregate_stats_dicts(all_stats_dicts):
 # Grid Search execution
 # ======================================================================
 
-def _run_grid_search(selected_strategy, search_group, search_set,
-                     condition_candidates, sidebar_config, use_original_engine=False):
+def _run_grid_search(selected_strategy, search_group, search_set, selected_events,
+                     condition_candidates, condition_event, sidebar_config,
+                     use_original_engine=False):
     """Run backtests for all candidate runs.
 
     Returns list of (label, global_agg, selection_results) where
@@ -1239,7 +1036,8 @@ def _run_grid_search(selected_strategy, search_group, search_set,
 
     search_candidates = search_set.get("candidates", [])
     run_configs = generate_run_configs(
-        base, search_group, search_candidates, condition_candidates)
+        base, search_group, search_candidates, selected_events,
+        condition_candidates=condition_candidates, condition_event=condition_event)
 
     if not run_configs:
         st.warning("No run configurations generated.")
@@ -1483,7 +1281,7 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
 # Cache helpers
 # ======================================================================
 
-def _build_cache_fingerprint(strategy, search_group, search_set, condition_candidates):
+def _build_cache_fingerprint(strategy, search_group, search_set, selected_events, condition_candidates):
     """Build a hashable fingerprint for cache invalidation."""
     import json
     parts = [
@@ -1491,6 +1289,7 @@ def _build_cache_fingerprint(strategy, search_group, search_set, condition_candi
         search_group,
         search_set.get("name", ""),
         json.dumps(search_set.get("candidates", []), sort_keys=True),
+        json.dumps(sorted(selected_events)),
         json.dumps(condition_candidates, sort_keys=True) if condition_candidates else "",
     ]
     return "|".join(parts)

@@ -1,5 +1,6 @@
 """
 Group Set management — save, load, delete, import/export for Grid Search group sets.
+Universal group sets: no type field, candidates store only element pairs.
 """
 import streamlit as st
 import json
@@ -21,6 +22,14 @@ def _deduplicate_candidates(group_set):
     removed = len(candidates) - len(unique)
     group_set["candidates"] = unique
     return removed
+
+
+def _strip_legacy_fields(data):
+    """Strip old type-specific fields from imported/legacy group sets."""
+    data.pop("type", None)
+    for cand in data.get("candidates", []):
+        cand.pop("event", None)
+        cand.pop("operator", None)
 
 
 def load_group_sets():
@@ -72,25 +81,23 @@ def export_group_set(group_set):
 
 
 def import_group_set(json_str):
-    """Parse and validate a group set from JSON string. Returns dict or raises ValueError."""
+    """Parse and validate a group set from JSON string. Returns dict or raises ValueError.
+
+    Accepts both old format (with type/event/operator fields) and new universal format.
+    Legacy fields are stripped automatically.
+    """
     data = json.loads(json_str)
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object.")
-    for field in ("name", "type", "candidates"):
-        if field not in data:
-            raise ValueError(f"Missing required field: '{field}'")
-    valid_types = ("trigger", "condition", "static_stop", "dynamic_stop", "target")
-    if data["type"] not in valid_types:
-        raise ValueError(f"Invalid type '{data['type']}'. Must be one of: {valid_types}")
+    if "name" not in data:
+        raise ValueError("Missing required field: 'name'")
+    if "candidates" not in data:
+        raise ValueError("Missing required field: 'candidates'")
     if not isinstance(data["candidates"], list):
         raise ValueError("'candidates' must be a list.")
+    # Strip legacy type-specific fields
+    _strip_legacy_fields(data)
     removed = _deduplicate_candidates(data)
     if removed:
         data["_duplicates_removed"] = removed
     return data
-
-
-def get_group_sets_by_type(gs_type):
-    """Return list of (index, group_set) for a given type."""
-    sets = st.session_state.get("saved_group_sets", [])
-    return [(i, gs) for i, gs in enumerate(sets) if gs.get("type") == gs_type]

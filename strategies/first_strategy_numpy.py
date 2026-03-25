@@ -294,24 +294,32 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
     # For indicator-based exits (not R Profit/Loss, not ATR Target),
     # pre-compute trigger + condition masks.
     # -------------------------------------------------
-    _exit_masks = {}   # id(exit_config) -> combined bool mask
-    _exit_prices = {}  # id(exit_config) -> prices array
+    _exit_masks = {}   # (group_idx, 'target'/'stop', item_idx) -> combined bool mask
+    _exit_prices = {}  # (group_idx, 'target'/'stop', item_idx) -> prices array
 
-    for group in exit_groups:
-        for item in group.get('targets', []) + group.get('stops', []):
+    for g_idx, group in enumerate(exit_groups):
+        for t_idx, item in enumerate(group.get('targets', [])):
             trigger = item.get('trigger', {})
             el1 = trigger.get('element1', '')
             if el1 in ('R Profit', 'R Loss', 'ATR Target'):
-                continue  # position-dependent, can't pre-compute
-
+                continue
             t_mask, t_prices = _vec_trigger(
                 trigger, _arrays, indicator_map, _high, _low, _close, _n)
-
-            # AND all conditions
             for cond in item.get('conditions', []):
                 t_mask = t_mask & _vec_condition(cond, _arrays, indicator_map, _n)
-
-            key = id(item)
+            key = (g_idx, 'target', t_idx)
+            _exit_masks[key] = t_mask
+            _exit_prices[key] = t_prices
+        for s_idx, item in enumerate(group.get('stops', [])):
+            trigger = item.get('trigger', {})
+            el1 = trigger.get('element1', '')
+            if el1 in ('R Profit', 'R Loss', 'ATR Target'):
+                continue
+            t_mask, t_prices = _vec_trigger(
+                trigger, _arrays, indicator_map, _high, _low, _close, _n)
+            for cond in item.get('conditions', []):
+                t_mask = t_mask & _vec_condition(cond, _arrays, indicator_map, _n)
+            key = (g_idx, 'stop', s_idx)
             _exit_masks[key] = t_mask
             _exit_prices[key] = t_prices
 
@@ -535,8 +543,8 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                     alloc_pct = group.get('allocation_pct', 100.0)
 
                     # Check targets
-                    for target in group.get('targets', []):
-                        target_key = id(target)
+                    for t_idx, target in enumerate(group.get('targets', [])):
+                        target_key = (group_idx, 'target', t_idx)
                         trigger = target.get('trigger', {})
                         el1 = trigger.get('element1', '')
                         hit = False
@@ -575,8 +583,8 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
                     # Check stops (only if no target hit for this group)
                     if group_idx not in groups_to_close:
-                        for stop in group.get('stops', []):
-                            stop_key = id(stop)
+                        for s_idx, stop in enumerate(group.get('stops', [])):
+                            stop_key = (group_idx, 'stop', s_idx)
                             trigger = stop.get('trigger', {})
                             el1 = trigger.get('element1', '')
                             hit = False
@@ -655,15 +663,15 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
             # Compute locked ATR target prices
             locked_atr_targets = {}
-            for group in exit_groups:
-                for target in group.get('targets', []):
+            for g_idx, group in enumerate(exit_groups):
+                for t_idx, target in enumerate(group.get('targets', [])):
                     t_trigger = target.get('trigger', {})
                     if t_trigger.get('element1') == 'ATR Target':
-                        locked_atr_targets[id(target)] = _compute_atr_target_level(t_trigger, new_entry_price, i)
-                for stop in group.get('stops', []):
+                        locked_atr_targets[(g_idx, 'target', t_idx)] = _compute_atr_target_level(t_trigger, new_entry_price, i)
+                for s_idx, stop in enumerate(group.get('stops', [])):
                     s_trigger = stop.get('trigger', {})
                     if s_trigger.get('element1') == 'ATR Target':
-                        locked_atr_targets[id(stop)] = _compute_atr_target_level(s_trigger, new_entry_price, i)
+                        locked_atr_targets[(g_idx, 'stop', s_idx)] = _compute_atr_target_level(s_trigger, new_entry_price, i)
 
             open_positions.append({
                 'trade_id': trade_counter,

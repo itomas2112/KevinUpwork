@@ -3,12 +3,13 @@ Performance tab (Tab 3) - Aggregated backtest metrics across multiple Elliott Wa
 Independent pattern selection UI with 6 modes, "+ Add Selection" rows, and global metrics.
 Fully self-contained: own strategy selector, date range, and calculate button.
 """
+import json
 import streamlit as st
 import pandas as pd
 
 from data.loader import parse_drm_periods
 from data.helpers import PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES, expand_selection, selection_label
-from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings
+from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings, strategy_indicator_flags
 from strategies.first_strategy import execute_custom_strategy
 from ui.charting_tab import _aggregate_stats, _get_or_calculate
 
@@ -212,7 +213,8 @@ def render_performance_tab(sidebar_config):
 
     # Invalidate cached results if strategy changed
     cached_results = st.session_state.get('_perf_cached_results')
-    if cached_results and cached_results.get('strategy_name') != selected_strategy.get('strategy_name', 'Custom'):
+    strategy_fingerprint = json.dumps(selected_strategy, sort_keys=True, default=str)
+    if cached_results and cached_results.get('_strategy_fingerprint') != strategy_fingerprint:
         st.session_state.pop('_perf_cached_results', None)
         cached_results = None
 
@@ -248,6 +250,9 @@ def render_performance_tab(sidebar_config):
     results = {}  # selection_label -> aggregated dict
     global_stats = []  # deduplicated stats for global metrics
     global_seen_combos = set()  # track (pattern_type, primary, secondary) already counted globally
+
+    # Detect which overlay indicators the strategy uses for NaN-drop
+    ind_flags = strategy_indicator_flags(selected_strategy)
 
     # Cache backtest results per combo to avoid re-running identical combos
     combo_cache = {}  # (pattern_type, primary, secondary) -> list of stats
@@ -305,11 +310,7 @@ def render_performance_tab(sidebar_config):
             for start_dt, end_dt in periods:
                 df_slice, period_start, period_end = slice_for_graph(
                     df=df_full, start_date=start_dt, end_date=end_dt,
-                    show_ichimoku=False,
-                    show_bb=False,
-                    show_kc=False,
-                    show_donchian=False,
-                    show_psar=False,
+                    **ind_flags,
                 )
                 if df_slice.empty:
                     continue
@@ -348,6 +349,7 @@ def render_performance_tab(sidebar_config):
     # Cache results in session state so they persist across reruns
     st.session_state['_perf_cached_results'] = {
         'strategy_name': strategy_name,
+        '_strategy_fingerprint': json.dumps(selected_strategy, sort_keys=True, default=str),
         'global_agg': global_agg,
         'results': results,
     }

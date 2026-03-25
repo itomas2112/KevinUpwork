@@ -972,6 +972,12 @@ def render_save_button(strategy_name_input: str):
             if is_editing:
                 # Update existing strategy
                 editing_idx = st.session_state.get('editing_strategy_idx')
+                strategies_list = st.session_state.get('saved_strategies', [])
+                if editing_idx is None or editing_idx >= len(strategies_list):
+                    st.error("Strategy no longer exists (it may have been deleted). Please cancel and try again.")
+                    st.session_state['editing_strategy'] = False
+                    st.session_state['editing_strategy_idx'] = None
+                    return
                 # Delete the old version
                 old_strategy = st.session_state['saved_strategies'].pop(editing_idx)
                 # Save the updated version
@@ -981,6 +987,11 @@ def render_save_button(strategy_name_input: str):
                     # Validation failed — restore the old strategy
                     st.session_state['saved_strategies'].insert(editing_idx, old_strategy)
                     return
+
+                # Move updated strategy from end back to its original position
+                updated = st.session_state['saved_strategies'].pop()
+                st.session_state['saved_strategies'].insert(editing_idx, updated)
+                save_strategies_to_file()
 
                 # Clear editing flags
                 st.session_state['editing_strategy'] = False

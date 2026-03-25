@@ -403,6 +403,67 @@ def calculate_indicators(
 
     return df
 
+_ICHIMOKU_ELEMENTS = {"Tenkan", "Kijun", "Senkou A", "Senkou B", "Chikou"}
+_BB_ELEMENTS = {"BB Upper Band", "BB Middle Band", "BB Lower Band"}
+_KC_ELEMENTS = {"KC Upper Band", "KC Middle Band", "KC Lower Band"}
+_DC_ELEMENTS = {"DC Upper Band", "DC Middle Band", "DC Lower Band"}
+_PSAR_ELEMENTS = {"PSAR", "PSAR Upper", "PSAR Lower"}
+
+
+def strategy_indicator_flags(strategy):
+    """Inspect a strategy dict and return which overlay indicators it references.
+
+    Returns a dict with keys: show_ichimoku, show_bb, show_kc, show_donchian, show_psar.
+    """
+    flags = {
+        "show_ichimoku": False,
+        "show_bb": False,
+        "show_kc": False,
+        "show_donchian": False,
+        "show_psar": False,
+    }
+
+    def _check(name):
+        if name in _ICHIMOKU_ELEMENTS:
+            flags["show_ichimoku"] = True
+        elif name in _BB_ELEMENTS:
+            flags["show_bb"] = True
+        elif name in _KC_ELEMENTS:
+            flags["show_kc"] = True
+        elif name in _DC_ELEMENTS:
+            flags["show_donchian"] = True
+        elif name in _PSAR_ELEMENTS:
+            flags["show_psar"] = True
+
+    def _scan_trigger(trigger):
+        if not trigger:
+            return
+        _check(trigger.get("element1", ""))
+        _check(trigger.get("element2", ""))
+
+    def _scan_conditions(conditions):
+        for cond in (conditions or []):
+            _check(cond.get("element1", ""))
+            _check(cond.get("element2", ""))
+
+    entry = strategy.get("entry", {})
+    _scan_trigger(entry.get("trigger"))
+    _scan_conditions(entry.get("conditions"))
+
+    initial_stop = strategy.get("initial_stop", {})
+    _check(initial_stop.get("element2", ""))
+
+    for group in strategy.get("exit_groups", []):
+        for target in group.get("targets", []):
+            _scan_trigger(target.get("trigger"))
+            _scan_conditions(target.get("conditions"))
+        for stop in group.get("stops", []):
+            _scan_trigger(stop.get("trigger"))
+            _scan_conditions(stop.get("conditions"))
+
+    return flags
+
+
 def slice_for_graph(
         df: pd.DataFrame,
         start_date,

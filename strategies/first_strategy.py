@@ -747,7 +747,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # Helper function to check exit (target or stop)
     # -------------------------------------------------
     def check_exit_signal(exit_config, current_idx, pos_entry_price=None, pos_r_distance=0.0,
-                          locked_atr_targets=None):
+                          locked_atr_targets=None, exit_key=None):
         """Check if an exit signal (target or stop) is triggered"""
         trigger = exit_config.get('trigger', {})
         conditions = exit_config.get('conditions', [])
@@ -767,7 +767,6 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         # ATR Target triggers use locked price from entry
         if element1 == "ATR Target" and locked_atr_targets is not None:
             # Look up the locked price for this specific exit config
-            exit_key = id(exit_config)
             locked_price = locked_atr_targets.get(exit_key)
             if not check_atr_target_trigger(trigger, current_idx, locked_price):
                 return False
@@ -993,9 +992,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                     alloc_pct = group.get('allocation_pct', 100.0)
 
                     # Check targets
-                    for target in group.get('targets', []):
+                    for t_idx, target in enumerate(group.get('targets', [])):
+                        target_key = (group_idx, 'target', t_idx)
                         if check_exit_signal(target, i, pos['entry_price'], pos['r_distance'],
-                                             locked_atr_targets=pos.get('locked_atr_targets')):
+                                             locked_atr_targets=pos.get('locked_atr_targets'),
+                                             exit_key=target_key):
                             pos_exit_triggered = True
                             if pos_exit_type is None:
                                 pos_exit_type = "Target"
@@ -1005,7 +1006,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                             if t_el1 in ("R Profit", "R Loss"):
                                 t_exit_price = get_r_trigger_price(target_trigger, i, pos['entry_price'], pos['r_distance'])
                             elif t_el1 == "ATR Target":
-                                t_exit_price = get_atr_target_price(pos.get('locked_atr_targets', {}).get(id(target)))
+                                t_exit_price = get_atr_target_price(pos.get('locked_atr_targets', {}).get(target_key))
                             else:
                                 t_exit_price = get_trigger_price(target_trigger, i)
                             all_trades.append({
@@ -1022,9 +1023,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
                     # If no target hit, check stops
                     if group_idx not in groups_to_close:
-                        for stop in group.get('stops', []):
+                        for s_idx, stop in enumerate(group.get('stops', [])):
+                            stop_key = (group_idx, 'stop', s_idx)
                             if check_exit_signal(stop, i, pos['entry_price'], pos['r_distance'],
-                                                 locked_atr_targets=pos.get('locked_atr_targets')):
+                                                 locked_atr_targets=pos.get('locked_atr_targets'),
+                                                 exit_key=stop_key):
                                 pos_exit_triggered = True
                                 pos_exit_type = "Stop"
 
@@ -1033,7 +1036,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                                 if s_el1 in ("R Profit", "R Loss"):
                                     s_exit_price = get_r_trigger_price(stop_trigger, i, pos['entry_price'], pos['r_distance'])
                                 elif s_el1 == "ATR Target":
-                                    s_exit_price = get_atr_target_price(pos.get('locked_atr_targets', {}).get(id(stop)))
+                                    s_exit_price = get_atr_target_price(pos.get('locked_atr_targets', {}).get(stop_key))
                                 else:
                                     s_exit_price = get_trigger_price(stop_trigger, i)
                                 all_trades.append({
@@ -1104,17 +1107,17 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
                 # Compute locked ATR target prices for any ATR Target exits
                 locked_atr_targets = {}
-                for group in exit_groups:
-                    for target in group.get('targets', []):
+                for g_idx, group in enumerate(exit_groups):
+                    for t_idx, target in enumerate(group.get('targets', [])):
                         t_trigger = target.get('trigger', {})
                         if t_trigger.get('element1') == 'ATR Target':
                             level = compute_atr_target_level(t_trigger, new_entry_price, i)
-                            locked_atr_targets[id(target)] = level
-                    for stop in group.get('stops', []):
+                            locked_atr_targets[(g_idx, 'target', t_idx)] = level
+                    for s_idx, stop in enumerate(group.get('stops', [])):
                         s_trigger = stop.get('trigger', {})
                         if s_trigger.get('element1') == 'ATR Target':
                             level = compute_atr_target_level(s_trigger, new_entry_price, i)
-                            locked_atr_targets[id(stop)] = level
+                            locked_atr_targets[(g_idx, 'stop', s_idx)] = level
 
                 open_positions.append({
                     'trade_id': trade_counter,
