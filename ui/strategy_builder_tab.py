@@ -142,6 +142,8 @@ def _apply_pending_edit():
             'supertrend_period', 'supertrend_multiplier',
             'dc_upper_period', 'dc_mid_period', 'dc_lower_period', 'dc_offset',
             'psar_af_start', 'psar_af_increment', 'psar_af_max',
+            'willr_period', 'cci_period', 'roc_period', 'roc_signal_period',
+            'lr_period', 'lr_multiplier',
         ]
         for key in setting_keys:
             if key in ind_settings:
@@ -433,7 +435,8 @@ def render_strategy_indicator_settings():
     with st.expander("EMA Overlay", expanded=False):
         ema_state_key = f'{pfx}ema_periods'
         if ema_state_key not in st.session_state:
-            st.session_state[ema_state_key] = []
+            from config.constants import DEFAULT_EMA_PERIODS
+            st.session_state[ema_state_key] = list(DEFAULT_EMA_PERIODS)
 
         # Generation counter to guarantee fresh widget keys after deletions
         sb_ema_gen_key = f"_sb_ema_gen_{pfx}"
@@ -504,6 +507,44 @@ def render_strategy_indicator_settings():
             "AF Maximum", 0.01, 1.0,
             value=float(st.session_state.get(f'{pfx}psar_af_max', 0.20)),
             step=0.01, format="%.2f", key=f"{pfx}psar_afm"
+        )
+
+    with st.expander("Williams %R", expanded=False):
+        st.session_state[f'{pfx}willr_period'] = st.number_input(
+            "Period", 1, 100,
+            value=int(st.session_state.get(f'{pfx}willr_period', 14)),
+            step=1, key=f"{pfx}willr_p"
+        )
+
+    with st.expander("ROC", expanded=False):
+        st.session_state[f'{pfx}roc_period'] = st.number_input(
+            "ROC Period", 1, 100,
+            value=int(st.session_state.get(f'{pfx}roc_period', 12)),
+            step=1, key=f"{pfx}roc_p"
+        )
+        st.session_state[f'{pfx}roc_signal_period'] = st.number_input(
+            "Signal Period (EMA)", 1, 100,
+            value=int(st.session_state.get(f'{pfx}roc_signal_period', 9)),
+            step=1, key=f"{pfx}roc_sig"
+        )
+
+    with st.expander("CCI", expanded=False):
+        st.session_state[f'{pfx}cci_period'] = st.number_input(
+            "CCI Period", 1, 200,
+            value=int(st.session_state.get(f'{pfx}cci_period', 20)),
+            step=1, key=f"{pfx}cci_p"
+        )
+
+    with st.expander("Linear Regression Channel", expanded=False):
+        st.session_state[f'{pfx}lr_period'] = st.number_input(
+            "Period", 2, 500,
+            value=int(st.session_state.get(f'{pfx}lr_period', 100)),
+            step=1, key=f"{pfx}lr_p"
+        )
+        st.session_state[f'{pfx}lr_multiplier'] = st.number_input(
+            "Channel Multiplier", 0.1, 10.0,
+            value=float(st.session_state.get(f'{pfx}lr_multiplier', 2.0)),
+            step=0.1, format="%.1f", key=f"{pfx}lr_m"
         )
 
 
@@ -1962,7 +2003,9 @@ def reset_strategy_builder():
                 'atr_period', 'macd_fast', 'macd_slow', 'macd_signal',
                 'supertrend_period', 'supertrend_multiplier',
                 'dc_upper_period', 'dc_mid_period', 'dc_lower_period', 'dc_offset',
-                'psar_af_start', 'psar_af_increment', 'psar_af_max']:
+                'psar_af_start', 'psar_af_increment', 'psar_af_max',
+                'willr_period', 'cci_period', 'roc_period', 'roc_signal_period',
+                'lr_period', 'lr_multiplier']:
         st.session_state.pop(f'{pfx}{key}', None)
     st.session_state.pop(f'{pfx}ema_periods', None)
     st.rerun()

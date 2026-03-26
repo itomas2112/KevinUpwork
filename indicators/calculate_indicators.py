@@ -15,6 +15,10 @@ from indicators.supertrend import supertrend
 from indicators.ema_overlay import ema_overlay
 from indicators.donchian import donchian_channel
 from indicators.parabolic_sar import parabolic_sar
+from indicators.williams_r import williams_r
+from indicators.cci import cci
+from indicators.roc import roc
+from indicators.linear_regression import linear_regression_channel
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +39,10 @@ PARAM_TO_GROUP = {
     'dc_upper_period': 'donchian', 'dc_mid_period': 'donchian',
     'dc_lower_period': 'donchian', 'dc_offset': 'donchian',
     'psar_af_start': 'psar', 'psar_af_increment': 'psar', 'psar_af_max': 'psar',
+    'willr_period': 'willr',
+    'cci_period': 'cci',
+    'roc_period': 'roc', 'roc_signal_period': 'roc',
+    'lr_period': 'lr', 'lr_multiplier': 'lr',
 }
 
 
@@ -143,6 +151,32 @@ def recalculate_groups(df, groups, **params):
         df["psar_upper"] = psar_up.shift(1)
         df["psar_lower"] = psar_lo.shift(1)
 
+    if 'willr' in groups:
+        df["willr"] = williams_r(
+            df["high"], df["low"], df["latest"],
+            period=params.get('willr_period', 14),
+        )
+
+    if 'cci' in groups:
+        df["cci"] = cci(
+            df["high"], df["low"], df["latest"],
+            period=params.get('cci_period', 20),
+        )
+
+    if 'roc' in groups:
+        df["roc"], df["roc_signal"] = roc(
+            df["latest"],
+            period=params.get('roc_period', 12),
+            signal_period=params.get('roc_signal_period', 9),
+        )
+
+    if 'lr' in groups:
+        df["lr_upper"], df["lr_mid"], df["lr_lower"] = linear_regression_channel(
+            df["latest"],
+            period=params.get('lr_period', 100),
+            multiplier=params.get('lr_multiplier', 2.0),
+        )
+
     return df
 
 
@@ -225,6 +259,12 @@ def calculate_indicators(
     psar_af_start: float = 0.02,
     psar_af_increment: float = 0.02,
     psar_af_max: float = 0.20,
+    willr_period: int = 14,
+    cci_period: int = 20,
+    roc_period: int = 12,
+    roc_signal_period: int = 9,
+    lr_period: int = 100,
+    lr_multiplier: float = 2.0,
 ) -> pd.DataFrame:
     """
     Calculate all indicators on full data.
@@ -401,6 +441,28 @@ def calculate_indicators(
     df["psar_upper"] = psar_up.shift(1)
     df["psar_lower"] = psar_lo.shift(1)
 
+    # -------------------------------------------------
+    # Williams %R
+    # -------------------------------------------------
+    df["willr"] = williams_r(df["high"], df["low"], df["latest"], period=willr_period)
+
+    # -------------------------------------------------
+    # CCI
+    # -------------------------------------------------
+    df["cci"] = cci(df["high"], df["low"], df["latest"], period=cci_period)
+
+    # -------------------------------------------------
+    # Rate of Change
+    # -------------------------------------------------
+    df["roc"], df["roc_signal"] = roc(df["latest"], period=roc_period, signal_period=roc_signal_period)
+
+    # -------------------------------------------------
+    # Linear Regression Channel
+    # -------------------------------------------------
+    df["lr_upper"], df["lr_mid"], df["lr_lower"] = linear_regression_channel(
+        df["latest"], period=lr_period, multiplier=lr_multiplier,
+    )
+
     return df
 
 _ICHIMOKU_ELEMENTS = {"Tenkan", "Kijun", "Senkou A", "Senkou B", "Chikou"}
@@ -408,12 +470,13 @@ _BB_ELEMENTS = {"BB Upper Band", "BB Middle Band", "BB Lower Band"}
 _KC_ELEMENTS = {"KC Upper Band", "KC Middle Band", "KC Lower Band"}
 _DC_ELEMENTS = {"DC Upper Band", "DC Middle Band", "DC Lower Band"}
 _PSAR_ELEMENTS = {"PSAR", "PSAR Upper", "PSAR Lower"}
+_LR_ELEMENTS = {"LR Upper", "LR Middle", "LR Lower"}
 
 
 def strategy_indicator_flags(strategy):
     """Inspect a strategy dict and return which overlay indicators it references.
 
-    Returns a dict with keys: show_ichimoku, show_bb, show_kc, show_donchian, show_psar.
+    Returns a dict with keys: show_ichimoku, show_bb, show_kc, show_donchian, show_psar, show_lr.
     """
     flags = {
         "show_ichimoku": False,
@@ -421,6 +484,7 @@ def strategy_indicator_flags(strategy):
         "show_kc": False,
         "show_donchian": False,
         "show_psar": False,
+        "show_lr": False,
     }
 
     def _check(name):
@@ -434,6 +498,8 @@ def strategy_indicator_flags(strategy):
             flags["show_donchian"] = True
         elif name in _PSAR_ELEMENTS:
             flags["show_psar"] = True
+        elif name in _LR_ELEMENTS:
+            flags["show_lr"] = True
 
     def _scan_trigger(trigger):
         if not trigger:
@@ -473,6 +539,7 @@ def slice_for_graph(
         show_kc: bool,
         show_donchian: bool = False,
         show_psar: bool = False,
+        show_lr: bool = False,
         context_bars: int = 50,
 ) -> pd.DataFrame:
     # -------------------------------------------------
@@ -509,7 +576,8 @@ def slice_for_graph(
     # -------------------------------------------------
     required_cols = ["latest", "rsi", "rsi_13", "rsi_33", "ci", "ci_13", "ci_33",
                      "stoch_k", "stoch_d", "adx", "plus_di", "minus_di",
-                     "atr", "macd_line", "macd_signal", "macd_hist"]
+                     "atr", "macd_line", "macd_signal", "macd_hist",
+                     "willr", "cci", "roc", "roc_signal"]
 
     if show_ichimoku:
         required_cols += ["tenkan", "kijun", "senkou_a", "senkou_b",
@@ -522,6 +590,8 @@ def slice_for_graph(
         required_cols += ["dc_upper", "dc_mid", "dc_lower"]
     if show_psar:
         required_cols += ["psar"]
+    if show_lr:
+        required_cols += ["lr_upper", "lr_mid", "lr_lower"]
 
     df_plot = df_plot.dropna(subset=required_cols)
 

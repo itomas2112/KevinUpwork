@@ -807,7 +807,8 @@ def _render_indicator_settings():
     with st.expander("EMA Overlay", expanded=False):
         ema_key = f'{pfx}ema_periods'
         if ema_key not in st.session_state:
-            st.session_state[ema_key] = []
+            from config.constants import DEFAULT_EMA_PERIODS
+            st.session_state[ema_key] = list(DEFAULT_EMA_PERIODS)
         gs_ema_gen_key = f"_gs_ema_gen_{pfx}"
         gs_ema_gen = st.session_state.get(gs_ema_gen_key, 0)
 
@@ -859,6 +860,32 @@ def _render_indicator_settings():
         st.session_state[f'{pfx}psar_af_max'] = st.number_input(
             "AF Max", 0.01, 1.0, value=float(st.session_state.get(f'{pfx}psar_af_max', 0.20)),
             step=0.01, format="%.2f", key=f"{pfx}psar_afm")
+
+    with st.expander("Williams %R", expanded=False):
+        st.session_state[f'{pfx}willr_period'] = st.number_input(
+            "Period", 1, 100, value=int(st.session_state.get(f'{pfx}willr_period', 14)),
+            step=1, key=f"{pfx}willr_p")
+
+    with st.expander("ROC", expanded=False):
+        st.session_state[f'{pfx}roc_period'] = st.number_input(
+            "ROC Period", 1, 100, value=int(st.session_state.get(f'{pfx}roc_period', 12)),
+            step=1, key=f"{pfx}roc_p")
+        st.session_state[f'{pfx}roc_signal_period'] = st.number_input(
+            "Signal Period (EMA)", 1, 100, value=int(st.session_state.get(f'{pfx}roc_signal_period', 9)),
+            step=1, key=f"{pfx}roc_sig")
+
+    with st.expander("CCI", expanded=False):
+        st.session_state[f'{pfx}cci_period'] = st.number_input(
+            "CCI Period", 1, 200, value=int(st.session_state.get(f'{pfx}cci_period', 20)),
+            step=1, key=f"{pfx}cci_p")
+
+    with st.expander("Linear Regression Channel", expanded=False):
+        st.session_state[f'{pfx}lr_period'] = st.number_input(
+            "Period", 2, 500, value=int(st.session_state.get(f'{pfx}lr_period', 100)),
+            step=1, key=f"{pfx}lr_p")
+        st.session_state[f'{pfx}lr_multiplier'] = st.number_input(
+            "Channel Multiplier", 0.1, 10.0, value=float(st.session_state.get(f'{pfx}lr_multiplier', 2.0)),
+            step=0.1, format="%.1f", key=f"{pfx}lr_m")
 
 
 # ======================================================================
@@ -1229,7 +1256,7 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
     df_results = pd.DataFrame(rows)
 
     # Copy to clipboard (all filtered results, TSV)
-    tsv_data = df_results.to_csv(sep='\t', index=False)
+    tsv_data = df_results.to_csv(sep='\t', index=False, header=False)
     _copy_to_clipboard(tsv_data, key="gs_copy_results")
 
     st.caption(f"{len(filtered)} results (Global Performance)")
@@ -1273,7 +1300,7 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
             table = _build_metrics_table(table_data)
             st.table(table)
             _copy_to_clipboard(
-                table.to_csv(sep='\t'),
+                table.to_csv(sep='\t', header=False, index=False),
                 key=f"gs_sel_detail_{idx}")
 
 

@@ -4,6 +4,9 @@ Configuration constants for the trading platform
 
 STRATEGIES_FILE = "saved_strategies.json"
 
+# Default EMA overlay periods (used by strategy builder, grid search, performance, etc.)
+DEFAULT_EMA_PERIODS = [10, 20, 50, 200]
+
 # Indicator groups for strategy builder
 PRICE_AND_INDICATORS = [
     "Price",
@@ -27,6 +30,9 @@ PRICE_AND_INDICATORS = [
     "PSAR",
     "PSAR Upper",
     "PSAR Lower",
+    "LR Upper",
+    "LR Middle",
+    "LR Lower",
 ]
 
 ATR_VOLUME_GROUP = [
@@ -62,6 +68,19 @@ MACD_GROUP = [
     "MACD Line",
     "MACD Signal",
     "MACD Histogram",
+]
+
+WILLR_GROUP = [
+    "Williams %R",
+]
+
+ROC_GROUP = [
+    "ROC",
+    "ROC Signal",
+]
+
+CCI_GROUP = [
+    "CCI",
 ]
 
 # Special exit-only elements (computed at runtime from entry price and R distance)
@@ -116,6 +135,9 @@ GROUP_NAMES = [
     "Stoch Group",
     "ADX Group",
     "MACD Group",
+    "Williams %R Group",
+    "ROC Group",
+    "CCI Group",
     "ATR / Volume Group",
 ]
 
@@ -127,6 +149,9 @@ GROUP_MAP = {
     "Stoch Group": STOCH_GROUP,
     "ADX Group": ADX_GROUP,
     "MACD Group": MACD_GROUP,
+    "Williams %R Group": WILLR_GROUP,
+    "ROC Group": ROC_GROUP,
+    "CCI Group": CCI_GROUP,
     "ATR / Volume Group": ATR_VOLUME_GROUP,
 }
 
@@ -183,6 +208,13 @@ INDICATOR_MAP = {
     "PSAR": "psar",
     "PSAR Upper": "psar_upper",
     "PSAR Lower": "psar_lower",
+    "LR Upper": "lr_upper",
+    "LR Middle": "lr_mid",
+    "LR Lower": "lr_lower",
+    "Williams %R": "willr",
+    "ROC": "roc",
+    "ROC Signal": "roc_signal",
+    "CCI": "cci",
 }
 
 

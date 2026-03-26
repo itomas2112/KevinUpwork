@@ -529,7 +529,7 @@ def render_period(period_num, start_dt, end_dt, df_features,
     panel_kwargs = {k: sidebar_config[k] for k in
                     ['show_rsi', 'show_cmb', 'show_stoch', 'show_adx', 'show_atr',
                      'show_macd', 'show_obv', 'show_accdist', 'show_supertrend', 'show_ema',
-                     'show_donchian', 'show_psar']}
+                     'show_donchian', 'show_psar', 'show_willr', 'show_roc', 'show_cci']}
 
     chart_kwargs = dict(
         df_slice=df_slice,
@@ -600,7 +600,7 @@ def render_strategy_stats(stats, strategy_label):
             f"{s.loc['SQN', 'value']:.2f}",
         ]
 
-    tf_label = st.session_state.get("_agg_timeframe", "15m")
+    tf_label = st.session_state.get("_agg_timeframe", st.session_state.get("base_timeframe", "15m"))
     data = {tf_label: _format_stats(stats)}
 
     stats_table = pd.DataFrame(
@@ -762,7 +762,7 @@ def render_global_performance(all_stats, strategy_label, num_periods):
             f"{agg['sqn']:.2f}",
         ]
 
-    tf_label = st.session_state.get("_agg_timeframe", "15m")
+    tf_label = st.session_state.get("_agg_timeframe", st.session_state.get("base_timeframe", "15m"))
     agg = _aggregate_stats(all_stats)
     data = {tf_label: _format_agg(agg)}
 

@@ -538,3 +538,197 @@ class TestCrossShapeConsistency:
         df = _calc(df_all_shapes_15m)
         assert "rsi" in df.columns
         assert len(df) > 0
+
+
+# ---------------------------------------------------------------------------
+# Williams %R
+# ---------------------------------------------------------------------------
+
+class TestWilliamsR:
+
+    def test_column_exists(self, df_uptrend_15m):
+        df = _calc(df_uptrend_15m)
+        assert "willr" in df.columns
+
+    def test_range_bounds(self, df_uptrend_15m):
+        """Williams %R should be between -100 and 0."""
+        df = _calc(df_uptrend_15m)
+        valid = df["willr"].dropna()
+        assert (valid >= -100).all()
+        assert (valid <= 0).all()
+
+    def test_formula_matches_manual(self, df_uptrend_15m):
+        """Verify against manual calculation."""
+        period = 14
+        df = _calc(df_uptrend_15m, willr_period=period)
+        hh = df["high"].rolling(period).max()
+        ll = df["low"].rolling(period).min()
+        expected = (hh - df["latest"]) / (hh - ll) * -100
+        valid_idx = df["willr"].dropna().index
+        pd.testing.assert_series_equal(
+            df.loc[valid_idx, "willr"],
+            expected.loc[valid_idx],
+            check_names=False, atol=1e-10,
+        )
+
+    def test_custom_period(self, df_uptrend_15m):
+        """Different period should produce different values."""
+        df14 = _calc(df_uptrend_15m, willr_period=14)
+        df7 = _calc(df_uptrend_15m, willr_period=7)
+        assert not df14["willr"].equals(df7["willr"])
+
+    def test_flat_market(self, df_flat_15m):
+        """In a perfectly flat market, %R should be 0 (close == high == low)."""
+        df = _calc(df_flat_15m, willr_period=5)
+        # When high == low, division by zero → NaN, but when high > low slightly
+        # due to data generation, result should be near 0 or NaN
+        valid = df["willr"].dropna()
+        if len(valid) > 0:
+            assert (valid >= -100).all() and (valid <= 0).all()
+
+
+# ---------------------------------------------------------------------------
+# CCI
+# ---------------------------------------------------------------------------
+
+class TestCCI:
+
+    def test_column_exists(self, df_uptrend_15m):
+        df = _calc(df_uptrend_15m)
+        assert "cci" in df.columns
+
+    def test_formula_matches_manual(self, df_uptrend_15m):
+        """Verify against manual calculation."""
+        period = 20
+        df = _calc(df_uptrend_15m, cci_period=period)
+        tp = (df["high"] + df["low"] + df["latest"]) / 3
+        sma_tp = tp.rolling(period).mean()
+        mean_dev = tp.rolling(period).apply(lambda x: abs(x - x.mean()).mean(), raw=True)
+        expected = (tp - sma_tp) / (0.015 * mean_dev)
+        valid_idx = df["cci"].dropna().index
+        pd.testing.assert_series_equal(
+            df.loc[valid_idx, "cci"],
+            expected.loc[valid_idx],
+            check_names=False, atol=1e-10,
+        )
+
+    def test_custom_period(self, df_uptrend_15m):
+        df20 = _calc(df_uptrend_15m, cci_period=20)
+        df10 = _calc(df_uptrend_15m, cci_period=10)
+        assert not df20["cci"].equals(df10["cci"])
+
+    def test_oscillates_around_zero(self, df_oscillation_15m):
+        """CCI should have both positive and negative values in oscillating data."""
+        df = _calc(df_oscillation_15m, cci_period=10)
+        valid = df["cci"].dropna()
+        assert (valid > 0).any()
+        assert (valid < 0).any()
+
+
+# ---------------------------------------------------------------------------
+# Rate of Change (ROC)
+# ---------------------------------------------------------------------------
+
+class TestROC:
+
+    def test_columns_exist(self, df_uptrend_15m):
+        df = _calc(df_uptrend_15m)
+        assert "roc" in df.columns
+        assert "roc_signal" in df.columns
+
+    def test_formula_matches_manual(self, df_uptrend_15m):
+        """Verify ROC line against manual calculation."""
+        period = 12
+        df = _calc(df_uptrend_15m, roc_period=period)
+        expected = (df["latest"] - df["latest"].shift(period)) / df["latest"].shift(period) * 100
+        valid_idx = df["roc"].dropna().index
+        pd.testing.assert_series_equal(
+            df.loc[valid_idx, "roc"],
+            expected.loc[valid_idx],
+            check_names=False, atol=1e-10,
+        )
+
+    def test_signal_is_ema_of_roc(self, df_uptrend_15m):
+        """Signal line should be EMA of ROC."""
+        roc_period = 12
+        signal_period = 9
+        df = _calc(df_uptrend_15m, roc_period=roc_period, roc_signal_period=signal_period)
+        expected_signal = df["roc"].ewm(span=signal_period, adjust=False).mean()
+        valid_idx = df["roc_signal"].dropna().index
+        pd.testing.assert_series_equal(
+            df.loc[valid_idx, "roc_signal"],
+            expected_signal.loc[valid_idx],
+            check_names=False, atol=1e-10,
+        )
+
+    def test_uptrend_positive_roc(self, df_uptrend_15m):
+        """In a strong uptrend, ROC should be mostly positive after warmup."""
+        df = _calc(df_uptrend_15m, roc_period=12)
+        valid = df["roc"].dropna()
+        # Drop first half (warmup) and check the rest is mostly positive
+        second_half = valid.iloc[len(valid) // 2:]
+        assert (second_half > 0).sum() > len(second_half) * 0.5
+
+    def test_custom_periods(self, df_uptrend_15m):
+        df_a = _calc(df_uptrend_15m, roc_period=12, roc_signal_period=9)
+        df_b = _calc(df_uptrend_15m, roc_period=6, roc_signal_period=5)
+        assert not df_a["roc"].equals(df_b["roc"])
+        assert not df_a["roc_signal"].equals(df_b["roc_signal"])
+
+
+# ---------------------------------------------------------------------------
+# Linear Regression Channel
+# ---------------------------------------------------------------------------
+
+class TestLinearRegressionChannel:
+
+    def test_columns_exist(self, df_uptrend_15m):
+        df = _calc(df_uptrend_15m, lr_period=50)
+        assert "lr_upper" in df.columns
+        assert "lr_mid" in df.columns
+        assert "lr_lower" in df.columns
+
+    def test_channel_ordering(self, df_uptrend_15m):
+        """Upper >= Mid >= Lower at every valid bar."""
+        df = _calc(df_uptrend_15m, lr_period=50)
+        valid = df[["lr_upper", "lr_mid", "lr_lower"]].dropna()
+        assert (valid["lr_upper"] >= valid["lr_mid"] - 1e-10).all()
+        assert (valid["lr_mid"] >= valid["lr_lower"] - 1e-10).all()
+
+    def test_channel_symmetry(self, df_uptrend_15m):
+        """Upper and lower should be equidistant from mid."""
+        df = _calc(df_uptrend_15m, lr_period=50, lr_multiplier=2.0)
+        valid = df[["lr_upper", "lr_mid", "lr_lower"]].dropna()
+        upper_dist = valid["lr_upper"] - valid["lr_mid"]
+        lower_dist = valid["lr_mid"] - valid["lr_lower"]
+        pd.testing.assert_series_equal(upper_dist, lower_dist, check_names=False, atol=1e-10)
+
+    def test_nans_before_period(self, df_uptrend_15m):
+        """Should have NaN before enough bars for the period."""
+        period = 50
+        df = _calc(df_uptrend_15m, lr_period=period)
+        assert df["lr_mid"].iloc[:period - 1].isna().all()
+        assert df["lr_mid"].iloc[period - 1:].notna().any()
+
+    def test_custom_multiplier(self, df_oscillation_15m):
+        """Larger multiplier → wider channel."""
+        df_narrow = _calc(df_oscillation_15m, lr_period=50, lr_multiplier=1.0)
+        df_wide = _calc(df_oscillation_15m, lr_period=50, lr_multiplier=3.0)
+        valid_n = df_narrow[["lr_upper", "lr_lower"]].dropna()
+        valid_w = df_wide[["lr_upper", "lr_lower"]].dropna()
+        common = valid_n.index.intersection(valid_w.index)
+        width_narrow = (valid_n.loc[common, "lr_upper"] - valid_n.loc[common, "lr_lower"]).mean()
+        width_wide = (valid_w.loc[common, "lr_upper"] - valid_w.loc[common, "lr_lower"]).mean()
+        assert width_wide > width_narrow
+
+    def test_mid_is_regression_endpoint(self, df_uptrend_15m):
+        """Mid should equal the linear regression value at the last bar of the window."""
+        period = 30
+        df = _calc(df_uptrend_15m, lr_period=period)
+        # Check a specific bar manually
+        idx = period + 10  # Some bar after warmup
+        values = df["latest"].iloc[idx - period + 1: idx + 1].values.astype(float)
+        x = np.arange(period, dtype=float)
+        slope, intercept = np.polyfit(x, values, 1)
+        expected_mid = intercept + slope * (period - 1)
+        assert abs(df["lr_mid"].iloc[idx] - expected_mid) < 1e-8

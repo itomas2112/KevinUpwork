@@ -15,6 +15,9 @@ PANEL_YAXIS = {
     "macd": "y7",
     "obv": "y8",
     "accdist": "y9",
+    "willr": "y10",
+    "roc": "y11",
+    "cci": "y12",
 }
 
 
@@ -64,6 +67,9 @@ def build_main_chart(
     dc_show_middle: bool = True,
     dc_show_lower: bool = True,
     show_psar: bool = False,
+    show_willr: bool = False,
+    show_roc: bool = False,
+    show_cci: bool = False,
 ):
     """
     Build main chart using a single x-axis with dynamic y-axis domains
@@ -88,6 +94,12 @@ def build_main_chart(
     # Build list bottom-to-top: first entry = bottommost panel
     # -------------------------------------------------
     visible_panels = []
+    if show_cci:
+        visible_panels.append("cci")
+    if show_roc:
+        visible_panels.append("roc")
+    if show_willr:
+        visible_panels.append("willr")
     if show_accdist:
         visible_panels.append("accdist")
     if show_obv:
@@ -546,6 +558,37 @@ def build_main_chart(
                                  line=dict(color="white", width=1.5), showlegend=False, yaxis="y9"))
 
     # -------------------------------------------------
+    # Williams %R  (yaxis="y10")
+    # -------------------------------------------------
+    if show_willr and "willr" in df_slice.columns:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["willr"], name="Williams %R",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y10"))
+        for lv, dash in [(-20, "solid"), (-50, "dot"), (-80, "solid")]:
+            fig.add_shape(type="line", x0=0, x1=1, y0=lv, y1=lv, xref="paper", yref="y10",
+                          line=dict(dash=dash, color="gray", width=1))
+
+    # -------------------------------------------------
+    # ROC  (yaxis="y11")
+    # -------------------------------------------------
+    if show_roc and "roc" in df_slice.columns:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["roc"], name="ROC",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y11"))
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["roc_signal"], name="ROC Signal",
+                                 line=dict(color="red", width=1), showlegend=False, yaxis="y11"))
+        fig.add_shape(type="line", x0=0, x1=1, y0=0, y1=0, xref="paper", yref="y11",
+                      line=dict(dash="solid", color="gray", width=1))
+
+    # -------------------------------------------------
+    # CCI  (yaxis="y12")
+    # -------------------------------------------------
+    if show_cci and "cci" in df_slice.columns:
+        fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["cci"], name="CCI",
+                                 line=dict(color="white", width=1.5), showlegend=False, yaxis="y12"))
+        for lv, dash in [(200, "solid"), (100, "solid"), (0, "dot"), (-100, "solid"), (-200, "solid")]:
+            fig.add_shape(type="line", x0=0, x1=1, y0=lv, y1=lv, xref="paper", yref="y12",
+                          line=dict(dash=dash, color="gray", width=1))
+
+    # -------------------------------------------------
     # Hover & Crosshair
     # -------------------------------------------------
     for trace in fig.data:
@@ -613,6 +656,9 @@ def build_main_chart(
         "macd":    ("y7", show_macd, {}),
         "obv":     ("y8", show_obv, {}),
         "accdist": ("y9", show_accdist, {}),
+        "willr":   ("y10", show_willr, {}),
+        "roc":     ("y11", show_roc, {}),
+        "cci":     ("y12", show_cci, {}),
     }
 
     for panel_name, (yax_key, is_visible, extra) in panel_configs.items():
@@ -640,6 +686,7 @@ def build_main_chart(
         "rsi": "RSI", "cmb": "CMB Composite", "stoch": "Stochastic",
         "adx": "ADX", "atr": "ATR", "macd": "MACD",
         "obv": "OBV", "accdist": "Acc/Dist",
+        "willr": "Williams %R", "roc": "ROC", "cci": "CCI",
     }
     for panel_name in visible_panels:
         domain = domains[panel_name]
@@ -809,6 +856,9 @@ def render_charts(
     ema_periods=None,
     show_donchian=False,
     show_psar=False,
+    show_willr=False,
+    show_roc=False,
+    show_cci=False,
 ):
     """Renders charts."""
     chart_params = chart_params or {}
@@ -819,6 +869,7 @@ def render_charts(
         show_obv=show_obv, show_accdist=show_accdist,
         show_supertrend=show_supertrend, show_ema=show_ema,
         show_donchian=show_donchian, show_psar=show_psar,
+        show_willr=show_willr, show_roc=show_roc, show_cci=show_cci,
     )
 
     config = {"scrollZoom": True}

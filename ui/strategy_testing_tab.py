@@ -37,9 +37,13 @@ _DEFAULT_INDICATOR_PARAMS = {
     'adx_period': 14, 'atr_period': 14,
     'macd_fast': 12, 'macd_slow': 26, 'macd_signal': 9,
     'supertrend_period': 10, 'supertrend_multiplier': 3.0,
-    'ema_periods': [],
+    'ema_periods': [10, 20, 50, 200],
     'dc_upper_period': 20, 'dc_mid_period': 20, 'dc_lower_period': 20, 'dc_offset': 0,
     'psar_af_start': 0.02, 'psar_af_increment': 0.02, 'psar_af_max': 0.20,
+    'willr_period': 14,
+    'cci_period': 20,
+    'roc_period': 12, 'roc_signal_period': 9,
+    'lr_period': 100, 'lr_multiplier': 2.0,
 }
 
 

@@ -301,6 +301,10 @@ def collect_gs_indicator_settings(ss):
         "ema_periods",
         "dc_upper_period", "dc_mid_period", "dc_lower_period", "dc_offset",
         "psar_af_start", "psar_af_increment", "psar_af_max",
+        "willr_period",
+        "cci_period",
+        "roc_period", "roc_signal_period",
+        "lr_period", "lr_multiplier",
     ]
     result = dict(_DEFAULT_INDICATOR_PARAMS)
     for k in keys:

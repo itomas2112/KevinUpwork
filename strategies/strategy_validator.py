@@ -286,12 +286,17 @@ def _validate_indicator_settings(settings, errors):
         "macd_fast", "macd_slow", "macd_signal",
         "supertrend_period",
         "dc_upper_period", "dc_mid_period", "dc_lower_period",
+        "willr_period",
+        "cci_period",
+        "roc_period", "roc_signal_period",
+        "lr_period",
     ]
     _required_float = [
         "bb_upper_stdev", "bb_lower_stdev",
         "kc_upper_mult", "kc_lower_mult",
         "supertrend_multiplier",
         "psar_af_start", "psar_af_increment", "psar_af_max",
+        "lr_multiplier",
     ]
 
     for key in _required_int:

@@ -86,6 +86,12 @@ def save_strategy_to_session(strategy_name):
         "psar_af_start": st.session_state.get(f"{pfx}psar_af_start", 0.02),
         "psar_af_increment": st.session_state.get(f"{pfx}psar_af_increment", 0.02),
         "psar_af_max": st.session_state.get(f"{pfx}psar_af_max", 0.20),
+        "willr_period": st.session_state.get(f"{pfx}willr_period", 14),
+        "cci_period": st.session_state.get(f"{pfx}cci_period", 20),
+        "roc_period": st.session_state.get(f"{pfx}roc_period", 12),
+        "roc_signal_period": st.session_state.get(f"{pfx}roc_signal_period", 9),
+        "lr_period": st.session_state.get(f"{pfx}lr_period", 100),
+        "lr_multiplier": st.session_state.get(f"{pfx}lr_multiplier", 2.0),
     }
 
     # Collect entry conditions

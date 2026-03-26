@@ -229,6 +229,12 @@ def render_sidebar():
             value=st.session_state.get("show_obv_panel", False), key="show_obv_panel")
         show_accdist = st.checkbox("Show Acc/Dist Panel",
             value=st.session_state.get("show_accdist_panel", False), key="show_accdist_panel")
+        show_willr = st.checkbox("Show Williams %R Panel",
+            value=st.session_state.get("show_willr_panel", False), key="show_willr_panel")
+        show_roc = st.checkbox("Show ROC Panel",
+            value=st.session_state.get("show_roc_panel", False), key="show_roc_panel")
+        show_cci = st.checkbox("Show CCI Panel",
+            value=st.session_state.get("show_cci_panel", False), key="show_cci_panel")
 
     # Chart Tools
     draw_mode = st.sidebar.checkbox("Shade Sections on Price Chart", value=False, key="draw_mode")
@@ -346,6 +352,9 @@ def render_sidebar():
         'show_macd': show_macd,
         'show_obv': show_obv,
         'show_accdist': show_accdist,
+        'show_willr': show_willr,
+        'show_roc': show_roc,
+        'show_cci': show_cci,
         'show_tenkan_kijun': show_tenkan_kijun,
         'draw_mode': draw_mode,
         'chart_height': chart_height,
@@ -493,7 +502,8 @@ def render_timeframe_parameters(timeframe, disabled=False):
         # Dynamic EMA periods: add/remove like CMB lines
         ema_state_key = f"ema_periods_{key_prefix}"
         if ema_state_key not in st.session_state:
-            st.session_state[ema_state_key] = []
+            from config.constants import DEFAULT_EMA_PERIODS
+            st.session_state[ema_state_key] = list(DEFAULT_EMA_PERIODS)
 
         # Generation counter to guarantee fresh widget keys after deletions
         ema_gen_key = f"_ema_gen_{key_prefix}"
@@ -525,6 +535,32 @@ def render_timeframe_parameters(timeframe, disabled=False):
             st.rerun()
 
         params['ema_periods'] = list(st.session_state[ema_state_key])
+
+    with st.sidebar.expander("Williams %R"):
+        params['willr_period'] = st.number_input(
+            "Period", 1, 100, 14, step=1,
+            key=f"willr_p_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("ROC"):
+        params['roc_period'] = st.number_input(
+            "ROC Period", 1, 100, 12, step=1,
+            key=f"roc_p_{key_prefix}",
+            disabled=disabled,
+        )
+        params['roc_signal_period'] = st.number_input(
+            "Signal Period (EMA)", 1, 100, 9, step=1,
+            key=f"roc_sig_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("CCI"):
+        params['cci_period'] = st.number_input(
+            "CCI Period", 1, 200, 20, step=1,
+            key=f"cci_p_{key_prefix}",
+            disabled=disabled,
+        )
 
     with st.sidebar.expander("Ichimoku"):
         params['ichi_show_tenkan'] = st.checkbox(
