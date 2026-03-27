@@ -11,6 +11,7 @@ from ui.performance_tab import render_performance_tab
 from ui.strategy_testing_tab import render_strategy_testing_tab
 from ui.monte_carlo_tab import render_monte_carlo_tab
 from ui.grid_search_tab import render_grid_search_tab
+from ui.correlation_tab import render_correlation_tab
 
 # -------------------------------------------------
 # Configuration
@@ -67,12 +68,12 @@ if base_tf != prev_base:
               "_indicator_params_data_fp", "_agg_timeframe"]:
         st.session_state.pop(k, None)
     for k in list(st.session_state.keys()):
-        if k.startswith(("_bt_cache_", "_perf_", "_gs_", "_cv_", "_test_")):
+        if k.startswith(("_bt_cache_", "_perf_", "_gs_", "_cv_", "_test_", "_corr_")):
             st.session_state.pop(k, None)
     st.rerun()
 
 # Create tabs
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance", "🧪 Strategy Testing", "🎲 Monte Carlo", "🔍 Grid Search"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Charting", "🔧 Strategy Builder", "📈 Performance", "🧪 Strategy Testing", "🎲 Monte Carlo", "🔍 Grid Search", "🔗 Correlation"])
 
 # Render sidebar and get configuration
 sidebar_config = render_sidebar()
@@ -95,3 +96,6 @@ with tab5:
 
 with tab6:
     render_grid_search_tab(sidebar_config)
+
+with tab7:
+    render_correlation_tab(sidebar_config)

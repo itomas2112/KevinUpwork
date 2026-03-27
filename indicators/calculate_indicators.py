@@ -224,6 +224,14 @@ def migrate_indicator_settings(settings):
         s.setdefault('kc_upper_mult', val)
         s.setdefault('kc_lower_mult', val)
 
+    # New indicators: fill defaults for strategies saved before these existed
+    s.setdefault('willr_period', 14)
+    s.setdefault('cci_period', 20)
+    s.setdefault('roc_period', 12)
+    s.setdefault('roc_signal_period', 9)
+    s.setdefault('lr_period', 100)
+    s.setdefault('lr_multiplier', 2.0)
+
     return s
 
 

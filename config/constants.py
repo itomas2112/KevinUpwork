@@ -226,3 +226,103 @@ def get_indicator_map(ema_count=0):
     for i in range(ema_count):
         m[f"EMA {i + 1}"] = f"ema_{i}"
     return m
+
+
+# ---------------------------------------------------------------------------
+# Walk Forward Optimization — parameter ranges
+# ---------------------------------------------------------------------------
+
+# Element display name → WFO param group
+# (CMB, Ichimoku, OBV, Acc/Dist are on ignore list — no tunable params for WFO)
+ELEMENT_TO_WFO_GROUP = {
+    "BB Upper Band": "bb", "BB Middle Band": "bb", "BB Lower Band": "bb",
+    "KC Upper Band": "kc", "KC Middle Band": "kc", "KC Lower Band": "kc",
+    "RSI": "rsi", "RSI 13 SMA": "rsi", "RSI 33 SMA": "rsi",
+    "Stoch %K": "stoch", "Stoch %D": "stoch",
+    "ADX": "adx", "+DI": "adx", "-DI": "adx",
+    "ATR": "atr",
+    "MACD Line": "macd", "MACD Signal": "macd", "MACD Histogram": "macd",
+    "Supertrend": "supertrend", "Supertrend Upper": "supertrend", "Supertrend Lower": "supertrend",
+    "DC Upper Band": "donchian", "DC Middle Band": "donchian", "DC Lower Band": "donchian",
+    "PSAR": "psar", "PSAR Upper": "psar", "PSAR Lower": "psar",
+    "Williams %R": "willr",
+    "ROC": "roc", "ROC Signal": "roc",
+    "CCI": "cci",
+    "LR Upper": "lr", "LR Middle": "lr", "LR Lower": "lr",
+    # EMA handled dynamically: "EMA 1" → "ema", etc.
+}
+
+# Default parameter ranges for WFO.  (min, max, step) or list of discrete values.
+# Only optimised groups appear here; CMB / Ichimoku / OBV / Acc-Dist are ignored.
+WFO_DEFAULT_RANGES = {
+    "ema": {
+        # Per-EMA ranges (index 0 = EMA 1, etc.)
+        "_ema_ranges": [
+            (1, 15, 2),
+            (16, 35, 5),
+            (36, 125, 10),
+            (126, 250, 25),
+        ],
+    },
+    "rsi": {
+        "rsi_window": (5, 50, 5),
+    },
+    "stoch": {
+        "stoch_k_period": (5, 50, 10),
+        "stoch_k_smooth": (1, 10, 3),
+        "stoch_d_smooth": (1, 10, 3),
+    },
+    "adx": {
+        "adx_period": (5, 50, 5),
+    },
+    "atr": {
+        "atr_period": (5, 50, 5),
+    },
+    "macd": {
+        "macd_fast": (5, 50, 10),
+        "macd_slow": (10, 50, 10),
+        "macd_signal": (5, 50, 10),
+    },
+    "supertrend": {
+        "supertrend_period": (5, 50, 5),
+        "supertrend_multiplier": (1.0, 10.0, 2.0),
+    },
+    "bb": {
+        "bb_upper_period": (10, 50, 10),
+        "bb_upper_stdev": (1.0, 3.0, 1.0),
+        "bb_mid_period": (10, 50, 10),
+        "bb_lower_period": (10, 50, 10),
+        "bb_lower_stdev": (1.0, 3.0, 1.0),
+    },
+    "kc": {
+        "kc_upper_ema": (10, 50, 10),
+        "kc_upper_mult": (1.0, 3.0, 1.0),
+        "kc_mid_ema": (10, 50, 10),
+        "kc_lower_ema": (10, 50, 10),
+        "kc_lower_mult": (1.0, 3.0, 1.0),
+    },
+    "donchian": {
+        "dc_upper_period": (10, 50, 10),
+        "dc_mid_period": (10, 50, 10),
+        "dc_lower_period": (10, 50, 10),
+    },
+    "psar": {
+        "psar_af_start": (0.005, 0.05, 0.01),
+        "psar_af_increment": (0.005, 0.05, 0.01),
+        "psar_af_max": (0.1, 0.5, 0.1),
+    },
+    "willr": {
+        "willr_period": (5, 50, 5),
+    },
+    "roc": {
+        "roc_period": (5, 50, 5),
+        "roc_signal_period": (5, 50, 5),
+    },
+    "cci": {
+        "cci_period": (5, 50, 5),
+    },
+    "lr": {
+        "lr_period": (10, 150, 10),
+        "lr_multiplier": [0.674, 1.0, 1.282, 1.5, 1.645, 1.96, 2.0, 2.58, 2.81],
+    },
+}

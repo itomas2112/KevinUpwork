@@ -147,12 +147,13 @@ def render_monte_carlo_tab():
                                   win_rate, reward_risk, risk_pct))
 
     # Metrics row
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Median Final Balance", f"${np.median(fb):,.2f}")
     m2.metric("Best Final Balance", f"${np.max(fb):,.2f}")
     m3.metric("Worst Final Balance", f"${np.min(fb):,.2f}")
     m4.metric("Avg Max Drawdown", f"{np.mean(md):.2f}%")
     m5.metric("Worst Drawdown Seen", f"{np.max(md):.2f}%")
+    m6.metric("95th Pctl Max DD", f"{np.percentile(md, 95):.2f}%")
 
     # Equity curves chart
     fig = _build_equity_chart(results, params[1], params[0])

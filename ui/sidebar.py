@@ -41,7 +41,7 @@ def render_sidebar():
                     st.session_state.pop(k, None)
                 # Clear backtest caches
                 for k in list(st.session_state.keys()):
-                    if k.startswith("_bt_cache_") or k.startswith("_perf_") or k.startswith("_gs_") or k.startswith("_cv_") or k.startswith("_test_"):
+                    if k.startswith("_bt_cache_") or k.startswith("_perf_") or k.startswith("_gs_") or k.startswith("_cv_") or k.startswith("_test_") or k.startswith("_corr_"):
                         st.session_state.pop(k, None)
                 st.success(f"Data aggregated to **{agg_tf}**")
                 st.rerun()

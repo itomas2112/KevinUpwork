@@ -7,6 +7,7 @@ import os
 from config.constants import STRATEGIES_FILE
 from strategies.group_set_manager import load_group_sets
 from strategies.strategy_validator import validate_strategy
+from indicators.calculate_indicators import migrate_indicator_settings
 
 
 def initialize_session_state():
@@ -22,6 +23,10 @@ def initialize_session_state():
                 valid_strategies = []
                 invalid_count = 0
                 for strategy in raw_strategies:
+                    # Migrate old indicator settings before validation
+                    ind = strategy.get('indicator_settings')
+                    if isinstance(ind, dict):
+                        strategy['indicator_settings'] = migrate_indicator_settings(ind)
                     is_valid, errors = validate_strategy(strategy)
                     if is_valid:
                         valid_strategies.append(strategy)
@@ -117,6 +122,15 @@ def initialize_session_state():
     # Strategy Testing tab selections
     if 'testing_selections' not in st.session_state:
         st.session_state['testing_selections'] = [{
+            "mode": "All Patterns",
+            "pattern_type": "Bullish",
+            "primary": None,
+            "secondary": None,
+        }]
+
+    # Correlation Analysis tab selections
+    if 'corr_selections' not in st.session_state:
+        st.session_state['corr_selections'] = [{
             "mode": "All Patterns",
             "pattern_type": "Bullish",
             "primary": None,
