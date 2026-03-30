@@ -52,6 +52,25 @@ def render_correlation_tab(sidebar_config):
 
     st.subheader("Correlation Analysis")
 
+    with st.expander("How correlation is calculated", expanded=False):
+        st.markdown("""
+**Directional Pearson Correlation** measures whether two strategies win and lose
+at the same times across DRM periods.
+
+For each strategy, every DRM period is scored as:
+- **+1** if the strategy had a net profit (winning period)
+- **-1** if the strategy had a net loss (losing period)
+- **0** if the strategy did not trade in that period
+
+The Pearson correlation of these directional signals is computed for each pair:
+
+| Correlation | Meaning |
+|---|---|
+| **+100%** | Strategies win and lose in the exact same periods (redundant) |
+| **0%** | No relationship between outcomes |
+| **-100%** | One wins when the other loses (ideal hedge) |
+        """)
+
     # --------------------------------------------------
     # Prerequisites
     # --------------------------------------------------
@@ -263,8 +282,12 @@ def _run_correlation(df_key, saved, selected_indices, strategy_names,
     n_strategies = len(selected_indices)
     progress = st.progress(0, text="Running strategies...")
 
-    # For each strategy, record which periods had trades
+    # For each strategy, record per-period P&L and which periods had trades
+    # period_pnls[strategy_idx] = {period_idx: total_pnl_r, ...}
     # trade_sets[strategy_idx] = set of period indices that had trades
+    import numpy as np
+
+    period_pnls = {}
     trade_sets = {}
 
     for step, s_idx in enumerate(selected_indices):
@@ -288,6 +311,7 @@ def _run_correlation(df_key, saved, selected_indices, strategy_names,
 
         ind_flags = strategy_indicator_flags(strategy)
         traded_periods = set()
+        pnls = {}
 
         for p_idx, (ptype, primary, secondary, start_dt, end_dt) in enumerate(period_keys):
             try:
@@ -300,31 +324,59 @@ def _run_correlation(df_key, saved, selected_indices, strategy_names,
                     df_slice, strategy, ps, pe,
                 )
                 num_trades = int(stats.loc["Number of trades", "value"])
+                total_pnl = float(stats.loc["Total P&L (R)", "value"])
+                pnls[p_idx] = total_pnl
                 if num_trades > 0:
                     traded_periods.add(p_idx)
             except Exception:
                 continue
 
+        period_pnls[s_idx] = pnls
         trade_sets[s_idx] = traded_periods
 
     progress.empty()
 
     # --------------------------------------------------
-    # Compute pairwise correlation
+    # Compute pairwise Pearson correlation on directional outcome
     # --------------------------------------------------
-    # correlation[A][B] = |A ∩ B| / |A| * 100
-    # "What % of A's traded periods overlap with B's traded periods"
+    # For each strategy, build a direction signal per period:
+    #   +1 = net winning period (P&L > 0)
+    #   -1 = net losing period (P&L < 0)
+    #    0 = no trade in this period
+    # Pearson correlation on these signals captures whether strategies
+    # win and lose at the same times (directional overlap for portfolio risk).
+    n_periods = len(period_keys)
+
+    def _direction_array(pnls_dict):
+        arr = np.zeros(n_periods)
+        for i in range(n_periods):
+            pnl = pnls_dict.get(i, 0.0)
+            if pnl > 0:
+                arr[i] = 1.0
+            elif pnl < 0:
+                arr[i] = -1.0
+        return arr
+
     correlations = {}
     for a_idx in selected_indices:
-        a_set = trade_sets.get(a_idx, set())
+        a_arr = _direction_array(period_pnls.get(a_idx, {}))
         row = {}
         for b_idx in selected_indices:
             if a_idx == b_idx:
                 row[b_idx] = 100.0
                 continue
-            b_set = trade_sets.get(b_idx, set())
-            shared = len(a_set & b_set)
-            row[b_idx] = (shared / len(a_set) * 100) if a_set else 0.0
+            b_arr = _direction_array(period_pnls.get(b_idx, {}))
+
+            # Pearson correlation: requires variance in both series
+            if np.std(a_arr) > 0 and np.std(b_arr) > 0:
+                corr = np.corrcoef(a_arr, b_arr)[0, 1]
+                row[b_idx] = corr * 100  # scale to percentage
+            elif np.std(a_arr) == 0 and np.std(b_arr) == 0:
+                # Both flat (e.g. both no trades or all same outcome)
+                row[b_idx] = 0.0
+            else:
+                # One has variance, other is flat
+                row[b_idx] = 0.0
         correlations[a_idx] = row
 
     # Average correlation per strategy (excluding self)
