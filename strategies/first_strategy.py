@@ -238,13 +238,14 @@ def _empty_stats_df():
             "Number of trades", "Win rate (%)", "Loss rate (%)", "Total return (%)",
             "Total P&L (R)", "Avg P&L per trade (R)", "Winning trades P&L (R)",
             "Losing trades P&L (R)", "Target exit (%)", "Static exit (%)",
-            "Dynamic exit (%)", "Sharpe Ratio", "Max Drawdown (R)", "MAR Ratio", "SQN",
+            "Dynamic exit (%)", "EOD exit (%)", "RR Ratio", "Max Drawdown (R)", "SQN",
         ],
     )
     stats_df.attrs['trade_pnls_r'] = []
     stats_df.attrs['total_static_alloc'] = 0.0
     stats_df.attrs['total_dynamic_alloc'] = 0.0
     stats_df.attrs['total_target_alloc'] = 0.0
+    stats_df.attrs['total_eod_alloc'] = 0.0
     return stats_df
 
 
@@ -478,14 +479,20 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         else:
             return False
 
-        if event in ("Cross Above", "Close Above"):
+        if event == "Cross Above":
             return (price > locked_atr_price) and (prev_price <= locked_atr_price)
-        elif event in ("Cross Below", "Close Below"):
+        elif event == "Close Above":
+            return price > locked_atr_price
+        elif event == "Cross Below":
             return (price < locked_atr_price) and (prev_price >= locked_atr_price)
-        elif event in ("Cross", "Close"):
+        elif event == "Close Below":
+            return price < locked_atr_price
+        elif event == "Cross":
             cross_above = (price > locked_atr_price) and (prev_price <= locked_atr_price)
             cross_below = (price < locked_atr_price) and (prev_price >= locked_atr_price)
             return cross_above or cross_below
+        elif event == "Close":
+            return (price > locked_atr_price) or (price < locked_atr_price)
 
         return False
 
@@ -1198,6 +1205,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 'static_alloc': 0.0,
                 'dynamic_alloc': 0.0,
                 'target_alloc': 0.0,
+                'eod_alloc': 0.0,
             }
         entry = entry_trades[tid]
         entry['pnl_r'] += trade['pnl_r']
@@ -1209,6 +1217,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             entry['dynamic_alloc'] += alloc
         elif trade['exit_type'] == 'Target':
             entry['target_alloc'] += alloc
+        elif trade['exit_type'] == 'End of Data':
+            entry['eod_alloc'] += alloc
         # Keep the highest-priority (lowest number) exit type
         if exit_type_priority.get(trade['exit_type'], 99) < exit_type_priority.get(entry['exit_type'], 99):
             entry['exit_type'] = trade['exit_type']
@@ -1235,13 +1245,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         target_exit_pct = sum(t['target_alloc'] for t in entry_trades.values()) / num_trades
         static_exit_pct = sum(t['static_alloc'] for t in entry_trades.values()) / num_trades
         dynamic_exit_pct = sum(t['dynamic_alloc'] for t in entry_trades.values()) / num_trades
+        eod_exit_pct = sum(t['eod_alloc'] for t in entry_trades.values()) / num_trades
 
-        # Sharpe Ratio: mean(R P&Ls) / stdev(R P&Ls), risk-free rate = 0
-        if num_trades >= 2:
-            pnl_std = np.std(trade_pnls_r, ddof=1)
-            sharpe_ratio = (np.mean(trade_pnls_r) / pnl_std) if pnl_std > 0 else 0.0
-        else:
-            sharpe_ratio = 0.0
+        avg_win_pnl = winning_trades_pnl / wins if wins > 0 else 0.0
+        avg_lose_pnl = losing_trades_pnl / losses if losses > 0 else 0.0
+        rr_ratio = abs(avg_win_pnl / avg_lose_pnl) if avg_lose_pnl != 0 else 0.0
 
         # Maximum Drawdown: largest peak-to-trough decline in cumulative R equity curve
         cumulative = np.cumsum(trade_pnls_r)
@@ -1249,12 +1257,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         drawdowns = cumulative - peak  # always <= 0
         max_drawdown = abs(drawdowns.min()) if len(drawdowns) > 0 else 0.0
 
-        # MAR Ratio: Total P&L (R) / Max Drawdown (R)
-        mar_ratio = (total_pnl / max_drawdown) if max_drawdown > 0 else 0.0
-
         # SQN (System Quality Number): sqrt(N) * mean(R P&Ls) / stdev(R P&Ls)
-        if num_trades >= 2 and pnl_std > 0:
-            sqn = (np.mean(trade_pnls_r) / pnl_std) * np.sqrt(num_trades)
+        if num_trades >= 2:
+            pnl_std = np.std(trade_pnls_r, ddof=1)
+            sqn = (np.mean(trade_pnls_r) / pnl_std) * np.sqrt(num_trades) if pnl_std > 0 else 0.0
         else:
             sqn = 0.0
     else:
@@ -1267,9 +1273,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         target_exit_pct = 0.0
         static_exit_pct = 0.0
         dynamic_exit_pct = 0.0
-        sharpe_ratio = 0.0
+        eod_exit_pct = 0.0
+        rr_ratio = 0.0
         max_drawdown = 0.0
-        mar_ratio = 0.0
         sqn = 0.0
 
     stats_df = pd.DataFrame(
@@ -1278,7 +1284,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 num_trades,
                 win_rate,
                 loss_rate,
-                0.0,  # Total return (%) — deprecated, use Total P&L (R)
+                0.0,  # Total return (%) -- deprecated, use Total P&L (R)
                 total_pnl,
                 avg_pnl_per_trade,
                 winning_trades_pnl,
@@ -1286,9 +1292,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 target_exit_pct,
                 static_exit_pct,
                 dynamic_exit_pct,
-                sharpe_ratio,
+                eod_exit_pct,
+                rr_ratio,
                 max_drawdown,
-                mar_ratio,
                 sqn,
             ]
         },
@@ -1304,9 +1310,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             "Target exit (%)",
             "Static exit (%)",
             "Dynamic exit (%)",
-            "Sharpe Ratio",
+            "EOD exit (%)",
+            "RR Ratio",
             "Max Drawdown (R)",
-            "MAR Ratio",
             "SQN",
         ],
     )
@@ -1316,5 +1322,6 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     stats_df.attrs['total_static_alloc'] = sum(t['static_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_dynamic_alloc'] = sum(t['dynamic_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_target_alloc'] = sum(t['target_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
+    stats_df.attrs['total_eod_alloc'] = sum(t['eod_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
 
     return df, stats_df

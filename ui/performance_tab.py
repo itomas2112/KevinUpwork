@@ -399,6 +399,24 @@ def _copy_to_clipboard(text: str, key: str = "copy_btn"):
     ">Copy to Clipboard</button>
     """, height=50)
 
+def _mc_avg_profit_str(agg):
+    """Compute MC Avg Profit at 5% DD from agg dict + MC tab session state params."""
+    import streamlit as st
+    from ui.monte_carlo_tab import compute_mc_avg_profit_at_dd
+    win_pct = agg.get('win_pct', 0)
+    rr = agg.get('rr_ratio', 0)
+    if win_pct <= 0 or rr <= 0:
+        return "N/A"
+    balance = st.session_state.get('mc_starting_balance')
+    risk = st.session_state.get('mc_risk_pct')
+    if balance is None or risk is None:
+        return "N/A"
+    result = compute_mc_avg_profit_at_dd(win_pct, rr, risk, balance)
+    if result is None:
+        return "N/A"
+    return f"${result:,.0f}"
+
+
 def _build_metrics_table(results_dict):
     """Build a DataFrame with metric rows and one column per result."""
     metric_names = [
@@ -412,8 +430,9 @@ def _build_metrics_table(results_dict):
         "Target Exit %",
         "Static %",
         "Dynamic %",
-        "Sharpe Ratio",
-        "MAR Ratio",
+        "EOD %",
+        "Avg RR Ratio",
+        "MC Avg Profit (5% DD)",
         "SQN",
     ]
 
@@ -430,8 +449,9 @@ def _build_metrics_table(results_dict):
             f"{agg['target_exit_pct']:.0f}%",
             f"{agg['static_exit_pct']:.0f}%",
             f"{agg['dynamic_exit_pct']:.0f}%",
-            f"{agg['sharpe_ratio']:.2f}",
-            f"{agg['mar_ratio']:.2f}",
+            f"{agg.get('eod_exit_pct', 0):.0f}%",
+            f"{agg.get('rr_ratio', 0):.2f}",
+            _mc_avg_profit_str(agg),
             f"{agg['sqn']:.2f}",
         ]
 
@@ -451,8 +471,8 @@ def _empty_agg():
         'target_exit_pct': 0.0,
         'static_exit_pct': 0.0,
         'dynamic_exit_pct': 0.0,
-        'sharpe_ratio': 0.0,
+        'eod_exit_pct': 0.0,
+        'rr_ratio': 0.0,
         'max_drawdown': 0.0,
-        'mar_ratio': 0.0,
         'sqn': 0.0,
     }

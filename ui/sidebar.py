@@ -51,8 +51,7 @@ def render_sidebar():
             st.caption(f"Currently using: **{st.session_state['_agg_timeframe']}**")
 
     # Auto-compute 85/15 split from data (before widgets render)
-    # Sets widget defaults so they show the right dates on first load
-    auto_split_just_applied = False
+    _has_dates = "global_start_date" in st.session_state
     if "df_raw" in st.session_state and not st.session_state.get("_auto_split_applied"):
         idx = st.session_state["df_raw"].index
         if len(idx) > 1:
@@ -63,55 +62,53 @@ def render_sidebar():
             st.session_state["test_end_date"] = idx[-1].date()
             st.session_state["date_range_applied"] = True
             st.session_state["_auto_split_applied"] = True
-            auto_split_just_applied = True
+            _has_dates = True
 
-    # Training / Test Split
-    with st.sidebar.expander("Training / Test Split", expanded=False):
-        if auto_split_just_applied or st.session_state.get("_auto_split_applied"):
-            st.info(
-                "**Auto-split (85/15):** The data has been automatically split into "
-                "85% training and 15% test. You can adjust the dates below if needed."
-            )
-
-        st.markdown("**Training Set**")
+    # Training Set -- required before any calculations
+    with st.sidebar.expander("Training Set", expanded=False):
+        if st.session_state.get("_auto_split_applied"):
+            st.caption("Auto-filled (85/15 split). Adjust if needed.")
         date_col1, date_col2 = st.columns(2)
         with date_col1:
-            global_start_date = st.date_input(
-                "Train Start",
-                value=st.session_state.get("global_start_date"),
-                key="global_start_date",
-            )
+            if _has_dates:
+                global_start_date = st.date_input("Start Date", key="global_start_date")
+            else:
+                global_start_date = st.date_input("Start Date", key="global_start_date")
         with date_col2:
-            global_end_date = st.date_input(
-                "Train End",
-                value=st.session_state.get("global_end_date"),
-                key="global_end_date",
-            )
+            if _has_dates:
+                global_end_date = st.date_input("End Date", key="global_end_date")
+            else:
+                global_end_date = st.date_input("End Date", key="global_end_date")
+        if st.button("Apply Training Set", key="apply_date_range", type="primary"):
+            st.session_state['date_range_applied'] = True
+            st.rerun()
+        if st.session_state.get('date_range_applied'):
+            st.success(f"{global_start_date} \u2192 {global_end_date}")
+        else:
+            st.warning("Set dates and click Apply to proceed.")
 
-        st.markdown("**Test Set**")
+    # Test Set -- used only by Strategy Testing tab
+    with st.sidebar.expander("Test Set", expanded=False):
+        if st.session_state.get("_auto_split_applied"):
+            st.caption("Auto-filled (85/15 split). Adjust if needed.")
         test_col1, test_col2 = st.columns(2)
         with test_col1:
-            test_start_date = st.date_input(
-                "Test Start",
-                value=st.session_state.get("test_start_date"),
-                key="test_start_date",
-            )
+            if _has_dates:
+                test_start_date = st.date_input("Start Date", key="test_start_date")
+            else:
+                test_start_date = st.date_input("Start Date", key="test_start_date")
         with test_col2:
-            test_end_date = st.date_input(
-                "Test End",
-                value=st.session_state.get("test_end_date"),
-                key="test_end_date",
-            )
-        st.markdown("---")
-        if st.button("Apply Dates", key="apply_date_range", type="primary"):
-            st.session_state['date_range_applied'] = True
+            if _has_dates:
+                test_end_date = st.date_input("End Date", key="test_end_date")
+            else:
+                test_end_date = st.date_input("End Date", key="test_end_date")
+        if st.button("Apply Test Set", key="apply_test_set", type="primary"):
             st.session_state['test_set_applied'] = True
             st.rerun()
-
-        if st.session_state.get('date_range_applied'):
-            st.success(f"Training: {global_start_date} \u2192 {global_end_date}")
         if st.session_state.get('test_set_applied'):
-            st.success(f"Test: {test_start_date} \u2192 {test_end_date}")
+            st.success(f"{test_start_date} \u2192 {test_end_date}")
+        else:
+            st.info("Optional: set dates for Strategy Testing tab.")
 
     # Pattern Parameters — multi-row selection
     with st.sidebar.expander("Pattern Parameters", expanded=False):

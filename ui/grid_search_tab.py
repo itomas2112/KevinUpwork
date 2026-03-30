@@ -51,8 +51,8 @@ SORT_METRICS = [
     ("target_exit_pct", "Target Exit %"),
     ("static_exit_pct", "Static %"),
     ("dynamic_exit_pct", "Dynamic %"),
-    ("sharpe_ratio", "Sharpe Ratio"),
-    ("mar_ratio", "MAR Ratio"),
+    ("eod_exit_pct", "EOD %"),
+    ("rr_ratio", "Avg RR Ratio"),
     ("sqn", "SQN"),
 ]
 
@@ -204,32 +204,41 @@ def render_grid_search_tab(sidebar_config):
     st.markdown("**Performance Filters**")
     # Build threshold inputs for every metric in SORT_METRICS
     thresholds = {}
+
+    def _filter_props(metric_key, metric_label):
+        """Return (label, default, step, fmt) for a filter input."""
+        if metric_key == "num_trades":
+            return f"Min {metric_label}", 0.0, 1.0, "%.0f"
+        if metric_key == "avg_lose_pnl":
+            return f"Max {metric_label}", 0.0, 0.01, "%.2f"
+        return f"Min {metric_label}", -999.0, 0.01, "%.2f"
+
     # Row 1 — first 4 metrics
     cols_r1 = st.columns(4)
     for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[:4]):
         with cols_r1[ci]:
-            default = 0.0 if metric_key == "num_trades" else -999.0
-            step = 1.0 if metric_key == "num_trades" else 0.01
-            fmt = "%.0f" if metric_key == "num_trades" else "%.2f"
+            lbl, default, step, fmt = _filter_props(metric_key, metric_label)
             thresholds[metric_key] = st.number_input(
-                f"Min {metric_label}", value=default, step=step,
+                lbl, value=default, step=step,
                 format=fmt, key=f"gs_thresh_{metric_key}")
     # Row 2 — next 4 metrics
     cols_r2 = st.columns(4)
     for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[4:8]):
         with cols_r2[ci]:
+            lbl, default, step, fmt = _filter_props(metric_key, metric_label)
             thresholds[metric_key] = st.number_input(
-                f"Min {metric_label}", value=-999.0, step=0.01,
-                format="%.2f", key=f"gs_thresh_{metric_key}")
+                lbl, value=default, step=step,
+                format=fmt, key=f"gs_thresh_{metric_key}")
     # Row 3 — remaining metrics
     remaining = SORT_METRICS[8:]
     if remaining:
         cols_r3 = st.columns(max(len(remaining), 1))
         for ci, (metric_key, metric_label) in enumerate(remaining):
             with cols_r3[ci]:
+                lbl, default, step, fmt = _filter_props(metric_key, metric_label)
                 thresholds[metric_key] = st.number_input(
-                    f"Min {metric_label}", value=-999.0, step=0.01,
-                    format="%.2f", key=f"gs_thresh_{metric_key}")
+                    lbl, value=default, step=step,
+                    format=fmt, key=f"gs_thresh_{metric_key}")
 
     sort_col1, sort_col2 = st.columns(2)
     with sort_col1:
@@ -902,6 +911,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
     total_static_alloc = 0.0
     total_dynamic_alloc = 0.0
     total_target_alloc = 0.0
+    total_eod_alloc = 0.0
 
     for sd in all_stats_dicts:
         total_win_pnl += sd['win_pnl']
@@ -909,6 +919,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
         total_static_alloc += sd['total_static_alloc']
         total_dynamic_alloc += sd['total_dynamic_alloc']
         total_target_alloc += sd['total_target_alloc']
+        total_eod_alloc += sd.get('total_eod_alloc', 0.0)
         all_trade_pnls.extend(sd['trade_pnls_r'])
 
     total_trades = len(all_trade_pnls)
@@ -922,17 +933,12 @@ def _aggregate_stats_dicts(all_stats_dicts):
         target_exit_pct = total_target_alloc / total_trades
         static_exit_pct = total_static_alloc / total_trades
         dynamic_exit_pct = total_dynamic_alloc / total_trades
+        eod_exit_pct = total_eod_alloc / total_trades
 
         avg_win_pnl = total_win_pnl / total_wins if total_wins > 0 else 0.0
         avg_lose_pnl = total_lose_pnl / total_losses if total_losses > 0 else 0.0
         expected_value = (win_pct / 100 * avg_win_pnl) + (lose_pct / 100 * avg_lose_pnl)
-
-        if len(all_trade_pnls) >= 2:
-            pnl_std = np.std(all_trade_pnls, ddof=1)
-            sharpe_ratio = (np.mean(all_trade_pnls) / pnl_std) if pnl_std > 0 else 0.0
-        else:
-            pnl_std = 0.0
-            sharpe_ratio = 0.0
+        rr_ratio = abs(avg_win_pnl / avg_lose_pnl) if avg_lose_pnl != 0 else 0.0
 
         if all_trade_pnls:
             cumulative = np.cumsum(all_trade_pnls)
@@ -942,16 +948,15 @@ def _aggregate_stats_dicts(all_stats_dicts):
         else:
             max_drawdown = 0.0
 
-        mar_ratio = (total_pnl / max_drawdown) if max_drawdown > 0 else 0.0
-
-        if len(all_trade_pnls) >= 2 and pnl_std > 0:
-            sqn = (np.mean(all_trade_pnls) / pnl_std * np.sqrt(len(all_trade_pnls)))
+        if len(all_trade_pnls) >= 2:
+            pnl_std = np.std(all_trade_pnls, ddof=1)
+            sqn = (np.mean(all_trade_pnls) / pnl_std * np.sqrt(len(all_trade_pnls))) if pnl_std > 0 else 0.0
         else:
             sqn = 0.0
     else:
         win_pct = lose_pct = total_pnl = avg_win_pnl = avg_lose_pnl = 0.0
-        expected_value = target_exit_pct = static_exit_pct = dynamic_exit_pct = 0.0
-        sharpe_ratio = max_drawdown = mar_ratio = sqn = 0.0
+        expected_value = target_exit_pct = static_exit_pct = dynamic_exit_pct = eod_exit_pct = 0.0
+        rr_ratio = max_drawdown = sqn = 0.0
 
     return {
         'num_trades': total_trades,
@@ -964,9 +969,9 @@ def _aggregate_stats_dicts(all_stats_dicts):
         'target_exit_pct': target_exit_pct,
         'static_exit_pct': static_exit_pct,
         'dynamic_exit_pct': dynamic_exit_pct,
-        'sharpe_ratio': sharpe_ratio,
+        'eod_exit_pct': eod_exit_pct,
+        'rr_ratio': rr_ratio,
         'max_drawdown': max_drawdown,
-        'mar_ratio': mar_ratio,
         'sqn': sqn,
     }
 
@@ -1095,6 +1100,7 @@ def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_key
             'total_static_alloc': float(stats_df.attrs.get('total_static_alloc', 0.0)),
             'total_dynamic_alloc': float(stats_df.attrs.get('total_dynamic_alloc', 0.0)),
             'total_target_alloc': float(stats_df.attrs.get('total_target_alloc', 0.0)),
+            'total_eod_alloc': float(stats_df.attrs.get('total_eod_alloc', 0.0)),
         }
 
     n_candidates = len(run_configs)
@@ -1248,8 +1254,8 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
             "Target%": f"{global_agg['target_exit_pct']:.0f}%",
             "Static%": f"{global_agg['static_exit_pct']:.0f}%",
             "Dynamic%": f"{global_agg['dynamic_exit_pct']:.0f}%",
-            "Sharpe": f"{global_agg['sharpe_ratio']:.2f}",
-            "MAR": f"{global_agg['mar_ratio']:.2f}",
+            "EOD%": f"{global_agg.get('eod_exit_pct', 0):.0f}%",
+            "RR": f"{global_agg.get('rr_ratio', 0):.2f}",
             "SQN": f"{global_agg['sqn']:.2f}",
         })
 

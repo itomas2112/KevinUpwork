@@ -403,8 +403,8 @@ SORT_METRICS = [
     ("target_exit_pct", "Target Exit %"),
     ("static_exit_pct", "Static %"),
     ("dynamic_exit_pct", "Dynamic %"),
-    ("sharpe_ratio", "Sharpe Ratio"),
-    ("mar_ratio", "MAR Ratio"),
+    ("eod_exit_pct", "EOD %"),
+    ("rr_ratio", "Avg RR Ratio"),
     ("sqn", "SQN"),
 ]
 
@@ -925,6 +925,7 @@ def _run_on_date_range(df_full, selected_strategy, all_combos,
 
 def _build_metrics_table(results_dict):
     """Build a DataFrame with metric rows and one column per result."""
+    from ui.performance_tab import _mc_avg_profit_str
     metric_names = [
         "Number of Trades",
         "Win %",
@@ -936,8 +937,9 @@ def _build_metrics_table(results_dict):
         "Target Exit %",
         "Static %",
         "Dynamic %",
-        "Sharpe Ratio",
-        "MAR Ratio",
+        "EOD %",
+        "Avg RR Ratio",
+        "MC Avg Profit (5% DD)",
         "SQN",
     ]
 
@@ -954,8 +956,9 @@ def _build_metrics_table(results_dict):
             f"{agg['target_exit_pct']:.0f}%",
             f"{agg['static_exit_pct']:.0f}%",
             f"{agg['dynamic_exit_pct']:.0f}%",
-            f"{agg['sharpe_ratio']:.2f}",
-            f"{agg['mar_ratio']:.2f}",
+            f"{agg.get('eod_exit_pct', 0):.0f}%",
+            f"{agg.get('rr_ratio', 0):.2f}",
+            _mc_avg_profit_str(agg),
             f"{agg['sqn']:.2f}",
         ]
 
@@ -975,8 +978,8 @@ def _empty_agg():
         'target_exit_pct': 0.0,
         'static_exit_pct': 0.0,
         'dynamic_exit_pct': 0.0,
-        'sharpe_ratio': 0.0,
+        'eod_exit_pct': 0.0,
+        'rr_ratio': 0.0,
         'max_drawdown': 0.0,
-        'mar_ratio': 0.0,
         'sqn': 0.0,
     }

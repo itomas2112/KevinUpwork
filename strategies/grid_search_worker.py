@@ -54,4 +54,5 @@ def _extract_stats(stats_df):
         'total_static_alloc': float(stats_df.attrs.get('total_static_alloc', 0.0)),
         'total_dynamic_alloc': float(stats_df.attrs.get('total_dynamic_alloc', 0.0)),
         'total_target_alloc': float(stats_df.attrs.get('total_target_alloc', 0.0)),
+        'total_eod_alloc': float(stats_df.attrs.get('total_eod_alloc', 0.0)),
     }

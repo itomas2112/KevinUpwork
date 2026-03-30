@@ -7,6 +7,24 @@ import numpy as np
 import plotly.graph_objects as go
 
 
+def compute_mc_avg_profit_at_dd(win_rate, reward_risk, risk_pct,
+                                starting_balance, max_dd_threshold=5.0,
+                                trades_per_sim=100, n_sims=5000):
+    """Quick Monte Carlo: return avg final balance for sims staying under max_dd_threshold%.
+
+    Returns None if no simulations stay under the threshold, or if inputs are invalid.
+    """
+    if win_rate <= 0 or reward_risk <= 0 or risk_pct <= 0 or starting_balance <= 0:
+        return None
+    results = _run_simulation(starting_balance, trades_per_sim, n_sims,
+                              win_rate, reward_risk, risk_pct)
+    mask = results["max_drawdowns"] <= max_dd_threshold
+    passing = results["final_balances"][mask]
+    if len(passing) == 0:
+        return None
+    return float(np.mean(passing))
+
+
 def _run_simulation(starting_balance, trades_per_sim, n_simulations,
                     win_rate, reward_risk, risk_pct):
     """Run Monte Carlo simulation using vectorized NumPy operations.

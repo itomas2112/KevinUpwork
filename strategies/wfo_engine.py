@@ -221,6 +221,7 @@ def _extract_stats(stats_df):
         "total_static_alloc": float(stats_df.attrs.get("total_static_alloc", 0.0)),
         "total_dynamic_alloc": float(stats_df.attrs.get("total_dynamic_alloc", 0.0)),
         "total_target_alloc": float(stats_df.attrs.get("total_target_alloc", 0.0)),
+        "total_eod_alloc": float(stats_df.attrs.get("total_eod_alloc", 0.0)),
     }
 
 
@@ -231,7 +232,7 @@ def aggregate_stats_dicts(all_dicts):
     """
     all_pnls = []
     win_pnl = lose_pnl = 0.0
-    static_alloc = dynamic_alloc = target_alloc = 0.0
+    static_alloc = dynamic_alloc = target_alloc = eod_alloc = 0.0
 
     for d in all_dicts:
         win_pnl += d["win_pnl"]
@@ -239,6 +240,7 @@ def aggregate_stats_dicts(all_dicts):
         static_alloc += d["total_static_alloc"]
         dynamic_alloc += d["total_dynamic_alloc"]
         target_alloc += d["total_target_alloc"]
+        eod_alloc += d.get("total_eod_alloc", 0.0)
         all_pnls.extend(d["trade_pnls_r"])
 
     n = len(all_pnls)
@@ -253,20 +255,20 @@ def aggregate_stats_dicts(all_dicts):
     avg_win = np.mean(wins) if wins else 0.0
     avg_lose = np.mean(losses) if losses else 0.0
     ev = total_pnl / n
+    rr_ratio = abs(avg_win / avg_lose) if avg_lose != 0 else 0.0
 
-    total_alloc = static_alloc + dynamic_alloc + target_alloc
+    total_alloc = static_alloc + dynamic_alloc + target_alloc + eod_alloc
     target_pct = (target_alloc / total_alloc * 100) if total_alloc else 0.0
     static_pct = (static_alloc / total_alloc * 100) if total_alloc else 0.0
     dynamic_pct = (dynamic_alloc / total_alloc * 100) if total_alloc else 0.0
+    eod_pct = (eod_alloc / total_alloc * 100) if total_alloc else 0.0
 
     arr = np.array(all_pnls)
     std = arr.std(ddof=1) if n > 1 else 0.0
-    sharpe = (arr.mean() / std) if std else 0.0
     cum = np.cumsum(arr)
     peak = np.maximum.accumulate(cum)
     dd = peak - cum
     max_dd = float(dd.max()) if len(dd) else 0.0
-    mar = (total_pnl / max_dd) if max_dd else 0.0
     sqn = (arr.mean() / std * math.sqrt(n)) if std else 0.0
 
     return {
@@ -280,9 +282,9 @@ def aggregate_stats_dicts(all_dicts):
         "target_exit_pct": float(target_pct),
         "static_exit_pct": float(static_pct),
         "dynamic_exit_pct": float(dynamic_pct),
-        "sharpe_ratio": float(sharpe),
+        "eod_exit_pct": float(eod_pct),
+        "rr_ratio": float(rr_ratio),
         "max_drawdown": float(max_dd),
-        "mar_ratio": float(mar),
         "sqn": float(sqn),
     }
 
@@ -292,8 +294,8 @@ def _empty_agg():
         "num_trades": 0, "win_pct": 0.0, "lose_pct": 0.0,
         "avg_win_pnl": 0.0, "avg_lose_pnl": 0.0, "total_pnl": 0.0,
         "expected_value": 0.0, "target_exit_pct": 0.0, "static_exit_pct": 0.0,
-        "dynamic_exit_pct": 0.0, "sharpe_ratio": 0.0, "max_drawdown": 0.0,
-        "mar_ratio": 0.0, "sqn": 0.0,
+        "dynamic_exit_pct": 0.0, "eod_exit_pct": 0.0, "rr_ratio": 0.0,
+        "max_drawdown": 0.0, "sqn": 0.0,
     }
 
 

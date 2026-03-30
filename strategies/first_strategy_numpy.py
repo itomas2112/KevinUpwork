@@ -450,13 +450,19 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
         price = _high[i] if strategy_direction == 'Long' else _low[i]
         prev_price = _close[i - 1]
 
-        if event in ("Cross Above", "Close Above"):
+        if event == "Cross Above":
             return (price > locked_price) and (prev_price <= locked_price)
-        elif event in ("Cross Below", "Close Below"):
+        elif event == "Close Above":
+            return price > locked_price
+        elif event == "Cross Below":
             return (price < locked_price) and (prev_price >= locked_price)
-        elif event in ("Cross", "Close"):
+        elif event == "Close Below":
+            return price < locked_price
+        elif event == "Cross":
             return ((price > locked_price) and (prev_price <= locked_price)) or \
                    ((price < locked_price) and (prev_price >= locked_price))
+        elif event == "Close":
+            return (price > locked_price) or (price < locked_price)
         return False
 
     def _compute_atr_target_level(trigger, entry_price, bar_idx):
@@ -735,6 +741,7 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                 'static_alloc': 0.0,
                 'dynamic_alloc': 0.0,
                 'target_alloc': 0.0,
+                'eod_alloc': 0.0,
             }
         entry = entry_trades[tid]
         entry['pnl_r'] += trade['pnl_r']
@@ -745,6 +752,8 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
             entry['dynamic_alloc'] += alloc
         elif trade['exit_type'] == 'Target':
             entry['target_alloc'] += alloc
+        elif trade['exit_type'] == 'End of Data':
+            entry['eod_alloc'] += alloc
         if exit_type_priority.get(trade['exit_type'], 99) < exit_type_priority.get(entry['exit_type'], 99):
             entry['exit_type'] = trade['exit_type']
 
@@ -764,43 +773,41 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
         target_exit_pct = sum(t['target_alloc'] for t in entry_trades.values()) / num_trades
         static_exit_pct = sum(t['static_alloc'] for t in entry_trades.values()) / num_trades
         dynamic_exit_pct = sum(t['dynamic_alloc'] for t in entry_trades.values()) / num_trades
+        eod_exit_pct = sum(t['eod_alloc'] for t in entry_trades.values()) / num_trades
 
-        if num_trades >= 2:
-            pnl_std = np.std(trade_pnls_r, ddof=1)
-            sharpe_ratio = (np.mean(trade_pnls_r) / pnl_std) if pnl_std > 0 else 0.0
-        else:
-            pnl_std = 0.0
-            sharpe_ratio = 0.0
+        avg_win_pnl = winning_trades_pnl / wins if wins > 0 else 0.0
+        avg_lose_pnl = losing_trades_pnl / losses if losses > 0 else 0.0
+        rr_ratio = abs(avg_win_pnl / avg_lose_pnl) if avg_lose_pnl != 0 else 0.0
 
         cumulative = np.cumsum(trade_pnls_r)
         peak = np.maximum.accumulate(cumulative)
         drawdowns = cumulative - peak
         max_drawdown = abs(drawdowns.min()) if len(drawdowns) > 0 else 0.0
-        mar_ratio = (total_pnl / max_drawdown) if max_drawdown > 0 else 0.0
 
-        if num_trades >= 2 and pnl_std > 0:
-            sqn = (np.mean(trade_pnls_r) / pnl_std) * np.sqrt(num_trades)
+        if num_trades >= 2:
+            pnl_std = np.std(trade_pnls_r, ddof=1)
+            sqn = (np.mean(trade_pnls_r) / pnl_std) * np.sqrt(num_trades) if pnl_std > 0 else 0.0
         else:
             sqn = 0.0
     else:
         win_rate = loss_rate = total_pnl = avg_pnl_per_trade = 0.0
         winning_trades_pnl = losing_trades_pnl = 0.0
-        target_exit_pct = static_exit_pct = dynamic_exit_pct = 0.0
-        sharpe_ratio = max_drawdown = mar_ratio = sqn = 0.0
+        target_exit_pct = static_exit_pct = dynamic_exit_pct = eod_exit_pct = 0.0
+        rr_ratio = max_drawdown = sqn = 0.0
 
     stats_df = pd.DataFrame(
         {"value": [
             num_trades, win_rate, loss_rate, 0.0, total_pnl,
             avg_pnl_per_trade, winning_trades_pnl, losing_trades_pnl,
-            target_exit_pct, static_exit_pct, dynamic_exit_pct,
-            sharpe_ratio, max_drawdown, mar_ratio, sqn,
+            target_exit_pct, static_exit_pct, dynamic_exit_pct, eod_exit_pct,
+            rr_ratio, max_drawdown, sqn,
         ]},
         index=[
             "Number of trades", "Win rate (%)", "Loss rate (%)",
             "Total return (%)", "Total P&L (R)", "Avg P&L per trade (R)",
             "Winning trades P&L (R)", "Losing trades P&L (R)",
-            "Target exit (%)", "Static exit (%)", "Dynamic exit (%)",
-            "Sharpe Ratio", "Max Drawdown (R)", "MAR Ratio", "SQN",
+            "Target exit (%)", "Static exit (%)", "Dynamic exit (%)", "EOD exit (%)",
+            "RR Ratio", "Max Drawdown (R)", "SQN",
         ],
     )
 
@@ -808,5 +815,6 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
     stats_df.attrs['total_static_alloc'] = sum(t['static_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_dynamic_alloc'] = sum(t['dynamic_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_target_alloc'] = sum(t['target_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
+    stats_df.attrs['total_eod_alloc'] = sum(t['eod_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
 
     return None, stats_df
