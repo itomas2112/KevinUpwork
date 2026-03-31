@@ -210,7 +210,7 @@ def render_grid_search_tab(sidebar_config):
         if metric_key == "num_trades":
             return f"Min {metric_label}", 0.0, 1.0, "%.0f"
         if metric_key == "avg_lose_pnl":
-            return f"Max {metric_label}", 0.0, 0.01, "%.2f"
+            return f"Max {metric_label}", -999.0, 0.01, "%.2f"
         return f"Min {metric_label}", -999.0, 0.01, "%.2f"
 
     # Row 1 — first 4 metrics

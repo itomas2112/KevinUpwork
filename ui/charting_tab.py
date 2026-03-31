@@ -412,9 +412,8 @@ def render_file_uploaders():
             from data.loader import resample_ohlc
             agg_tf = st.session_state.get("_agg_timeframe", base_tf)
             st.session_state["df_ohlc"] = resample_ohlc(df_raw, agg_tf, base_timeframe=base_tf)
-            # Clear indicator caches and auto-split so it recomputes
-            for k in ["df_features", "_indicator_params", "_indicator_params_data_fp",
-                       "_auto_split_applied"]:
+            # Clear indicator caches
+            for k in ["df_features", "_indicator_params", "_indicator_params_data_fp"]:
                 st.session_state.pop(k, None)
             st.success(f"Data loaded ({agg_tf})")
 

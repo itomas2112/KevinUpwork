@@ -65,7 +65,7 @@ prev_base = st.session_state.get("_prev_base_timeframe", "15m")
 if base_tf != prev_base:
     st.session_state["_prev_base_timeframe"] = base_tf
     for k in ["df_raw", "df_ohlc", "df_features", "_indicator_params",
-              "_indicator_params_data_fp", "_agg_timeframe", "_auto_split_applied"]:
+              "_indicator_params_data_fp", "_agg_timeframe"]:
         st.session_state.pop(k, None)
     for k in list(st.session_state.keys()):
         if k.startswith(("_bt_cache_", "_perf_", "_gs_", "_cv_", "_test_", "_corr_")):

@@ -50,35 +50,13 @@ def render_sidebar():
         if st.session_state.get("_agg_timeframe", base_tf) != base_tf:
             st.caption(f"Currently using: **{st.session_state['_agg_timeframe']}**")
 
-    # Auto-compute 85/15 split from data (before widgets render)
-    _has_dates = "global_start_date" in st.session_state
-    if "df_raw" in st.session_state and not st.session_state.get("_auto_split_applied"):
-        idx = st.session_state["df_raw"].index
-        if len(idx) > 1:
-            split_pos = int(len(idx) * 0.85)
-            st.session_state["global_start_date"] = idx[0].date()
-            st.session_state["global_end_date"] = idx[split_pos - 1].date()
-            st.session_state["test_start_date"] = idx[split_pos].date()
-            st.session_state["test_end_date"] = idx[-1].date()
-            st.session_state["date_range_applied"] = True
-            st.session_state["_auto_split_applied"] = True
-            _has_dates = True
-
     # Training Set -- required before any calculations
     with st.sidebar.expander("Training Set", expanded=False):
-        if st.session_state.get("_auto_split_applied"):
-            st.caption("Auto-filled (85/15 split). Adjust if needed.")
         date_col1, date_col2 = st.columns(2)
         with date_col1:
-            if _has_dates:
-                global_start_date = st.date_input("Start Date", key="global_start_date")
-            else:
-                global_start_date = st.date_input("Start Date", key="global_start_date")
+            global_start_date = st.date_input("Start Date", key="global_start_date")
         with date_col2:
-            if _has_dates:
-                global_end_date = st.date_input("End Date", key="global_end_date")
-            else:
-                global_end_date = st.date_input("End Date", key="global_end_date")
+            global_end_date = st.date_input("End Date", key="global_end_date")
         if st.button("Apply Training Set", key="apply_date_range", type="primary"):
             st.session_state['date_range_applied'] = True
             st.rerun()
@@ -89,19 +67,11 @@ def render_sidebar():
 
     # Test Set -- used only by Strategy Testing tab
     with st.sidebar.expander("Test Set", expanded=False):
-        if st.session_state.get("_auto_split_applied"):
-            st.caption("Auto-filled (85/15 split). Adjust if needed.")
         test_col1, test_col2 = st.columns(2)
         with test_col1:
-            if _has_dates:
-                test_start_date = st.date_input("Start Date", key="test_start_date")
-            else:
-                test_start_date = st.date_input("Start Date", key="test_start_date")
+            test_start_date = st.date_input("Start Date", key="test_start_date")
         with test_col2:
-            if _has_dates:
-                test_end_date = st.date_input("End Date", key="test_end_date")
-            else:
-                test_end_date = st.date_input("End Date", key="test_end_date")
+            test_end_date = st.date_input("End Date", key="test_end_date")
         if st.button("Apply Test Set", key="apply_test_set", type="primary"):
             st.session_state['test_set_applied'] = True
             st.rerun()
