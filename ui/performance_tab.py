@@ -400,17 +400,20 @@ def _copy_to_clipboard(text: str, key: str = "copy_btn"):
     """, height=50)
 
 def _mc_avg_profit_str(agg):
-    """Compute MC Avg Profit at 5% DD from agg dict + MC tab session state params."""
+    """Compute MC Avg Profit at 5% DD from agg dict + MC tab session state params.
+
+    Uses Monte Carlo tab settings if available, otherwise defaults to
+    $10,000 starting balance and 1% risk per trade.  These defaults can be
+    changed in the Monte Carlo tab.
+    """
     import streamlit as st
     from ui.monte_carlo_tab import compute_mc_avg_profit_at_dd
     win_pct = agg.get('win_pct', 0)
     rr = agg.get('rr_ratio', 0)
     if win_pct <= 0 or rr <= 0:
         return "N/A"
-    balance = st.session_state.get('mc_starting_balance')
-    risk = st.session_state.get('mc_risk_pct')
-    if balance is None or risk is None:
-        return "N/A"
+    balance = st.session_state.get('mc_starting_balance', 10000.0)
+    risk = st.session_state.get('mc_risk_pct', 1.0)
     result = compute_mc_avg_profit_at_dd(win_pct, rr, risk, balance)
     if result is None:
         return "N/A"
