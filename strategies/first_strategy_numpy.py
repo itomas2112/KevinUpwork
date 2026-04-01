@@ -81,7 +81,7 @@ def _vec_trigger(config, _arrays, indicator_map, _high, _low, _close, _n):
         mask[:] = was_below & now_above
         mask[0] = False
         if is_price:
-            prices = arr2 + 0.01
+            prices = arr2.copy()
 
     elif event == "Cross Below":
         was_above = prev1 >= prev2
@@ -92,7 +92,7 @@ def _vec_trigger(config, _arrays, indicator_map, _high, _low, _close, _n):
         mask[:] = was_above & now_below
         mask[0] = False
         if is_price:
-            prices = arr2 - 0.01
+            prices = arr2.copy()
 
     elif event == "Cross":
         was_below = prev1 <= prev2
@@ -106,7 +106,7 @@ def _vec_trigger(config, _arrays, indicator_map, _high, _low, _close, _n):
         mask[:] = ca | cb
         mask[0] = False
         if is_price:
-            prices = np.where(ca, arr2 + 0.01, np.where(cb, arr2 - 0.01, _close))
+            prices = arr2.copy()
 
     elif event == "At Level":
         mask[:] = np.abs(arr1 - arr2) < 0.01
@@ -422,10 +422,14 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
         prev_move = (prev_price - entry_price) if strategy_direction == 'Long' else (entry_price - prev_price)
         prev_r = (prev_move / r_distance) if el1 == "R Profit" else (-prev_move / r_distance)
 
-        if event in ("Cross Above", "Close Above"):
+        if event == "Cross Above":
             return (r_val > fv) and (prev_r <= fv)
-        elif event in ("Cross Below", "Close Below"):
+        elif event == "Close Above":
+            return r_val > fv
+        elif event == "Cross Below":
             return (r_val < fv) and (prev_r >= fv)
+        elif event == "Close Below":
+            return r_val < fv
         elif event in ("Cross", "Close"):
             return ((r_val > fv) and (prev_r <= fv)) or ((r_val < fv) and (prev_r >= fv))
         elif event == "At Level":
@@ -462,7 +466,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
             return ((price > locked_price) and (prev_price <= locked_price)) or \
                    ((price < locked_price) and (prev_price >= locked_price))
         elif event == "Close":
-            return (price > locked_price) or (price < locked_price)
+            ca = (price > locked_price) and (prev_price <= locked_price)
+            cb = (price < locked_price) and (prev_price >= locked_price)
+            return ca or cb
         return False
 
     def _compute_atr_target_level(trigger, entry_price, bar_idx):

@@ -412,10 +412,14 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             return False
 
         # Check event type
-        if event in ("Cross Above", "Close Above"):
+        if event == "Cross Above":
             return (r_value > fixed_value) and (prev_r_value <= fixed_value)
-        elif event in ("Cross Below", "Close Below"):
+        elif event == "Close Above":
+            return r_value > fixed_value
+        elif event == "Cross Below":
             return (r_value < fixed_value) and (prev_r_value >= fixed_value)
+        elif event == "Close Below":
+            return r_value < fixed_value
         elif event in ("Cross", "Close"):
             cross_above = (r_value > fixed_value) and (prev_r_value <= fixed_value)
             cross_below = (r_value < fixed_value) and (prev_r_value >= fixed_value)
@@ -492,7 +496,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             cross_below = (price < locked_atr_price) and (prev_price >= locked_atr_price)
             return cross_above or cross_below
         elif event == "Close":
-            return (price > locked_atr_price) or (price < locked_atr_price)
+            close_above = (price > locked_atr_price) and (prev_price <= locked_atr_price)
+            close_below = (price < locked_atr_price) and (prev_price >= locked_atr_price)
+            return close_above or close_below
 
         return False
 
@@ -583,11 +589,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         # Check the event type
         if event == "Close Above":
-            # Simply check if current close is above the value
+            # State: current bar's close is above the value
             return value1 > value2
 
         elif event == "Close Below":
-            # Simply check if current close is below the value
+            # State: current bar's close is below the value
             return value1 < value2
 
         elif event == "Close":
@@ -654,7 +660,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     def get_trigger_price(trigger_config, current_idx, locked_value=None):
         """
         Determine the trade price for a triggered event.
-        - Cross events with Price as element1: use the crossed indicator's value +/- $0.01
+        - Cross events with Price as element1: use the crossed indicator/fixed value
+          as the fill price (the level that was actually crossed).
         - Close events or non-Price triggers: use bar close price
         - If locked_value is provided (static stop), use that as the crossed level
         """
@@ -673,23 +680,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 if compare_type == 'Fixed Value':
                     fixed_val = trigger_config.get('value')
                     if fixed_val is not None:
-                        # $0.01 offset based on cross direction
-                        if event == 'Cross Above':
-                            return fixed_val + 0.01
-                        elif event == 'Cross Below':
-                            return fixed_val - 0.01
                         return fixed_val
                 else:
                     element2 = trigger_config.get('element2')
                     col2 = indicator_map.get(element2)
                     if col2 and col2 in df.columns:
-                        crossed_val = df[col2].iloc[current_idx]
-                        # $0.01 offset based on cross direction
-                        if event == 'Cross Above':
-                            return crossed_val + 0.01
-                        elif event == 'Cross Below':
-                            return crossed_val - 0.01
-                        return crossed_val
+                        return df[col2].iloc[current_idx]
 
         return df['latest'].iloc[current_idx]
 
