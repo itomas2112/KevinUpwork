@@ -925,6 +925,7 @@ def _run_on_date_range(df_full, selected_strategy, all_combos,
 
 def _build_metrics_table(results_dict):
     """Build a DataFrame with metric rows and one column per result."""
+    from ui.performance_tab import _mc_avg_profit_str
     metric_names = [
         "Number of Trades",
         "Win %",
@@ -938,6 +939,7 @@ def _build_metrics_table(results_dict):
         "Dynamic %",
         "EOD %",
         "Avg RR Ratio",
+        "MC Avg Profit (5% DD)",
         "SQN",
     ]
 
@@ -956,6 +958,7 @@ def _build_metrics_table(results_dict):
             f"{agg['dynamic_exit_pct']:.0f}%",
             f"{agg.get('eod_exit_pct', 0):.0f}%",
             f"{agg.get('rr_ratio', 0):.2f}",
+            _mc_avg_profit_str(agg),
             f"{agg['sqn']:.2f}",
         ]
 
