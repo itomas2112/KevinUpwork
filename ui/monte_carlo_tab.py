@@ -9,20 +9,37 @@ import plotly.graph_objects as go
 
 def compute_mc_avg_profit_at_dd(win_rate, reward_risk, risk_pct,
                                 starting_balance, max_dd_threshold=5.0,
-                                trades_per_sim=100, n_sims=5000):
-    """Quick Monte Carlo: return avg final balance for sims staying under max_dd_threshold%.
+                                trades_per_sim=100, n_sims=5000,
+                                skip_threshold=False):
+    """Quick Monte Carlo: return avg final balance based on avg max drawdown.
 
-    Returns None if no simulations stay under the threshold, or if inputs are invalid.
+    Uses the average of all per-simulation max drawdowns (not per-sim filtering).
+    When avg max DD <= threshold: returns mean of all final balances.
+    When avg max DD > threshold: returns None.
+
+    If skip_threshold=True (used by Grid Search for comparability):
+      - Always returns a float, never None.
+      - For invalid inputs (0% WR, 0 RR), returns deterministic result:
+        balance * (1 - risk_pct/100)^trades_per_sim (pure losing account).
     """
-    if win_rate <= 0 or reward_risk <= 0 or risk_pct <= 0 or starting_balance <= 0:
+    if risk_pct <= 0 or starting_balance <= 0:
+        if skip_threshold:
+            return float(starting_balance)
+        return None
+    if win_rate <= 0 or reward_risk <= 0:
+        if skip_threshold:
+            # Deterministic: every trade is a full loss of risk_pct
+            decay = (1.0 - risk_pct / 100.0) ** trades_per_sim
+            return float(starting_balance * decay)
         return None
     results = _run_simulation(starting_balance, trades_per_sim, n_sims,
                               win_rate, reward_risk, risk_pct)
-    mask = results["max_drawdowns"] <= max_dd_threshold
-    passing = results["final_balances"][mask]
-    if len(passing) == 0:
+    if skip_threshold:
+        return float(np.mean(results["final_balances"]))
+    avg_max_dd = float(np.mean(results["max_drawdowns"]))
+    if avg_max_dd > max_dd_threshold:
         return None
-    return float(np.mean(passing))
+    return float(np.mean(results["final_balances"]))
 
 
 def _run_simulation(starting_balance, trades_per_sim, n_simulations,

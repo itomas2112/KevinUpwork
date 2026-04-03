@@ -53,7 +53,8 @@ SORT_METRICS = [
     ("dynamic_exit_pct", "Dynamic %"),
     ("eod_exit_pct", "EOD %"),
     ("rr_ratio", "Avg RR Ratio"),
-    ("sqn", "SQN"),
+    ("mc_avg_profit", "MC Avg Profit ($)"),
+    ("abs_correlation", "|Correlation|"),
 ]
 
 PAGE_SIZE = 50
@@ -101,6 +102,11 @@ def render_grid_search_tab(sidebar_config):
     with info_col:
         st.markdown(f"**Direction:** {selected_strategy.get('direction', '?')}  "
                     f"| **Max Positions:** {selected_strategy.get('max_positions', 1) or 'Unlimited'}")
+
+    st.markdown("---")
+
+    # ── Section A2: Reference Strategies (for Correlation) ──
+    _render_reference_strategy_selection(saved, strategy_names, selected_idx)
 
     st.markdown("---")
 
@@ -211,6 +217,10 @@ def render_grid_search_tab(sidebar_config):
             return f"Min {metric_label}", 0.0, 1.0, "%.0f"
         if metric_key == "avg_lose_pnl":
             return f"Max {metric_label}", -999.0, 0.01, "%.2f"
+        if metric_key == "mc_avg_profit":
+            return f"Min {metric_label}", 0.0, 1000.0, "%.0f"
+        if metric_key == "abs_correlation":
+            return f"Max {metric_label}", 100.0, 1.0, "%.0f"
         return f"Min {metric_label}", -999.0, 0.01, "%.2f"
 
     # Row 1 — first 4 metrics
@@ -632,6 +642,151 @@ def _render_single_candidate(cand, prefix, ema_count):
         "element2": element2,
         "value": value,
     }
+
+
+# ======================================================================
+# Reference strategy selection UI (for Correlation)
+# ======================================================================
+
+def _render_reference_strategy_selection(saved_strategies, strategy_names, current_strategy_idx):
+    """Render UI for selecting reference strategies used in correlation."""
+    st.markdown("**Reference Strategies (for Correlation)**")
+
+    ref_indices = st.session_state.get("gs_ref_strategies", [])
+
+    if not ref_indices:
+        st.caption(
+            "Add reference strategies to compute correlation \u2014 measures how "
+            "diversified each candidate is vs your existing strategies."
+        )
+
+    available = [(i, name) for i, name in enumerate(strategy_names)
+                 if i != current_strategy_idx]
+
+    if not available:
+        st.info("Save at least one additional strategy to use as a correlation reference.")
+        return
+
+    to_remove = []
+    for row_idx, ref_idx in enumerate(ref_indices):
+        col_sel, col_rm = st.columns([4, 1])
+        with col_sel:
+            avail_indices = [a[0] for a in available]
+            current_pos = avail_indices.index(ref_idx) if ref_idx in avail_indices else 0
+            new_ref = st.selectbox(
+                f"Reference {row_idx + 1}",
+                avail_indices,
+                index=current_pos,
+                format_func=lambda x: strategy_names[x],
+                key=f"gs_ref_sel_{row_idx}",
+            )
+            ref_indices[row_idx] = new_ref
+        with col_rm:
+            st.markdown("")
+            if st.button("X", key=f"gs_ref_rm_{row_idx}"):
+                to_remove.append(row_idx)
+
+    if to_remove:
+        for idx in sorted(to_remove, reverse=True):
+            ref_indices.pop(idx)
+        st.session_state["gs_ref_strategies"] = ref_indices
+        st.rerun()
+
+    if st.button("+ Add Reference Strategy", key="gs_ref_add"):
+        used = set(ref_indices)
+        default = next((i for i, _ in available if i not in used), available[0][0])
+        ref_indices.append(default)
+        st.session_state["gs_ref_strategies"] = ref_indices
+        st.rerun()
+
+    st.session_state["gs_ref_strategies"] = ref_indices
+
+
+# ======================================================================
+# Correlation helpers (DRM period directional signals)
+# ======================================================================
+
+def _compute_reference_directions(ref_indices, combo_slices, global_combo_keys):
+    """Run reference strategies and return combined directional signal array.
+
+    For each DRM period (slice):
+      1. Run each reference strategy, get raw total P&L
+      2. Sum raw P&Ls across all references into one composite P&L
+      3. Convert composite to +1 (profit), -1 (loss), 0 (flat/no trades)
+
+    Returns numpy array of length = total slices, or None if no references.
+    """
+    import numpy as np
+    from strategies.first_strategy_numpy import execute_custom_strategy_numpy
+
+    saved = st.session_state.get("saved_strategies", [])
+    if not ref_indices or not saved:
+        return None
+
+    # Count total slices across all combos
+    total_slices = sum(len(combo_slices.get(ck, [])) for ck in global_combo_keys)
+    if total_slices == 0:
+        return None
+
+    # Accumulate raw P&L per slice across all reference strategies
+    composite_pnl = np.zeros(total_slices, dtype=np.float64)
+
+    for ref_idx in ref_indices:
+        if ref_idx >= len(saved):
+            continue
+        strategy = saved[ref_idx]
+        slice_idx = 0
+        for ck in global_combo_keys:
+            for df_slice, ps, pe in combo_slices.get(ck, []):
+                try:
+                    _, stats_df = execute_custom_strategy_numpy(
+                        df_slice.copy(), strategy, ps, pe)
+                    if stats_df is not None:
+                        win_pnl = float(stats_df.loc['Winning trades P&L (R)', 'value'])
+                        lose_pnl = float(stats_df.loc['Losing trades P&L (R)', 'value'])
+                        composite_pnl[slice_idx] += win_pnl + lose_pnl
+                except Exception:
+                    pass  # slice produces no result → 0 contribution
+                slice_idx += 1
+
+    # Discretize composite P&L to directional signal
+    return np.sign(composite_pnl)
+
+
+def _compute_candidate_correlation(combo_results, global_combo_keys, ref_directions):
+    """Compute correlation between candidate's directional signals and reference.
+
+    Returns correlation as percentage (-100 to +100), or 0.0 if not computable.
+    """
+    import numpy as np
+
+    if ref_directions is None:
+        return None
+
+    # Build candidate direction array from per-slice P&L
+    candidate_dirs = []
+    for ck in global_combo_keys:
+        for sd in combo_results.get(ck, []):
+            total_pnl = sd.get('win_pnl', 0) + sd.get('lose_pnl', 0)
+            if total_pnl > 0:
+                candidate_dirs.append(1.0)
+            elif total_pnl < 0:
+                candidate_dirs.append(-1.0)
+            else:
+                candidate_dirs.append(0.0)
+
+    candidate_arr = np.array(candidate_dirs, dtype=np.float64)
+
+    if len(candidate_arr) != len(ref_directions) or len(candidate_arr) < 3:
+        return 0.0
+
+    if np.std(candidate_arr) == 0 or np.std(ref_directions) == 0:
+        return 0.0
+
+    corr = np.corrcoef(candidate_arr, ref_directions)[0, 1]
+    if np.isnan(corr):
+        return 0.0
+    return round(float(corr) * 100, 1)  # percentage
 
 
 # ======================================================================
@@ -1075,18 +1230,46 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
         st.warning("No run configurations generated.")
         return []
 
-    if use_original_engine:
-        return _run_grid_search_original_engine(
-            run_configs, combo_slices, global_combo_keys,
-            selection_combo_map)
+    # Compute reference directions for correlation (if references selected)
+    ref_indices = st.session_state.get("gs_ref_strategies", [])
+    ref_directions = None
+    if ref_indices:
+        ref_directions = _compute_reference_directions(
+            ref_indices, combo_slices, global_combo_keys)
 
-    return _run_grid_search_multiprocessing(
-        run_configs, combo_slices, global_combo_keys,
-        selection_combo_map)
+    if use_original_engine:
+        results = _run_grid_search_original_engine(
+            run_configs, combo_slices, global_combo_keys,
+            selection_combo_map, ref_directions)
+    else:
+        results = _run_grid_search_multiprocessing(
+            run_configs, combo_slices, global_combo_keys,
+            selection_combo_map, ref_directions)
+
+    # Enrich every agg dict with MC Avg Profit (skip_threshold for comparability)
+    from ui.monte_carlo_tab import compute_mc_avg_profit_at_dd
+    balance = st.session_state.get('mc_starting_balance', 10000.0)
+    risk = st.session_state.get('mc_risk_pct', 1.0)
+
+    def _enrich_mc(agg):
+        n = agg.get('num_trades', 0)
+        if n == 0:
+            agg['mc_avg_profit'] = balance
+        else:
+            agg['mc_avg_profit'] = compute_mc_avg_profit_at_dd(
+                agg.get('win_pct', 0), agg.get('rr_ratio', 0),
+                risk, balance, skip_threshold=True)
+
+    for _label, global_agg, sel_results in results:
+        _enrich_mc(global_agg)
+        for sel_agg in sel_results.values():
+            _enrich_mc(sel_agg)
+
+    return results
 
 
 def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_keys,
-                                      selection_combo_map):
+                                      selection_combo_map, ref_directions=None):
     """Run grid search using the ORIGINAL (non-numpy) engine, single-process.
     Used for debugging to compare results with the numpy engine.
     """
@@ -1127,6 +1310,16 @@ def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_key
             global_stats_dicts.extend(combo_results.get(ck, []))
         global_agg = _aggregate_stats_dicts(global_stats_dicts) if global_stats_dicts else _empty_agg()
 
+        # Correlation with reference strategies
+        if ref_directions is not None:
+            corr_value = _compute_candidate_correlation(
+                combo_results, global_combo_keys, ref_directions)
+            global_agg['correlation'] = corr_value
+            global_agg['abs_correlation'] = abs(corr_value) if corr_value is not None else None
+        else:
+            global_agg['correlation'] = None
+            global_agg['abs_correlation'] = None
+
         # Per-selection stats
         sel_results = OrderedDict()
         for sel_label, sel_combo_keys in selection_combo_map.items():
@@ -1144,7 +1337,7 @@ def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_key
 
 
 def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_keys,
-                                      selection_combo_map):
+                                      selection_combo_map, ref_directions=None):
     """Run grid search using multiprocessing Pool.
     Each worker process handles one candidate across all combo/period slices.
     """
@@ -1197,6 +1390,16 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
             global_stats_dicts.extend(combo_results.get(ck, []))
         global_agg = _aggregate_stats_dicts(global_stats_dicts) if global_stats_dicts else _empty_agg()
 
+        # Correlation with reference strategies
+        if ref_directions is not None:
+            corr_value = _compute_candidate_correlation(
+                combo_results, global_combo_keys, ref_directions)
+            global_agg['correlation'] = corr_value
+            global_agg['abs_correlation'] = abs(corr_value) if corr_value is not None else None
+        else:
+            global_agg['correlation'] = None
+            global_agg['abs_correlation'] = None
+
         # Per-selection stats
         sel_results = OrderedDict()
         for sel_label, sel_combo_keys in selection_combo_map.items():
@@ -1218,14 +1421,25 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
 def _display_results(results, strategy_name, thresholds, sort_key, sort_descending):
     """Display filtered, sorted, paginated results with Global + per-selection breakdown."""
 
+    # Metrics where threshold is a maximum (value must be <= threshold to pass)
+    _MAX_FILTER_METRICS = {"abs_correlation"}
+
     # Filter based on Global metrics — all thresholds applied dynamically
     filtered = []
     for label, global_agg, sel_results in results:
         passes = True
         for metric_key, threshold_val in thresholds.items():
-            if global_agg.get(metric_key, 0) < threshold_val:
-                passes = False
-                break
+            val = global_agg.get(metric_key)
+            if val is None:
+                continue  # undefined metric (e.g. no refs) → skip filter
+            if metric_key in _MAX_FILTER_METRICS:
+                if val > threshold_val:
+                    passes = False
+                    break
+            else:
+                if val < threshold_val:
+                    passes = False
+                    break
         if passes:
             filtered.append((label, global_agg, sel_results))
 
@@ -1237,7 +1451,13 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
         return
 
     # Sort based on Global metrics
-    filtered.sort(key=lambda x: x[1].get(sort_key, 0), reverse=sort_descending)
+    # Sort — None values go to bottom regardless of direction
+    def _sort_val(x):
+        v = x[1].get(sort_key)
+        if v is None:
+            return float('inf') if not sort_descending else float('-inf')
+        return v
+    filtered.sort(key=_sort_val, reverse=sort_descending)
 
     # Build Global results table (rows = candidates, columns = metrics)
     rows = []
@@ -1256,10 +1476,16 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
             "Dynamic%": f"{global_agg['dynamic_exit_pct']:.0f}%",
             "EOD%": f"{global_agg.get('eod_exit_pct', 0):.0f}%",
             "RR": f"{global_agg.get('rr_ratio', 0):.2f}",
-            "SQN": f"{global_agg['sqn']:.2f}",
+            "MC Avg Profit": f"${global_agg.get('mc_avg_profit', 0):,.0f}",
+            "Corr": f"{global_agg['correlation']:.0f}%" if global_agg.get('correlation') is not None else "\u2014",
         })
 
     df_results = pd.DataFrame(rows)
+
+    # MC context caption
+    _mc_bal = st.session_state.get('mc_starting_balance', 10000.0)
+    _mc_risk = st.session_state.get('mc_risk_pct', 1.0)
+    st.caption(f"MC Avg Profit based on ${_mc_bal:,.0f} starting balance, {_mc_risk}% risk per trade")
 
     # Copy to clipboard (all filtered results, TSV)
     tsv_data = df_results.to_csv(sep='\t', index=False, header=False)
