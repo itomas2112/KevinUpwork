@@ -1079,12 +1079,14 @@ def _aggregate_stats_dicts(all_stats_dicts):
 
     total_trades = len(all_trade_pnls)
     total_wins = sum(pnl > 0 for pnl in all_trade_pnls)
-    total_losses = total_trades - total_wins
+    total_flat = sum(pnl == 0 for pnl in all_trade_pnls)
+    total_losses = total_trades - total_wins - total_flat
     total_pnl = total_win_pnl + total_lose_pnl
 
     if total_trades > 0:
-        win_pct = (total_wins / total_trades) * 100
-        lose_pct = (total_losses / total_trades) * 100
+        meaningful = total_wins + total_losses
+        win_pct = (total_wins / meaningful * 100) if meaningful > 0 else 0.0
+        lose_pct = (total_losses / meaningful * 100) if meaningful > 0 else 0.0
         target_exit_pct = total_target_alloc / total_trades
         static_exit_pct = total_static_alloc / total_trades
         dynamic_exit_pct = total_dynamic_alloc / total_trades

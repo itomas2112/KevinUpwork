@@ -673,6 +673,14 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
             new_r_distance = abs(new_entry_price - new_locked_stop) if new_locked_stop is not None else 0.0
 
+            # Guard: reject entries with degenerate r_distance.
+            # If stop is too close to entry (< 0.01% of price), the R calculation
+            # produces absurd multiples from normal price moves. Skip the entry.
+            _MIN_R_FRAC = 1e-4  # 0.01% of entry price
+            if new_entry_price > 0 and new_r_distance < new_entry_price * _MIN_R_FRAC:
+                trade_counter -= 1  # undo counter increment
+                continue
+
             # Compute locked ATR target prices
             locked_atr_targets = {}
             for g_idx, group in enumerate(exit_groups):
@@ -723,6 +731,11 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
         r_distance = trade['r_distance']
         t_entry_r = trade['entry_r']
 
+        # Guard: skip trades with non-finite prices
+        if not (np.isfinite(entry_price) and np.isfinite(exit_price)):
+            trade['pnl_r'] = 0.0
+            continue
+
         if strategy_direction == 'Long':
             price_move = exit_price - entry_price
         else:
@@ -730,7 +743,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
         if r_distance > 0:
             group_r = t_entry_r * (alloc_pct / 100.0)
-            trade['pnl_r'] = (price_move / r_distance) * group_r
+            pnl_r = (price_move / r_distance) * group_r
+            # Guard: cap non-finite results from near-zero r_distance
+            trade['pnl_r'] = pnl_r if np.isfinite(pnl_r) else 0.0
         else:
             trade['pnl_r'] = 0.0
 
@@ -768,9 +783,12 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
     if num_trades > 0:
         wins = sum(pnl > 0 for pnl in trade_pnls_r)
-        losses = num_trades - wins
-        win_rate = wins / num_trades * 100
-        loss_rate = losses / num_trades * 100
+        flat = sum(pnl == 0 for pnl in trade_pnls_r)
+        losses = num_trades - wins - flat
+        # Win/loss rates exclude flat (0R) trades — they had no meaningful outcome
+        meaningful = wins + losses
+        win_rate = (wins / meaningful * 100) if meaningful > 0 else 0.0
+        loss_rate = (losses / meaningful * 100) if meaningful > 0 else 0.0
         total_pnl = sum(trade_pnls_r)
         avg_pnl_per_trade = total_pnl / num_trades
         winning_trades_pnl = sum(pnl for pnl in trade_pnls_r if pnl > 0)

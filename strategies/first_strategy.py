@@ -82,7 +82,22 @@ def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
                     indicator_map[syn] = raw_col
                 config[key] = syn
 
-        # Rule 2 (Senkou vs non-Senkou, non-Chikou): no changes needed
+        else:
+            # Rule 2: One side is Senkou A/B, other is not Senkou and not Chikou.
+            # senkou_a / senkou_b columns are shifted forward 26 bars for cloud display.
+            # For trading comparisons (e.g. Price vs Senkou A), use the unshifted
+            # senkou_a_current / senkou_b_current columns to get the current bar's value.
+            _senkou_remap = {
+                'Senkou A': 'senkou_a_current',
+                'Senkou B': 'senkou_b_current',
+            }
+            for key, elem in [(key1, e1), (key2, e2)]:
+                if elem in _SENKOU_ELEMENTS:
+                    raw_col = _senkou_remap[elem]
+                    syn = f'_raw_{raw_col}'
+                    if syn not in indicator_map:
+                        indicator_map[syn] = raw_col
+                    config[key] = syn
 
     def _process_trigger(trigger):
         if trigger:
@@ -1108,6 +1123,14 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 else:
                     new_r_distance = 0.0
 
+                # Guard: reject entries with degenerate r_distance.
+                _MIN_R_FRAC = 1e-4  # 0.01% of entry price
+                if new_entry_price > 0 and new_r_distance < new_entry_price * _MIN_R_FRAC:
+                    trade_counter -= 1
+                    bar_entry = False
+                    entry_triggered = False
+                    continue
+
                 # Compute locked ATR target prices for any ATR Target exits
                 locked_atr_targets = {}
                 for g_idx, group in enumerate(exit_groups):
@@ -1175,6 +1198,11 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         r_distance = trade['r_distance']
         t_entry_r = trade['entry_r']
 
+        # Guard: skip trades with non-finite prices
+        if not (np.isfinite(entry_price) and np.isfinite(exit_price)):
+            trade['pnl_r'] = 0.0
+            continue
+
         if strategy_direction == 'Long':
             price_move = exit_price - entry_price
         else:
@@ -1182,7 +1210,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
         if r_distance > 0:
             group_r = t_entry_r * (alloc_pct / 100.0)
-            trade['pnl_r'] = (price_move / r_distance) * group_r
+            pnl_r = (price_move / r_distance) * group_r
+            # Guard: cap non-finite results from near-zero r_distance
+            trade['pnl_r'] = pnl_r if np.isfinite(pnl_r) else 0.0
         else:
             trade['pnl_r'] = 0.0
 
@@ -1227,10 +1257,12 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
 
     if num_trades > 0:
         wins = sum(pnl > 0 for pnl in trade_pnls_r)
-        losses = num_trades - wins
-
-        win_rate = wins / num_trades * 100
-        loss_rate = losses / num_trades * 100
+        flat = sum(pnl == 0 for pnl in trade_pnls_r)
+        losses = num_trades - wins - flat
+        # Win/loss rates exclude flat (0R) trades — they had no meaningful outcome
+        meaningful = wins + losses
+        win_rate = (wins / meaningful * 100) if meaningful > 0 else 0.0
+        loss_rate = (losses / meaningful * 100) if meaningful > 0 else 0.0
 
         total_pnl = sum(trade_pnls_r)
         avg_pnl_per_trade = total_pnl / num_trades
