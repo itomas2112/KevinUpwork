@@ -11,6 +11,7 @@ from config.constants import get_indicator_map
 from indicators.atr_indicator import atr_indicator
 from strategies.strategy_validator import validate_strategy
 from strategies.first_strategy import _prepare_ichimoku_columns
+from strategies.risk_validation import validate_risk_distance as _validate_risk
 
 
 # ======================================================================
@@ -673,12 +674,12 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
             new_r_distance = abs(new_entry_price - new_locked_stop) if new_locked_stop is not None else 0.0
 
-            # Guard: reject entries with degenerate r_distance.
-            # If stop is too close to entry (< 0.01% of price), the R calculation
-            # produces absurd multiples from normal price moves. Skip the entry.
-            _MIN_R_FRAC = 1e-4  # 0.01% of entry price
-            if new_entry_price > 0 and new_r_distance < new_entry_price * _MIN_R_FRAC:
-                trade_counter -= 1  # undo counter increment
+            # Risk validation: reject entries with degenerate stop distance
+            _atr_at_entry = _arrays['atr'][i] if 'atr' in _arrays else None
+            _rv_valid, _rv_reason = _validate_risk(
+                new_entry_price, new_locked_stop, atr=_atr_at_entry)
+            if not _rv_valid:
+                trade_counter -= 1
                 continue
 
             # Compute locked ATR target prices

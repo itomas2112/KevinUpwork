@@ -6,6 +6,7 @@ import numpy as np
 from config.constants import get_indicator_map
 from indicators.atr_indicator import atr_indicator
 from strategies.strategy_validator import validate_strategy
+from strategies.risk_validation import validate_risk_distance as _validate_risk
 
 
 # ---------------------------------------------------------------------------
@@ -1123,38 +1124,38 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 else:
                     new_r_distance = 0.0
 
-                # Guard: reject entries with degenerate r_distance.
-                _MIN_R_FRAC = 1e-4  # 0.01% of entry price
-                if new_entry_price > 0 and new_r_distance < new_entry_price * _MIN_R_FRAC:
+                # Risk validation: reject entries with degenerate stop distance
+                _atr_at_entry = df['atr'].iloc[i] if 'atr' in df.columns else None
+                _rv_valid, _rv_reason = _validate_risk(
+                    new_entry_price, new_locked_stop, atr=_atr_at_entry)
+                if not _rv_valid:
                     trade_counter -= 1
                     bar_entry = False
-                    entry_triggered = False
-                    continue
+                else:
+                    # Compute locked ATR target prices for any ATR Target exits
+                    locked_atr_targets = {}
+                    for g_idx, group in enumerate(exit_groups):
+                        for t_idx, target in enumerate(group.get('targets', [])):
+                            t_trigger = target.get('trigger', {})
+                            if t_trigger.get('element1') == 'ATR Target':
+                                level = compute_atr_target_level(t_trigger, new_entry_price, i)
+                                locked_atr_targets[(g_idx, 'target', t_idx)] = level
+                        for s_idx, stop in enumerate(group.get('stops', [])):
+                            s_trigger = stop.get('trigger', {})
+                            if s_trigger.get('element1') == 'ATR Target':
+                                level = compute_atr_target_level(s_trigger, new_entry_price, i)
+                                locked_atr_targets[(g_idx, 'stop', s_idx)] = level
 
-                # Compute locked ATR target prices for any ATR Target exits
-                locked_atr_targets = {}
-                for g_idx, group in enumerate(exit_groups):
-                    for t_idx, target in enumerate(group.get('targets', [])):
-                        t_trigger = target.get('trigger', {})
-                        if t_trigger.get('element1') == 'ATR Target':
-                            level = compute_atr_target_level(t_trigger, new_entry_price, i)
-                            locked_atr_targets[(g_idx, 'target', t_idx)] = level
-                    for s_idx, stop in enumerate(group.get('stops', [])):
-                        s_trigger = stop.get('trigger', {})
-                        if s_trigger.get('element1') == 'ATR Target':
-                            level = compute_atr_target_level(s_trigger, new_entry_price, i)
-                            locked_atr_targets[(g_idx, 'stop', s_idx)] = level
-
-                open_positions.append({
-                    'trade_id': trade_counter,
-                    'entry_price': new_entry_price,
-                    'r_distance': new_r_distance,
-                    'locked_stop_value': new_locked_stop,
-                    'entry_r': entry_r,
-                    'active_exit_groups': set(range(len(exit_groups))),
-                    'entry_bar_idx': i,
-                    'locked_atr_targets': locked_atr_targets,
-                })
+                    open_positions.append({
+                        'trade_id': trade_counter,
+                        'entry_price': new_entry_price,
+                        'r_distance': new_r_distance,
+                        'locked_stop_value': new_locked_stop,
+                        'entry_r': entry_r,
+                        'active_exit_groups': set(range(len(exit_groups))),
+                        'entry_bar_idx': i,
+                        'locked_atr_targets': locked_atr_targets,
+                    })
 
         # ----- STEP 3: Record bar signals -----
         entry_signal.append(bar_entry)
