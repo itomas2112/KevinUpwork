@@ -402,11 +402,15 @@ def _copy_to_clipboard(text: str, key: str = "copy_btn"):
 def _mc_avg_profit_str(agg):
     """Compute MC Avg Profit at 5% DD from agg dict.
 
-    Uses Monte Carlo tab settings if available, otherwise defaults to
-    $10,000 starting balance and 1% risk per trade.
+    If mc_avg_profit is pre-computed (e.g., by Grid Search enrichment),
+    uses that value directly.  Otherwise runs MC with threshold gate.
     """
     import streamlit as st
     from ui.monte_carlo_tab import compute_mc_avg_profit_at_dd
+    # Use pre-computed value if present (set by Grid Search enrichment)
+    pre = agg.get('mc_avg_profit')
+    if isinstance(pre, (int, float)):
+        return f"${pre:,.0f}"
     win_pct = agg.get('win_pct', 0)
     rr = agg.get('rr_ratio', 0)
     if win_pct <= 0 or rr <= 0:
