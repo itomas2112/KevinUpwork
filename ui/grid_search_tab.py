@@ -45,15 +45,14 @@ SORT_METRICS = [
     ("num_trades", "Number of Trades"),
     ("win_pct", "Win %"),
     ("lose_pct", "Lose %"),
+    ("mc_avg_profit", "MC Avg Profit @ 5% DD"),
     ("avg_win_pnl", "Avg Profit (R)"),
     ("avg_lose_pnl", "Avg Loss (R)"),
     ("total_pnl", "Total P&L (R)"),
     ("target_exit_pct", "Target Exit %"),
     ("static_exit_pct", "Static %"),
     ("dynamic_exit_pct", "Dynamic %"),
-    ("eod_exit_pct", "EOD %"),
     ("rr_ratio", "Avg RR Ratio"),
-    ("mc_avg_profit", "MC Avg Profit ($)"),
     ("abs_correlation", "|Correlation|"),
 ]
 
@@ -102,11 +101,6 @@ def render_grid_search_tab(sidebar_config):
     with info_col:
         st.markdown(f"**Direction:** {selected_strategy.get('direction', '?')}  "
                     f"| **Max Positions:** {selected_strategy.get('max_positions', 1) or 'Unlimited'}")
-
-    st.markdown("---")
-
-    # ── Section A2: Reference Strategies (for Correlation) ──
-    _render_reference_strategy_selection(saved, strategy_names, selected_idx)
 
     st.markdown("---")
 
@@ -206,7 +200,12 @@ def render_grid_search_tab(sidebar_config):
 
     st.markdown("---")
 
-    # ── Section F: Filters & Sort ───────────────────────
+    # ── Section F: Correlation ─────────────────────────
+    _render_reference_strategy_selection(saved, strategy_names, selected_idx)
+
+    st.markdown("---")
+
+    # ── Section G: Filters & Sort ───────────────────────
     st.markdown("**Performance Filters**")
     # Build threshold inputs for every metric in SORT_METRICS
     thresholds = {}
@@ -223,24 +222,24 @@ def render_grid_search_tab(sidebar_config):
             return f"Max {metric_label}", 100.0, 1.0, "%.0f"
         return f"Min {metric_label}", -999.0, 0.01, "%.2f"
 
-    # Row 1 — first 4 metrics
-    cols_r1 = st.columns(4)
-    for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[:4]):
+    # Row 1 — first 5 metrics (includes MC Avg Profit @ 5% DD)
+    cols_r1 = st.columns(5)
+    for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[:5]):
         with cols_r1[ci]:
             lbl, default, step, fmt = _filter_props(metric_key, metric_label)
             thresholds[metric_key] = st.number_input(
                 lbl, value=default, step=step,
                 format=fmt, key=f"gs_thresh_{metric_key}")
-    # Row 2 — next 4 metrics
-    cols_r2 = st.columns(4)
-    for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[4:8]):
+    # Row 2 — next 5 metrics
+    cols_r2 = st.columns(5)
+    for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[5:10]):
         with cols_r2[ci]:
             lbl, default, step, fmt = _filter_props(metric_key, metric_label)
             thresholds[metric_key] = st.number_input(
                 lbl, value=default, step=step,
                 format=fmt, key=f"gs_thresh_{metric_key}")
     # Row 3 — remaining metrics
-    remaining = SORT_METRICS[8:]
+    remaining = SORT_METRICS[10:]
     if remaining:
         cols_r3 = st.columns(max(len(remaining), 1))
         for ci, (metric_key, metric_label) in enumerate(remaining):
@@ -1248,19 +1247,23 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
             run_configs, combo_slices, global_combo_keys,
             selection_combo_map, ref_directions)
 
-    # Enrich every agg dict with MC Avg Profit (skip_threshold for comparability)
-    from ui.monte_carlo_tab import compute_mc_avg_profit_at_dd
+    # Enrich every agg dict with MC Avg Profit @ 5% avg max DD
+    # Binary-searches for the risk % that yields exactly 5% avg max DD,
+    # using the same starting balance, trades/sim, and #sims as the MC tab.
+    from ui.monte_carlo_tab import compute_mc_avg_profit_at_target_dd
     balance = st.session_state.get('mc_starting_balance', 10000.0)
-    risk = st.session_state.get('mc_risk_pct', 1.0)
+    trades_per_sim = st.session_state.get('mc_trades_per_sim', 100)
+    n_sims = st.session_state.get('mc_n_simulations', 20000)
 
     def _enrich_mc(agg):
         n = agg.get('num_trades', 0)
         if n == 0:
-            agg['mc_avg_profit'] = balance
+            agg['mc_avg_profit'] = 0.0
         else:
-            agg['mc_avg_profit'] = compute_mc_avg_profit_at_dd(
+            agg['mc_avg_profit'] = compute_mc_avg_profit_at_target_dd(
                 agg.get('win_pct', 0), agg.get('rr_ratio', 0),
-                risk, balance, skip_threshold=True)
+                balance, target_dd=5.0,
+                trades_per_sim=trades_per_sim, n_sims=n_sims)
 
     for _label, global_agg, sel_results in results:
         _enrich_mc(global_agg)
@@ -1476,9 +1479,8 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
             "Target%": f"{global_agg['target_exit_pct']:.0f}%",
             "Static%": f"{global_agg['static_exit_pct']:.0f}%",
             "Dynamic%": f"{global_agg['dynamic_exit_pct']:.0f}%",
-            "EOD%": f"{global_agg.get('eod_exit_pct', 0):.0f}%",
             "RR": f"{global_agg.get('rr_ratio', 0):.2f}",
-            "MC Avg Profit": f"${global_agg.get('mc_avg_profit', 0):,.0f}",
+            "MC": f"${global_agg.get('mc_avg_profit', 0):,.0f}",
             "Corr": f"{global_agg['correlation']:.0f}%" if global_agg.get('correlation') is not None else "\u2014",
         })
 
@@ -1487,7 +1489,9 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
     # MC context caption
     _mc_bal = st.session_state.get('mc_starting_balance', 10000.0)
     _mc_risk = st.session_state.get('mc_risk_pct', 1.0)
-    st.caption(f"MC Avg Profit based on ${_mc_bal:,.0f} starting balance, {_mc_risk}% risk per trade")
+    _mc_trades = st.session_state.get('mc_trades_per_sim', 100)
+    _mc_nsims = st.session_state.get('mc_n_simulations', 20000)
+    st.caption(f"MC Avg Profit @ 5% DD based on ${_mc_bal:,.0f} starting balance, {_mc_trades} trades/sim, {_mc_nsims:,} simulations (risk % auto-adjusted to 5% avg max DD)")
 
     # Copy to clipboard (all filtered results, TSV)
     tsv_data = df_results.to_csv(sep='\t', index=False, header=False)

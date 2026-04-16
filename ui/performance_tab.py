@@ -403,10 +403,11 @@ def _mc_avg_profit_str(agg):
     """Compute MC Avg Profit at 5% DD from agg dict.
 
     If mc_avg_profit is pre-computed (e.g., by Grid Search enrichment),
-    uses that value directly.  Otherwise runs MC with threshold gate.
+    uses that value directly.  Otherwise binary-searches for the risk %
+    that yields 5% avg max DD using the MC tab's simulation parameters.
     """
     import streamlit as st
-    from ui.monte_carlo_tab import compute_mc_avg_profit_at_dd
+    from ui.monte_carlo_tab import compute_mc_avg_profit_at_target_dd
     # Use pre-computed value if present (set by Grid Search enrichment)
     pre = agg.get('mc_avg_profit')
     if isinstance(pre, (int, float)):
@@ -416,9 +417,12 @@ def _mc_avg_profit_str(agg):
     if win_pct <= 0 or rr <= 0:
         return "N/A"
     balance = st.session_state.get('mc_starting_balance', 10000.0)
-    risk = st.session_state.get('mc_risk_pct', 1.0)
-    result = compute_mc_avg_profit_at_dd(win_pct, rr, risk, balance)
-    if result is None:
+    trades_per_sim = st.session_state.get('mc_trades_per_sim', 100)
+    n_sims = st.session_state.get('mc_n_simulations', 20000)
+    result = compute_mc_avg_profit_at_target_dd(
+        win_pct, rr, balance, target_dd=5.0,
+        trades_per_sim=trades_per_sim, n_sims=n_sims)
+    if result <= 0:
         return "N/A"
     return f"${result:,.0f}"
 
@@ -436,14 +440,15 @@ def _build_metrics_table(results_dict):
         "Target Exit %",
         "Static %",
         "Dynamic %",
-        "EOD %",
         "Avg RR Ratio",
         "MC Avg Profit (5% DD)",
-        "SQN",
+        "Correlation",
     ]
 
     table_data = {}
     for label, agg in results_dict.items():
+        corr = agg.get('correlation')
+        corr_str = f"{corr:.0f}%" if corr is not None else "\u2014"
         table_data[label] = [
             f"{agg['num_trades']}",
             f"{agg['win_pct']:.0f}%",
@@ -455,10 +460,9 @@ def _build_metrics_table(results_dict):
             f"{agg['target_exit_pct']:.0f}%",
             f"{agg['static_exit_pct']:.0f}%",
             f"{agg['dynamic_exit_pct']:.0f}%",
-            f"{agg.get('eod_exit_pct', 0):.0f}%",
             f"{agg.get('rr_ratio', 0):.2f}",
             _mc_avg_profit_str(agg),
-            f"{agg['sqn']:.2f}",
+            corr_str,
         ]
 
     return pd.DataFrame(table_data, index=metric_names)
@@ -481,4 +485,5 @@ def _empty_agg():
         'rr_ratio': 0.0,
         'max_drawdown': 0.0,
         'sqn': 0.0,
+        'correlation': None,
     }

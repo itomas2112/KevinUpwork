@@ -104,6 +104,16 @@ def initialize_session_state():
             "secondary": None,
         }]
 
+    # Monte Carlo parameters (must match defaults in monte_carlo_tab.py)
+    if 'mc_starting_balance' not in st.session_state:
+        st.session_state['mc_starting_balance'] = 10000.0
+    if 'mc_trades_per_sim' not in st.session_state:
+        st.session_state['mc_trades_per_sim'] = 100
+    if 'mc_n_simulations' not in st.session_state:
+        st.session_state['mc_n_simulations'] = 20000
+    if 'mc_risk_pct' not in st.session_state:
+        st.session_state['mc_risk_pct'] = 1.0
+
     # Monte Carlo results cache
     if 'mc_results' not in st.session_state:
         st.session_state['mc_results'] = None

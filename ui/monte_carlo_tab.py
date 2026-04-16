@@ -42,6 +42,49 @@ def compute_mc_avg_profit_at_dd(win_rate, reward_risk, risk_pct,
     return float(np.mean(results["final_balances"]))
 
 
+def compute_mc_avg_profit_at_target_dd(win_rate, reward_risk,
+                                       starting_balance, target_dd=5.0,
+                                       trades_per_sim=100, n_sims=5000):
+    """Find the risk % that produces target avg max DD, return avg profit there.
+
+    Uses binary search to find the risk_pct where avg max drawdown ≈ target_dd%.
+    Returns the mean final balance at that risk level, or 0.0 if no valid risk
+    can be found (e.g. 0% win rate or 0 RR).
+    """
+    if win_rate <= 0 or reward_risk <= 0:
+        return 0.0
+
+    # Binary search for risk_pct that yields avg max DD ≈ target_dd
+    lo, hi = 0.01, 100.0
+    tolerance = 0.05  # accept within 0.05% of target DD
+    max_iterations = 30
+    best_profit = 0.0
+
+    for _ in range(max_iterations):
+        mid = (lo + hi) / 2.0
+        results = _run_simulation(starting_balance, trades_per_sim, n_sims,
+                                  win_rate, reward_risk, mid)
+        avg_dd = float(np.mean(results["max_drawdowns"]))
+        avg_profit = float(np.mean(results["final_balances"]))
+
+        if abs(avg_dd - target_dd) <= tolerance:
+            return avg_profit
+        if avg_dd < target_dd:
+            # DD too low — can take more risk
+            best_profit = avg_profit
+            lo = mid
+        else:
+            # DD too high — reduce risk
+            hi = mid
+
+    # Return best approximation found
+    # Run one final sim at the converged midpoint
+    mid = (lo + hi) / 2.0
+    results = _run_simulation(starting_balance, trades_per_sim, n_sims,
+                              win_rate, reward_risk, mid)
+    return float(np.mean(results["final_balances"]))
+
+
 def _run_simulation(starting_balance, trades_per_sim, n_simulations,
                     win_rate, reward_risk, risk_pct):
     """Run Monte Carlo simulation using vectorized NumPy operations.
