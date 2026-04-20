@@ -184,7 +184,8 @@ def generate_run_configs(base_strategy, search_group, search_candidates,
     validated = []
     skipped = 0
     for label, strat in runs:
-        is_valid, errors = validate_strategy(strat)
+        ema_count = len(strat.get("indicator_settings", {}).get("ema_periods", []))
+        is_valid, errors = validate_strategy(strat, ema_count=ema_count)
         if is_valid:
             validated.append((label, strat))
         else:
