@@ -1270,6 +1270,13 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
         for sel_agg in sel_results.values():
             _enrich_mc(sel_agg)
 
+    # Diagnostic: if all candidates produced zero trades, tell the user
+    if results and all(r[1].get('num_trades', 0) == 0 for r in results):
+        st.info(
+            f"All {len(results)} candidates ran successfully but produced 0 trades. "
+            f"Check entry/exit conditions, DRM periods, or date range."
+        )
+
     return results
 
 
@@ -1382,6 +1389,22 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
         st.error(f"Multiprocessing error: {e}")
         progress.empty()
         return []
+
+    # Diagnostic: warn if workers produced fewer results than expected
+    if len(candidate_results) == 0:
+        st.error(
+            f"Grid search produced no candidate results. "
+            f"Expected {len(run_configs)} candidates, got 0 from workers. "
+            f"This usually means every worker crashed — check the terminal "
+            f"where Streamlit is running for error messages."
+        )
+        progress.empty()
+        return []
+    elif len(candidate_results) < len(run_configs):
+        st.warning(
+            f"Partial failure: only {len(candidate_results)} of {len(run_configs)} "
+            f"candidates returned results. Check the terminal for worker errors."
+        )
 
     # Assemble results in original order
     for idx in range(len(run_configs)):

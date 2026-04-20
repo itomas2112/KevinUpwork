@@ -248,6 +248,26 @@ class TestGenerateRunConfigs:
         runs = generate_run_configs(self._base(), "trigger", candidates, ["Cross Above"])
         assert len(runs) == 0  # Should be skipped by validation
 
+    def test_ema_candidates_pass_validation(self):
+        """Candidates using EMA elements must validate against base strategy's ema_periods."""
+        # Base strategy has 4 EMAs (ema_periods=[10, 20, 50, 200]) per DEFAULT_INDICATOR_SETTINGS
+        candidates = [
+            {"element1": "Price", "compare_type": "Indicator", "element2": "EMA 1"},
+            {"element1": "Price", "compare_type": "Indicator", "element2": "EMA 2"},
+            {"element1": "EMA 3", "compare_type": "Indicator", "element2": "EMA 4"},
+        ]
+        runs = generate_run_configs(self._base(), "trigger", candidates, ["Cross Above"])
+        assert len(runs) == 3  # All three EMA-based candidates must pass
+
+    def test_ema_candidates_beyond_config_rejected(self):
+        """Candidates referencing an EMA beyond the configured count are still rejected."""
+        # Base has 4 EMAs, so "EMA 5" must fail
+        candidates = [
+            {"element1": "Price", "compare_type": "Indicator", "element2": "EMA 5"},
+        ]
+        runs = generate_run_configs(self._base(), "trigger", candidates, ["Cross Above"])
+        assert len(runs) == 0
+
 
 # =====================================================================
 # Import / export
