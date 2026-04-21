@@ -1133,6 +1133,76 @@ def _aggregate_stats_dicts(all_stats_dicts):
 
 
 # ======================================================================
+# MC enrichment — parallel version
+# ======================================================================
+
+def _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0):
+    """Compute mc_avg_profit for every agg dict using a multiprocessing Pool.
+
+    Each agg's MC simulation uses that agg's own num_trades as trades_per_sim,
+    so a candidate that produced 11 trades is simulated with 11 trades/sim.
+
+    Uses processes (not threads) to bypass the Python GIL on the binary-search
+    loop inside compute_mc_avg_profit_at_target_dd. On Windows (spawn), workers
+    re-import only the worker module (streamlit-free), so startup is cheap.
+
+    Writes results back into the agg dicts in-place. Falls back to serial
+    execution if the pool setup fails.
+    """
+    from strategies.mc_enrichment_worker import init_worker as mc_init, enrich_one
+    from strategies.monte_carlo_core import compute_mc_avg_profit_at_target_dd
+
+    # Collect every (agg_dict, key) pair to enrich. Key is (cand_idx, sel_name)
+    # where sel_name is None for the global agg, and the selection label otherwise.
+    agg_index = {}  # key -> agg dict
+    tasks = []      # list of (key, win_pct, rr_ratio, num_trades)
+
+    for cand_idx, (_label, global_agg, sel_results) in enumerate(results):
+        gkey = (cand_idx, None)
+        agg_index[gkey] = global_agg
+        tasks.append((gkey, global_agg.get('win_pct', 0),
+                      global_agg.get('rr_ratio', 0),
+                      global_agg.get('num_trades', 0)))
+        for sel_name, sel_agg in sel_results.items():
+            skey = (cand_idx, sel_name)
+            agg_index[skey] = sel_agg
+            tasks.append((skey, sel_agg.get('win_pct', 0),
+                          sel_agg.get('rr_ratio', 0),
+                          sel_agg.get('num_trades', 0)))
+
+    if not tasks:
+        return
+
+    n_workers = min(len(tasks), max(1, os.cpu_count() or 1))
+    progress = st.progress(0, text=f"Computing Monte Carlo stats ({len(tasks)} aggs, {n_workers} workers)...")
+
+    try:
+        with multiprocessing.Pool(
+            processes=n_workers,
+            initializer=mc_init,
+            initargs=(balance, n_sims, target_dd),
+        ) as pool:
+            completed = 0
+            for key, value in pool.imap_unordered(enrich_one, tasks, chunksize=4):
+                agg_index[key]['mc_avg_profit'] = value
+                completed += 1
+                progress.progress(completed / len(tasks),
+                                  text=f"Monte Carlo {completed}/{len(tasks)}")
+    except Exception as e:
+        # Fallback: sequential enrichment so grid search still completes.
+        st.warning(f"MC parallel enrichment failed ({e}); falling back to serial.")
+        for key, win_pct, rr_ratio, num_trades in tasks:
+            if num_trades == 0:
+                agg_index[key]['mc_avg_profit'] = 0.0
+            else:
+                agg_index[key]['mc_avg_profit'] = compute_mc_avg_profit_at_target_dd(
+                    win_pct, rr_ratio, balance, target_dd=target_dd,
+                    trades_per_sim=num_trades, n_sims=n_sims)
+
+    progress.empty()
+
+
+# ======================================================================
 # Grid Search execution
 # ======================================================================
 
@@ -1248,27 +1318,13 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
             selection_combo_map, ref_directions)
 
     # Enrich every agg dict with MC Avg Profit @ 5% avg max DD
-    # Binary-searches for the risk % that yields exactly 5% avg max DD,
-    # using the same starting balance, trades/sim, and #sims as the MC tab.
-    from ui.monte_carlo_tab import compute_mc_avg_profit_at_target_dd
+    # Binary-searches for the risk % that yields exactly 5% avg max DD.
+    # trades/sim = each candidate's own num_trades (not a fixed constant),
+    # so low-trade-count candidates are simulated with matching path length.
+    # Parallelised across workers — enrichment used to dominate runtime.
     balance = st.session_state.get('mc_starting_balance', 10000.0)
-    trades_per_sim = st.session_state.get('mc_trades_per_sim', 100)
     n_sims = st.session_state.get('mc_n_simulations', 20000)
-
-    def _enrich_mc(agg):
-        n = agg.get('num_trades', 0)
-        if n == 0:
-            agg['mc_avg_profit'] = 0.0
-        else:
-            agg['mc_avg_profit'] = compute_mc_avg_profit_at_target_dd(
-                agg.get('win_pct', 0), agg.get('rr_ratio', 0),
-                balance, target_dd=5.0,
-                trades_per_sim=trades_per_sim, n_sims=n_sims)
-
-    for _label, global_agg, sel_results in results:
-        _enrich_mc(global_agg)
-        for sel_agg in sel_results.values():
-            _enrich_mc(sel_agg)
+    _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0)
 
     # Diagnostic: if all candidates produced zero trades, tell the user
     if results and all(r[1].get('num_trades', 0) == 0 for r in results):
@@ -1511,10 +1567,8 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
 
     # MC context caption
     _mc_bal = st.session_state.get('mc_starting_balance', 10000.0)
-    _mc_risk = st.session_state.get('mc_risk_pct', 1.0)
-    _mc_trades = st.session_state.get('mc_trades_per_sim', 100)
     _mc_nsims = st.session_state.get('mc_n_simulations', 20000)
-    st.caption(f"MC Avg Profit @ 5% DD based on ${_mc_bal:,.0f} starting balance, {_mc_trades} trades/sim, {_mc_nsims:,} simulations (risk % auto-adjusted to 5% avg max DD)")
+    st.caption(f"MC Avg Profit @ 5% DD based on ${_mc_bal:,.0f} starting balance, each candidate's own trade count as trades/sim, {_mc_nsims:,} simulations (risk % auto-adjusted to 5% avg max DD)")
 
     # Copy to clipboard (all filtered results, TSV)
     tsv_data = df_results.to_csv(sep='\t', index=False, header=False)
