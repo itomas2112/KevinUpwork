@@ -34,8 +34,8 @@ def compute_mc_avg_profit_at_dd(win_rate, reward_risk, risk_pct,
             decay = (1.0 - risk_pct / 100.0) ** trades_per_sim
             return float(starting_balance * decay)
         return None
-    results = _run_simulation(starting_balance, trades_per_sim, n_sims,
-                              win_rate, reward_risk, risk_pct)
+    results = _run_simulation_streaming(starting_balance, trades_per_sim, n_sims,
+                                        win_rate, reward_risk, risk_pct)
     if skip_threshold:
         return float(np.mean(results["final_balances"]))
     avg_max_dd = float(np.mean(results["max_drawdowns"]))
@@ -63,8 +63,8 @@ def compute_mc_avg_profit_at_target_dd(win_rate, reward_risk,
 
     for _ in range(max_iterations):
         mid = (lo + hi) / 2.0
-        results = _run_simulation(starting_balance, trades_per_sim, n_sims,
-                                  win_rate, reward_risk, mid)
+        results = _run_simulation_streaming(starting_balance, trades_per_sim, n_sims,
+                                            win_rate, reward_risk, mid)
         avg_dd = float(np.mean(results["max_drawdowns"]))
         avg_profit = float(np.mean(results["final_balances"]))
 
@@ -77,9 +77,38 @@ def compute_mc_avg_profit_at_target_dd(win_rate, reward_risk,
             hi = mid
 
     mid = (lo + hi) / 2.0
-    results = _run_simulation(starting_balance, trades_per_sim, n_sims,
-                              win_rate, reward_risk, mid)
+    results = _run_simulation_streaming(starting_balance, trades_per_sim, n_sims,
+                                        win_rate, reward_risk, mid)
     return float(np.mean(results["final_balances"]))
+
+
+def _run_simulation_streaming(starting_balance, trades_per_sim, n_simulations,
+                              win_rate, reward_risk, risk_pct):
+    """Memory-efficient variant used by enrichment (no equity history).
+
+    Tracks only per-sim current equity, running peak, and running max DD.
+    Peak memory is O(n_simulations), not O(n_simulations * trades_per_sim).
+    Returns only the two arrays the enrichment path consumes.
+    """
+    rng = np.random.default_rng()
+
+    equity = np.full(n_simulations, float(starting_balance))
+    running_peak = equity.copy()
+    max_dd = np.zeros(n_simulations)
+
+    win_prob = win_rate / 100.0
+    risk_frac = risk_pct / 100.0
+
+    for _ in range(trades_per_sim):
+        outcomes = rng.random(n_simulations) < win_prob
+        risk_amount = equity * risk_frac
+        pnl = np.where(outcomes, risk_amount * reward_risk, -risk_amount)
+        equity += pnl
+        np.maximum(running_peak, equity, out=running_peak)
+        dd = (running_peak - equity) / running_peak * 100.0
+        np.maximum(max_dd, dd, out=max_dd)
+
+    return {"final_balances": equity, "max_drawdowns": max_dd}
 
 
 def _run_simulation(starting_balance, trades_per_sim, n_simulations,
