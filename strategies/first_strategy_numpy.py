@@ -543,7 +543,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                             'allocation_pct': alloc_pct,
                             'r_distance': pos['r_distance'],
                             'entry_r': pos['entry_r'],
-                            'exit_type': 'Initial Stop'
+                            'exit_type': 'Initial Stop',
+                            'entry_bar_idx': pos['entry_bar_idx'],
+                            'exit_bar_idx': i,
                         })
                     pos['active_exit_groups'] = set()
 
@@ -589,7 +591,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                                 'allocation_pct': alloc_pct,
                                 'r_distance': pos['r_distance'],
                                 'entry_r': pos['entry_r'],
-                                'exit_type': 'Target'
+                                'exit_type': 'Target',
+                                'entry_bar_idx': pos['entry_bar_idx'],
+                                'exit_bar_idx': i,
                             })
                             groups_to_close.append(group_idx)
                             break
@@ -627,7 +631,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                                     'allocation_pct': alloc_pct,
                                     'r_distance': pos['r_distance'],
                                     'entry_r': pos['entry_r'],
-                                    'exit_type': 'Stop'
+                                    'exit_type': 'Stop',
+                                    'entry_bar_idx': pos['entry_bar_idx'],
+                                    'exit_bar_idx': i,
                                 })
                                 groups_to_close.append(group_idx)
                                 break
@@ -709,6 +715,7 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
     # Handle open positions at end of data
     # -------------------------------------------------
     last_price = _close[-1] if _n > 0 else 0.0
+    last_bar_idx = _n - 1 if _n > 0 else 0
     for pos in open_positions:
         for group_idx in pos['active_exit_groups']:
             alloc_pct = exit_groups[group_idx].get('allocation_pct', 100.0)
@@ -719,7 +726,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                 'allocation_pct': alloc_pct,
                 'r_distance': pos['r_distance'],
                 'entry_r': pos['entry_r'],
-                'exit_type': 'End of Data'
+                'exit_type': 'End of Data',
+                'entry_bar_idx': pos['entry_bar_idx'],
+                'exit_bar_idx': last_bar_idx,
             })
 
     # -------------------------------------------------
@@ -764,6 +773,8 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                 'dynamic_alloc': 0.0,
                 'target_alloc': 0.0,
                 'eod_alloc': 0.0,
+                'entry_bar_idx': trade.get('entry_bar_idx', 0),
+                'exit_bar_idx': trade.get('exit_bar_idx', trade.get('entry_bar_idx', 0)),
             }
         entry = entry_trades[tid]
         entry['pnl_r'] += trade['pnl_r']
@@ -778,8 +789,12 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
             entry['eod_alloc'] += alloc
         if exit_type_priority.get(trade['exit_type'], 99) < exit_type_priority.get(entry['exit_type'], 99):
             entry['exit_type'] = trade['exit_type']
+        t_exit_idx = trade.get('exit_bar_idx')
+        if t_exit_idx is not None and t_exit_idx > entry['exit_bar_idx']:
+            entry['exit_bar_idx'] = t_exit_idx
 
     trade_pnls_r = [t['pnl_r'] for t in entry_trades.values()]
+    trade_holding_periods = [max(0, t['exit_bar_idx'] - t['entry_bar_idx']) for t in entry_trades.values()]
     num_trades = len(entry_trades)
 
     if num_trades > 0:
@@ -837,6 +852,7 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
     )
 
     stats_df.attrs['trade_pnls_r'] = list(trade_pnls_r)
+    stats_df.attrs['trade_holding_periods'] = list(trade_holding_periods)
     stats_df.attrs['total_static_alloc'] = sum(t['static_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_dynamic_alloc'] = sum(t['dynamic_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_target_alloc'] = sum(t['target_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0

@@ -443,6 +443,7 @@ def _build_metrics_table(results_dict):
         "Avg RR Ratio",
         "MC Avg Profit (5% DD)",
         "Correlation",
+        "Avg Holding (periods)",
     ]
 
     table_data = {}
@@ -463,6 +464,7 @@ def _build_metrics_table(results_dict):
             f"{agg.get('rr_ratio', 0):.2f}",
             _mc_avg_profit_str(agg),
             corr_str,
+            f"{agg.get('avg_holding_period', 0):.1f}",
         ]
 
     return pd.DataFrame(table_data, index=metric_names)
@@ -486,4 +488,5 @@ def _empty_agg():
         'max_drawdown': 0.0,
         'sqn': 0.0,
         'correlation': None,
+        'avg_holding_period': 0.0,
     }

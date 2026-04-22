@@ -54,6 +54,7 @@ SORT_METRICS = [
     ("dynamic_exit_pct", "Dynamic %"),
     ("rr_ratio", "Avg RR Ratio"),
     ("abs_correlation", "|Correlation|"),
+    ("avg_holding_period", "Avg Holding (periods)"),
 ]
 
 PAGE_SIZE = 50
@@ -220,6 +221,8 @@ def render_grid_search_tab(sidebar_config):
             return f"Min {metric_label}", 0.0, 1000.0, "%.0f"
         if metric_key == "abs_correlation":
             return f"Max {metric_label}", 100.0, 1.0, "%.0f"
+        if metric_key == "avg_holding_period":
+            return f"Min {metric_label}", 0.0, 1.0, "%.1f"
         return f"Min {metric_label}", -999.0, 0.01, "%.2f"
 
     # Row 1 — first 5 metrics (includes MC Avg Profit @ 5% DD)
@@ -1060,6 +1063,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
     import numpy as np
 
     all_trade_pnls = []
+    all_holding_periods = []
     total_win_pnl = 0.0
     total_lose_pnl = 0.0
     total_static_alloc = 0.0
@@ -1075,6 +1079,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
         total_target_alloc += sd['total_target_alloc']
         total_eod_alloc += sd.get('total_eod_alloc', 0.0)
         all_trade_pnls.extend(sd['trade_pnls_r'])
+        all_holding_periods.extend(sd.get('trade_holding_periods', []))
 
     total_trades = len(all_trade_pnls)
     total_wins = sum(pnl > 0 for pnl in all_trade_pnls)
@@ -1114,6 +1119,8 @@ def _aggregate_stats_dicts(all_stats_dicts):
         expected_value = target_exit_pct = static_exit_pct = dynamic_exit_pct = eod_exit_pct = 0.0
         rr_ratio = max_drawdown = sqn = 0.0
 
+    avg_holding_period = (sum(all_holding_periods) / len(all_holding_periods)) if all_holding_periods else 0.0
+
     return {
         'num_trades': total_trades,
         'win_pct': win_pct,
@@ -1129,6 +1136,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
         'rr_ratio': rr_ratio,
         'max_drawdown': max_drawdown,
         'sqn': sqn,
+        'avg_holding_period': avg_holding_period,
     }
 
 
@@ -1348,6 +1356,7 @@ def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_key
             'win_pnl': float(stats_df.loc['Winning trades P&L (R)', 'value']),
             'lose_pnl': float(stats_df.loc['Losing trades P&L (R)', 'value']),
             'trade_pnls_r': list(stats_df.attrs.get('trade_pnls_r', [])),
+            'trade_holding_periods': list(stats_df.attrs.get('trade_holding_periods', [])),
             'total_static_alloc': float(stats_df.attrs.get('total_static_alloc', 0.0)),
             'total_dynamic_alloc': float(stats_df.attrs.get('total_dynamic_alloc', 0.0)),
             'total_target_alloc': float(stats_df.attrs.get('total_target_alloc', 0.0)),
@@ -1561,6 +1570,7 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
             "RR": f"{global_agg.get('rr_ratio', 0):.2f}",
             "MC": f"${global_agg.get('mc_avg_profit', 0):,.0f}",
             "Corr": f"{global_agg['correlation']:.0f}%" if global_agg.get('correlation') is not None else "\u2014",
+            "Hold": f"{global_agg.get('avg_holding_period', 0):.1f}",
         })
 
     df_results = pd.DataFrame(rows)

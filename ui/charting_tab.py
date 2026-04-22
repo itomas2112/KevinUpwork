@@ -574,6 +574,8 @@ def render_strategy_stats(stats, strategy_label):
         avg_loss = total_lose / losses if losses > 0 else 0.0
         rr = abs(avg_profit / avg_loss) if avg_loss != 0 else 0.0
         eod_val = s.loc['EOD exit (%)', 'value'] if 'EOD exit (%)' in s.index else 0.0
+        holding_periods = getattr(s, 'attrs', {}).get('trade_holding_periods', [])
+        avg_hold = (sum(holding_periods) / len(holding_periods)) if holding_periods else 0.0
         return [
             f"{n}",
             f"{round(win_rate):.0f}%",
@@ -587,6 +589,7 @@ def render_strategy_stats(stats, strategy_label):
             f"{round(eod_val):.0f}%",
             f"{rr:.2f}",
             f"{s.loc['SQN', 'value']:.2f}",
+            f"{avg_hold:.1f}",
         ]
 
     tf_label = st.session_state.get("_agg_timeframe", st.session_state.get("base_timeframe", "15m"))
@@ -607,6 +610,7 @@ def render_strategy_stats(stats, strategy_label):
             "EOD %",
             "Avg RR Ratio",
             "SQN",
+            "Avg Holding (periods)",
         ],
     )
     st.table(stats_table)
@@ -626,6 +630,7 @@ def _aggregate_stats(all_stats):
     import numpy as np
 
     all_trade_pnls = []
+    all_holding_periods = []
     total_win_pnl = 0.0
     total_lose_pnl = 0.0
     total_static_alloc = 0.0
@@ -645,6 +650,7 @@ def _aggregate_stats(all_stats):
 
         trade_pnls = attrs.get('trade_pnls_r', [])
         all_trade_pnls.extend(trade_pnls)
+        all_holding_periods.extend(attrs.get('trade_holding_periods', []))
 
     total_trades = len(all_trade_pnls)
     total_wins = sum(pnl > 0 for pnl in all_trade_pnls)
@@ -683,6 +689,8 @@ def _aggregate_stats(all_stats):
         expected_value = target_exit_pct = static_exit_pct = dynamic_exit_pct = eod_exit_pct = 0.0
         rr_ratio = max_drawdown = sqn = 0.0
 
+    avg_holding_period = (sum(all_holding_periods) / len(all_holding_periods)) if all_holding_periods else 0.0
+
     return {
         'num_trades': total_trades,
         'win_pct': win_pct,
@@ -698,6 +706,7 @@ def _aggregate_stats(all_stats):
         'rr_ratio': rr_ratio,
         'max_drawdown': max_drawdown,
         'sqn': sqn,
+        'avg_holding_period': avg_holding_period,
     }
 
 
@@ -728,6 +737,7 @@ def render_global_performance(all_stats, strategy_label, num_periods):
             f"{agg.get('rr_ratio', 0):.2f}",
             _mc_avg_profit_str(agg),
             f"{agg['sqn']:.2f}",
+            f"{agg.get('avg_holding_period', 0):.1f}",
         ]
 
     tf_label = st.session_state.get("_agg_timeframe", st.session_state.get("base_timeframe", "15m"))
@@ -751,6 +761,7 @@ def render_global_performance(all_stats, strategy_label, num_periods):
             "Avg RR Ratio",
             "MC Avg Profit (5% DD)",
             "SQN",
+            "Avg Holding (periods)",
         ],
     )
 

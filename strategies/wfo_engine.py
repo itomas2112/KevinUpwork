@@ -218,6 +218,7 @@ def _extract_stats(stats_df):
         "win_pnl": float(stats_df.loc["Winning trades P&L (R)", "value"]),
         "lose_pnl": float(stats_df.loc["Losing trades P&L (R)", "value"]),
         "trade_pnls_r": list(stats_df.attrs.get("trade_pnls_r", [])),
+        "trade_holding_periods": list(stats_df.attrs.get("trade_holding_periods", [])),
         "total_static_alloc": float(stats_df.attrs.get("total_static_alloc", 0.0)),
         "total_dynamic_alloc": float(stats_df.attrs.get("total_dynamic_alloc", 0.0)),
         "total_target_alloc": float(stats_df.attrs.get("total_target_alloc", 0.0)),
@@ -231,6 +232,7 @@ def aggregate_stats_dicts(all_dicts):
     Same logic as grid_search_tab._aggregate_stats_dicts.
     """
     all_pnls = []
+    all_holding_periods = []
     win_pnl = lose_pnl = 0.0
     static_alloc = dynamic_alloc = target_alloc = eod_alloc = 0.0
 
@@ -242,6 +244,7 @@ def aggregate_stats_dicts(all_dicts):
         target_alloc += d["total_target_alloc"]
         eod_alloc += d.get("total_eod_alloc", 0.0)
         all_pnls.extend(d["trade_pnls_r"])
+        all_holding_periods.extend(d.get("trade_holding_periods", []))
 
     n = len(all_pnls)
     if n == 0:
@@ -271,6 +274,8 @@ def aggregate_stats_dicts(all_dicts):
     max_dd = float(dd.max()) if len(dd) else 0.0
     sqn = (arr.mean() / std * math.sqrt(n)) if std else 0.0
 
+    avg_holding_period = (sum(all_holding_periods) / len(all_holding_periods)) if all_holding_periods else 0.0
+
     return {
         "num_trades": n,
         "win_pct": win_pct,
@@ -286,6 +291,7 @@ def aggregate_stats_dicts(all_dicts):
         "rr_ratio": float(rr_ratio),
         "max_drawdown": float(max_dd),
         "sqn": float(sqn),
+        "avg_holding_period": float(avg_holding_period),
     }
 
 
@@ -295,7 +301,7 @@ def _empty_agg():
         "avg_win_pnl": 0.0, "avg_lose_pnl": 0.0, "total_pnl": 0.0,
         "expected_value": 0.0, "target_exit_pct": 0.0, "static_exit_pct": 0.0,
         "dynamic_exit_pct": 0.0, "eod_exit_pct": 0.0, "rr_ratio": 0.0,
-        "max_drawdown": 0.0, "sqn": 0.0,
+        "max_drawdown": 0.0, "sqn": 0.0, "avg_holding_period": 0.0,
     }
 
 
