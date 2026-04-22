@@ -59,6 +59,10 @@ SORT_METRICS = [
 
 PAGE_SIZE = 50
 
+# Grid Search uses a lower MC simulation count than the Monte Carlo tab —
+# keeps the per-candidate enrichment fast across hundreds/thousands of candidates.
+GS_MC_N_SIMULATIONS = 1000
+
 
 # ======================================================================
 # Main entry point
@@ -255,7 +259,11 @@ def render_grid_search_tab(sidebar_config):
     sort_col1, sort_col2 = st.columns(2)
     with sort_col1:
         sort_metric_labels = [label for _, label in SORT_METRICS]
+        default_sort_key = "mc_avg_profit"
+        default_sort_idx = next(
+            (i for i, (k, _) in enumerate(SORT_METRICS) if k == default_sort_key), 0)
         sort_idx = st.selectbox("Sort By", range(len(SORT_METRICS)),
+                                index=default_sort_idx,
                                 format_func=lambda x: sort_metric_labels[x],
                                 key="gs_sort_metric")
         sort_key = SORT_METRICS[sort_idx][0]
@@ -1047,7 +1055,7 @@ def _render_indicator_settings():
 
     with st.expander("Linear Regression Channel", expanded=False):
         st.session_state[f'{pfx}lr_period'] = st.number_input(
-            "Period", 2, 500, value=int(st.session_state.get(f'{pfx}lr_period', 100)),
+            "Period", 2, 500, value=int(st.session_state.get(f'{pfx}lr_period', 50)),
             step=1, key=f"{pfx}lr_p")
         st.session_state[f'{pfx}lr_multiplier'] = st.number_input(
             "Channel Multiplier", 0.1, 10.0, value=float(st.session_state.get(f'{pfx}lr_multiplier', 2.0)),
@@ -1331,8 +1339,7 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
     # so low-trade-count candidates are simulated with matching path length.
     # Parallelised across workers — enrichment used to dominate runtime.
     balance = st.session_state.get('mc_starting_balance', 10000.0)
-    n_sims = st.session_state.get('mc_n_simulations', 20000)
-    _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0)
+    _enrich_mc_parallel(results, balance, GS_MC_N_SIMULATIONS, target_dd=5.0)
 
     # Diagnostic: if all candidates produced zero trades, tell the user
     if results and all(r[1].get('num_trades', 0) == 0 for r in results):
@@ -1577,8 +1584,7 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
 
     # MC context caption
     _mc_bal = st.session_state.get('mc_starting_balance', 10000.0)
-    _mc_nsims = st.session_state.get('mc_n_simulations', 20000)
-    st.caption(f"MC Avg Profit @ 5% DD based on ${_mc_bal:,.0f} starting balance, each candidate's own trade count as trades/sim, {_mc_nsims:,} simulations (risk % auto-adjusted to 5% avg max DD)")
+    st.caption(f"MC Avg Profit @ 5% DD based on ${_mc_bal:,.0f} starting balance, each candidate's own trade count as trades/sim, {GS_MC_N_SIMULATIONS:,} simulations (risk % auto-adjusted to 5% avg max DD)")
 
     # Copy to clipboard (all filtered results, TSV)
     tsv_data = df_results.to_csv(sep='\t', index=False, header=False)

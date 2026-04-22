@@ -59,7 +59,7 @@ DEFAULT_INDICATOR_SETTINGS = {
     "willr_period": 14,
     "cci_period": 20,
     "roc_period": 12, "roc_signal_period": 9,
-    "lr_period": 100, "lr_multiplier": 2.0,
+    "lr_period": 50, "lr_multiplier": 2.0,
 }
 
 

@@ -173,7 +173,7 @@ def recalculate_groups(df, groups, **params):
     if 'lr' in groups:
         df["lr_upper"], df["lr_mid"], df["lr_lower"] = linear_regression_channel(
             df["latest"],
-            period=params.get('lr_period', 100),
+            period=params.get('lr_period', 50),
             multiplier=params.get('lr_multiplier', 2.0),
         )
 
@@ -229,7 +229,7 @@ def migrate_indicator_settings(settings):
     s.setdefault('cci_period', 20)
     s.setdefault('roc_period', 12)
     s.setdefault('roc_signal_period', 9)
-    s.setdefault('lr_period', 100)
+    s.setdefault('lr_period', 50)
     s.setdefault('lr_multiplier', 2.0)
 
     return s
@@ -271,7 +271,7 @@ def calculate_indicators(
     cci_period: int = 20,
     roc_period: int = 12,
     roc_signal_period: int = 9,
-    lr_period: int = 100,
+    lr_period: int = 50,
     lr_multiplier: float = 2.0,
 ) -> pd.DataFrame:
     """

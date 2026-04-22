@@ -538,7 +538,7 @@ def render_strategy_indicator_settings():
     with st.expander("Linear Regression Channel", expanded=False):
         st.session_state[f'{pfx}lr_period'] = st.number_input(
             "Period", 2, 500,
-            value=int(st.session_state.get(f'{pfx}lr_period', 100)),
+            value=int(st.session_state.get(f'{pfx}lr_period', 50)),
             step=1, key=f"{pfx}lr_p"
         )
         st.session_state[f'{pfx}lr_multiplier'] = st.number_input(

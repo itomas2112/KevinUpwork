@@ -39,7 +39,7 @@ _DEFAULT_INDICATOR_PARAMS = {
     'willr_period': 14,
     'cci_period': 20,
     'roc_period': 12, 'roc_signal_period': 9,
-    'lr_period': 100, 'lr_multiplier': 2.0,
+    'lr_period': 50, 'lr_multiplier': 2.0,
 }
 
 
@@ -402,26 +402,27 @@ def _copy_to_clipboard(text: str, key: str = "copy_btn"):
 def _mc_avg_profit_str(agg):
     """Compute MC Avg Profit at 5% DD from agg dict.
 
+    Uses the same parameters as Grid Search: 1,000 simulations,
+    each candidate's own trade count as trades/sim, 5% target DD.
     If mc_avg_profit is pre-computed (e.g., by Grid Search enrichment),
-    uses that value directly.  Otherwise binary-searches for the risk %
-    that yields 5% avg max DD using the MC tab's simulation parameters.
+    that value is used directly.
     """
     import streamlit as st
     from ui.monte_carlo_tab import compute_mc_avg_profit_at_target_dd
+    from ui.grid_search_tab import GS_MC_N_SIMULATIONS
     # Use pre-computed value if present (set by Grid Search enrichment)
     pre = agg.get('mc_avg_profit')
     if isinstance(pre, (int, float)):
         return f"${pre:,.0f}"
     win_pct = agg.get('win_pct', 0)
     rr = agg.get('rr_ratio', 0)
-    if win_pct <= 0 or rr <= 0:
+    num_trades = agg.get('num_trades', 0)
+    if win_pct <= 0 or rr <= 0 or num_trades <= 0:
         return "N/A"
     balance = st.session_state.get('mc_starting_balance', 10000.0)
-    trades_per_sim = st.session_state.get('mc_trades_per_sim', 100)
-    n_sims = st.session_state.get('mc_n_simulations', 20000)
     result = compute_mc_avg_profit_at_target_dd(
         win_pct, rr, balance, target_dd=5.0,
-        trades_per_sim=trades_per_sim, n_sims=n_sims)
+        trades_per_sim=num_trades, n_sims=GS_MC_N_SIMULATIONS)
     if result <= 0:
         return "N/A"
     return f"${result:,.0f}"

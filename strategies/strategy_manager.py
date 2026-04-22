@@ -90,7 +90,7 @@ def save_strategy_to_session(strategy_name):
         "cci_period": st.session_state.get(f"{pfx}cci_period", 20),
         "roc_period": st.session_state.get(f"{pfx}roc_period", 12),
         "roc_signal_period": st.session_state.get(f"{pfx}roc_signal_period", 9),
-        "lr_period": st.session_state.get(f"{pfx}lr_period", 100),
+        "lr_period": st.session_state.get(f"{pfx}lr_period", 50),
         "lr_multiplier": st.session_state.get(f"{pfx}lr_multiplier", 2.0),
     }
 

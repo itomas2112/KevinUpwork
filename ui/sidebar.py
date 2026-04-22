@@ -50,13 +50,20 @@ def render_sidebar():
         if st.session_state.get("_agg_timeframe", base_tf) != base_tf:
             st.caption(f"Currently using: **{st.session_state['_agg_timeframe']}**")
 
+    # Bounds for date pickers — Streamlit defaults to a 10-year window which
+    # hides anything before ~2016. Allow the full range back to 2000.
+    _date_min = date(2000, 1, 1)
+    _date_max = date(2030, 12, 31)
+
     # Training Set -- required before any calculations
     with st.sidebar.expander("Training Set", expanded=False):
         date_col1, date_col2 = st.columns(2)
         with date_col1:
-            global_start_date = st.date_input("Start Date", key="global_start_date")
+            global_start_date = st.date_input("Start Date", key="global_start_date",
+                                              min_value=_date_min, max_value=_date_max)
         with date_col2:
-            global_end_date = st.date_input("End Date", key="global_end_date")
+            global_end_date = st.date_input("End Date", key="global_end_date",
+                                            min_value=_date_min, max_value=_date_max)
         if st.button("Apply Training Set", key="apply_date_range", type="primary"):
             st.session_state['date_range_applied'] = True
             st.rerun()
@@ -69,9 +76,11 @@ def render_sidebar():
     with st.sidebar.expander("Test Set", expanded=False):
         test_col1, test_col2 = st.columns(2)
         with test_col1:
-            test_start_date = st.date_input("Start Date", key="test_start_date")
+            test_start_date = st.date_input("Start Date", key="test_start_date",
+                                            min_value=_date_min, max_value=_date_max)
         with test_col2:
-            test_end_date = st.date_input("End Date", key="test_end_date")
+            test_end_date = st.date_input("End Date", key="test_end_date",
+                                          min_value=_date_min, max_value=_date_max)
         if st.button("Apply Test Set", key="apply_test_set", type="primary"):
             st.session_state['test_set_applied'] = True
             st.rerun()
