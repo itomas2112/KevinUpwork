@@ -11,7 +11,10 @@ in-place — much faster than a full calculate_indicators() call.
 import pandas as pd
 from indicators.calculate_indicators import recalculate_groups, changed_groups
 from strategies.first_strategy_numpy import execute_custom_strategy_numpy
-from strategies.wfo_engine import _extract_stats, aggregate_stats_dicts
+from strategies.wfo_engine import (
+    _extract_stats, aggregate_stats_dicts,
+    split_atr_overlay, apply_atr_overlay,
+)
 
 
 # Shared state set once per worker via initializer
@@ -62,20 +65,22 @@ def _evaluate_single(params, date_ranges):
     """Run strategy with *params* on all DRM periods within *date_ranges*.
 
     Uses incremental recalculation: only recomputes indicator groups whose
-    parameters differ from the base.
+    parameters differ from the base. ATR slot overrides (keys namespaced with
+    the ATR overlay prefix) are split off and applied to a deepcopy of the
+    strategy before execution.
     """
-    # Determine which groups changed
-    groups = changed_groups(_worker_base_params, params)
+    indicator_params, atr_overlay = split_atr_overlay(params)
+
+    # Determine which groups changed (indicator-only view)
+    groups = changed_groups(_worker_base_params, indicator_params)
 
     if groups:
-        # Copy and recalculate only changed groups
         df = _worker_df_featured.copy()
-        recalculate_groups(df, groups, **params)
+        recalculate_groups(df, groups, **indicator_params)
     else:
-        # No changes — use base df directly (no copy needed, we don't mutate)
         df = _worker_df_featured
 
-    strategy = _worker_strategy
+    strategy = apply_atr_overlay(_worker_strategy, atr_overlay)
     full_index = df.index
     all_stats = []
 

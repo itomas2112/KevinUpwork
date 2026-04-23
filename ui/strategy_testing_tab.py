@@ -24,7 +24,11 @@ from strategies.first_strategy import execute_custom_strategy
 from ui.charting_tab import _aggregate_stats, _get_or_calculate
 from strategies.wfo_engine import (
     split_folds, detect_used_groups, generate_param_grid, count_grid_size,
-    aggregate_stats_dicts, apply_filters, _empty_agg as wfo_empty_agg,
+    aggregate_stats_dicts,
+)
+from ui.performance_tab import (
+    _build_metrics_table as _perf_build_metrics_table,
+    _empty_agg as _perf_empty_agg,
 )
 from strategies.wfo_worker import init_wfo_worker, run_wfo_batch
 from strategies.first_strategy_numpy import execute_custom_strategy_numpy
@@ -277,21 +281,14 @@ def render_strategy_testing_tab(sidebar_config):
         if not used_groups:
             st.info("Strategy does not reference any optimisable indicators.")
         else:
-            wfo_ranges = _render_wfo_param_ranges(used_groups, indicator_params)
+            # Wrapped in @st.fragment so editing param inputs only reruns this
+            # block instead of the entire tab — keeps focus, prevents jumps.
+            _render_wfo_param_section(used_groups, indicator_params, wfo_folds,
+                                      selected_strategy)
 
-            # Estimated grid size + time estimate
-            grid_size = count_grid_size(used_groups, wfo_ranges, indicator_params)
-            est_seconds = grid_size * wfo_folds * 0.008  # ~8ms per combo per fold (recalc + execute)
-            grid_too_large = False
-            if grid_size <= 1:
-                st.caption(f"Combinations: **{grid_size:,}** — Widen min/max ranges above to create parameter variations.")
-            elif grid_size > 100000:
-                st.error(f"Grid too large ({grid_size:,} combos). Increase step sizes or narrow min/max ranges to stay under 100,000.")
-                grid_too_large = True
-            elif grid_size > 10000:
-                st.warning(f"Combinations: **{grid_size:,}** | Est. time: **~{est_seconds/60:.0f} min** — consider reducing.")
-            else:
-                st.caption(f"Combinations: **{grid_size:,}** | Est. time: **~{max(1, int(est_seconds))} sec**")
+            wfo_ranges = st.session_state.get('_wfo_current_ranges', {})
+            grid_size = st.session_state.get('_wfo_current_grid_size', 0)
+            grid_too_large = st.session_state.get('_wfo_grid_too_large', False)
 
             # ---- Filter & sort ----
             _render_wfo_filters()
@@ -392,37 +389,82 @@ def _expand_and_filter(selections, strategy_patterns):
 # Walk Forward Optimization
 # ------------------------------------------------------------------
 
-SORT_METRICS = [
-    ("expected_value", "Expected Value (R)"),
-    ("num_trades", "Number of Trades"),
-    ("win_pct", "Win %"),
-    ("lose_pct", "Lose %"),
-    ("avg_win_pnl", "Avg Profit (R)"),
-    ("avg_lose_pnl", "Avg Loss (R)"),
-    ("total_pnl", "Total P&L (R)"),
-    ("target_exit_pct", "Target Exit %"),
-    ("static_exit_pct", "Static %"),
-    ("dynamic_exit_pct", "Dynamic %"),
-    ("eod_exit_pct", "EOD %"),
-    ("rr_ratio", "Avg RR Ratio"),
-    ("sqn", "SQN"),
-]
+# Mirror Grid Search's sort/filter metrics so WFO and Grid Search stay in
+# sync. WFO does not compute correlation against reference strategies, so
+# `abs_correlation` is filtered out.
+from ui.grid_search_tab import (
+    SORT_METRICS as _GS_SORT_METRICS,
+    GS_MC_N_SIMULATIONS, filter_props, passes_thresholds,
+    enrich_aggs_with_mc,
+)
+SORT_METRICS = [m for m in _GS_SORT_METRICS if m[0] != "abs_correlation"]
+_DEFAULT_SORT_KEY = "mc_avg_profit"
 
 
-def _render_wfo_param_ranges(used_groups, base_settings):
+@st.fragment
+def _render_wfo_param_section(used_groups, base_settings, wfo_folds, strategy):
+    """Render param ranges + grid-size estimate as a Streamlit fragment.
+
+    Editing inputs inside a fragment only reruns this function — the rest of
+    the strategy testing tab stays put. Latest values are persisted to
+    session state so the parent (which doesn't rerun) can read them.
+    """
+    wfo_ranges = _render_wfo_param_ranges(used_groups, base_settings, strategy)
+
+    grid_size = count_grid_size(used_groups, wfo_ranges, base_settings)
+    est_seconds = grid_size * wfo_folds * 0.008  # ~8ms per combo per fold
+    grid_too_large = False
+    if grid_size <= 1:
+        st.caption(f"Combinations: **{grid_size:,}** — Widen min/max ranges above to create parameter variations.")
+    elif grid_size > 100000:
+        st.error(f"Grid too large ({grid_size:,} combos). Increase step sizes or narrow min/max ranges to stay under 100,000.")
+        grid_too_large = True
+    elif grid_size > 10000:
+        st.warning(f"Combinations: **{grid_size:,}** | Est. time: **~{est_seconds/60:.0f} min** — consider reducing.")
+    else:
+        st.caption(f"Combinations: **{grid_size:,}** | Est. time: **~{max(1, int(est_seconds))} sec**")
+
+    st.session_state['_wfo_current_ranges'] = wfo_ranges
+    st.session_state['_wfo_current_grid_size'] = grid_size
+    st.session_state['_wfo_grid_too_large'] = grid_too_large
+
+
+def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
     """Render parameter range editors for each used indicator group.
 
     Defaults: min = max = strategy's saved value (no variation).
     User widens only the params they want to optimise.
     Shows per-group combo count so user sees the impact.
 
+    ATR slots (initial ATR stop + ATR Target triggers) are discovered from
+    *strategy* and rendered as dedicated sections with atr_period /
+    atr_multiplier range editors.
+
     Returns the user-configured ranges dict.
     """
-    from strategies.wfo_engine import _range_values
+    from strategies.wfo_engine import (
+        _range_values, detect_atr_slots, ATR_SLOT_DEFAULT_RANGES,
+    )
 
     st.markdown("**Parameter Ranges** *(defaults = strategy's saved values — widen to optimise)*")
     ranges = {}
+
+    # Build a lookup of ATR slot metadata (saved values) by slot_id
+    atr_slots_by_id = {}
+    if strategy is not None:
+        for slot in detect_atr_slots(strategy):
+            atr_slots_by_id[slot["slot_id"]] = slot
+
     for group in sorted(used_groups):
+        # --- ATR Slot pseudo-group ---
+        if group.startswith("atr_slot:"):
+            slot_id = group[len("atr_slot:"):]
+            slot = atr_slots_by_id.get(slot_id)
+            if slot is None:
+                continue
+            ranges[group] = _render_atr_slot_range(slot)
+            continue
+
         templates = _WFO_RANGES.get(group, {})
         if not templates:
             continue
@@ -547,25 +589,90 @@ def _render_wfo_param_ranges(used_groups, base_settings):
     return ranges
 
 
+def _render_atr_slot_range(slot):
+    """Render range editors for one ATR slot (period + multiplier).
+
+    Defaults: min = max = strategy's saved value (no variation).
+    Step defaults come from ATR_SLOT_DEFAULT_RANGES.
+    Returns a dict shaped like {atr_period: (lo, hi, step), atr_multiplier: (...)}.
+    """
+    from strategies.wfo_engine import _range_values, ATR_SLOT_DEFAULT_RANGES
+
+    slot_id = slot["slot_id"]
+    saved_period = int(slot["atr_period"])
+    saved_mult = float(slot["atr_multiplier"])
+    period_step_tmpl = ATR_SLOT_DEFAULT_RANGES["atr_period"][2]
+    mult_step_tmpl = ATR_SLOT_DEFAULT_RANGES["atr_multiplier"][2]
+
+    # Pre-read widget values so the expander header can show a live combo count
+    p_lo = int(st.session_state.get(f"wfo_atr_{slot_id}_p_lo", saved_period))
+    p_hi = int(st.session_state.get(f"wfo_atr_{slot_id}_p_hi", saved_period))
+    p_step = int(st.session_state.get(f"wfo_atr_{slot_id}_p_step", int(period_step_tmpl)))
+    m_lo = float(st.session_state.get(f"wfo_atr_{slot_id}_m_lo", saved_mult))
+    m_hi = float(st.session_state.get(f"wfo_atr_{slot_id}_m_hi", saved_mult))
+    m_step = float(st.session_state.get(f"wfo_atr_{slot_id}_m_step", float(mult_step_tmpl)))
+
+    combos = max(1, len(_range_values((p_lo, p_hi, p_step)))) * \
+             max(1, len(_range_values((m_lo, m_hi, m_step))))
+
+    header = f"{slot['label']}  ({combos:,} combos)"
+    with st.expander(header, expanded=False):
+        st.caption(f"Saved: period={saved_period}, multiplier={saved_mult:.2f}")
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            p_lo = st.number_input("Period Min", 1, 500, saved_period, step=1,
+                                   key=f"wfo_atr_{slot_id}_p_lo")
+        with c2:
+            p_hi = st.number_input("Period Max", 1, 500, saved_period, step=1,
+                                   key=f"wfo_atr_{slot_id}_p_hi")
+        with c3:
+            p_step = st.number_input("Period Step", 1, 100, int(period_step_tmpl),
+                                     step=1, key=f"wfo_atr_{slot_id}_p_step")
+
+        c4, c5, c6 = st.columns(3)
+        with c4:
+            m_lo = st.number_input("Multiplier Min", 0.1, 100.0, saved_mult,
+                                   step=0.1, format="%.2f",
+                                   key=f"wfo_atr_{slot_id}_m_lo")
+        with c5:
+            m_hi = st.number_input("Multiplier Max", 0.1, 100.0, saved_mult,
+                                   step=0.1, format="%.2f",
+                                   key=f"wfo_atr_{slot_id}_m_hi")
+        with c6:
+            m_step = st.number_input("Multiplier Step", 0.01, 100.0,
+                                     float(mult_step_tmpl), step=0.1, format="%.2f",
+                                     key=f"wfo_atr_{slot_id}_m_step")
+
+    return {
+        "atr_period": (int(p_lo), int(p_hi), int(p_step)),
+        "atr_multiplier": (float(m_lo), float(m_hi), float(m_step)),
+    }
+
+
 def _render_wfo_filters():
-    """Render filter threshold and sort metric controls."""
+    """Render filter threshold and sort metric controls.
+
+    Uses the same metric set, filter bounds, and sort defaults as Grid Search.
+    Default sort metric is MC Avg Profit @ 5% DD.
+    """
     st.markdown("**Filters & Sort**")
-    # Filters — 3 rows of 4
-    metrics = SORT_METRICS
-    rows = [metrics[i:i+4] for i in range(0, len(metrics), 4)]
+    # Filters — 4 columns per row, mirroring grid search filter layout
+    rows = [SORT_METRICS[i:i+4] for i in range(0, len(SORT_METRICS), 4)]
     for row in rows:
         cols = st.columns(len(row))
         for col, (key, label) in zip(cols, row):
             with col:
-                default = 0.0 if key == "num_trades" else -999.0
-                step = 1.0 if key == "num_trades" else 0.01
-                st.number_input(f"Min {label}", value=default, step=step,
-                                key=f"wfo_filter_{key}", format="%.2f")
-    # Sort
+                lbl, default, step, fmt = filter_props(key, label)
+                st.number_input(lbl, value=default, step=step,
+                                key=f"wfo_filter_{key}", format=fmt)
+    # Sort — default to MC Avg Profit
     sc1, sc2 = st.columns(2)
     with sc1:
-        sort_labels = [m[1] for m in metrics]
-        st.selectbox("Sort by", sort_labels, index=0, key="wfo_sort_metric")
+        sort_labels = [m[1] for m in SORT_METRICS]
+        default_idx = next(
+            (i for i, (k, _) in enumerate(SORT_METRICS) if k == _DEFAULT_SORT_KEY), 0)
+        st.selectbox("Sort by", sort_labels, index=default_idx, key="wfo_sort_metric")
     with sc2:
         st.radio("Order", ["Highest to Lowest", "Lowest to Highest"],
                  horizontal=True, key="wfo_sort_order")
@@ -605,18 +712,23 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     # Generate parameter grid
     param_grid = generate_param_grid(used_groups, param_ranges, indicator_params)
 
-    # Collect filter thresholds
+    # Collect filter thresholds for every metric in SORT_METRICS, using the
+    # widget value when set (defaults are chosen so unset filters don't exclude).
     thresholds = {}
-    for key, _ in SORT_METRICS:
-        val = st.session_state.get(f"wfo_filter_{key}", -999.0)
-        if val > -999.0 or key == "num_trades":
-            thresholds[key] = val
+    for key, label in SORT_METRICS:
+        _, default, _, _ = filter_props(key, label)
+        thresholds[key] = st.session_state.get(f"wfo_filter_{key}", default)
 
-    # Sort settings
+    # Sort settings — default to MC Avg Profit
     sort_labels = [m[1] for m in SORT_METRICS]
-    sort_label = st.session_state.get("wfo_sort_metric", sort_labels[0])
-    sort_key = next((k for k, l in SORT_METRICS if l == sort_label), "expected_value")
+    default_sort_label = next(
+        (label for k, label in SORT_METRICS if k == _DEFAULT_SORT_KEY), sort_labels[0])
+    sort_label = st.session_state.get("wfo_sort_metric", default_sort_label)
+    sort_key = next((k for k, l in SORT_METRICS if l == sort_label), _DEFAULT_SORT_KEY)
     sort_desc = st.session_state.get("wfo_sort_order", "Highest to Lowest") == "Highest to Lowest"
+
+    # MC enrichment uses the same balance as Grid Search
+    mc_balance = st.session_state.get('mc_starting_balance', 10000.0)
 
     # Pre-compute indicators ONCE with the base strategy params
     progress = st.progress(0, text="Calculating base indicators...")
@@ -670,8 +782,16 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
         # Filter out failed candidates (agg is None)
         valid = [(idx, params, agg) for idx, params, agg in all_results if agg is not None]
 
-        # Apply filters
-        filtered = apply_filters(valid, thresholds)
+        # Enrich every surviving candidate with MC Avg Profit so users can
+        # filter / sort by it (matches Grid Search behaviour). Mutates aggs in-place.
+        if valid:
+            enrich_aggs_with_mc(
+                [agg for _, _, agg in valid],
+                mc_balance, GS_MC_N_SIMULATIONS, target_dd=5.0,
+                progress_label=f"OOS {oos_idx+1}/{n_folds}: Computing MC stats")
+
+        # Apply filters using grid-search threshold semantics (Min/Max per metric)
+        filtered = [item for item in valid if passes_thresholds(item[2], thresholds)]
 
         # Sort
         filtered.sort(key=lambda x: x[2].get(sort_key, 0), reverse=sort_desc)
@@ -691,16 +811,25 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     ]
 
     final_results = []
-    from strategies.wfo_engine import _extract_stats as _wfo_extract
+    from strategies.wfo_engine import (
+        _extract_stats as _wfo_extract,
+        split_atr_overlay, apply_atr_overlay,
+    )
     from indicators.calculate_indicators import recalculate_groups, changed_groups as _cg
     for params in winning_params:
-        # Incremental recalc for final evaluation too
-        groups_changed = _cg(indicator_params, params)
+        # Split indicator params from ATR slot overlay
+        ind_params, atr_overlay = split_atr_overlay(params)
+
+        # Incremental recalc for final evaluation too (indicator-only view)
+        groups_changed = _cg(indicator_params, ind_params)
         if groups_changed:
             df_feat = df_featured.copy()
-            recalculate_groups(df_feat, groups_changed, **params)
+            recalculate_groups(df_feat, groups_changed, **ind_params)
         else:
             df_feat = df_featured
+
+        # Apply ATR overlay to the strategy for this fold's winning combo
+        strategy_for_fold = apply_atr_overlay(selected_strategy, atr_overlay)
 
         full_index = df_feat.index
         test_stats = []
@@ -721,7 +850,7 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
                 pe_pos = df_slice.index.searchsorted(end_dt, side="right") - 1
                 pe = df_slice.index[min(pe_pos, len(df_slice.index) - 1)]
                 _, stats = execute_custom_strategy_numpy(
-                    df_slice.copy(), copy.deepcopy(selected_strategy), ps, pe
+                    df_slice.copy(), copy.deepcopy(strategy_for_fold), ps, pe
                 )
                 if stats is not None:
                     test_stats.append(_wfo_extract(stats))
@@ -736,6 +865,7 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     progress.empty()
 
     # Cache results
+    from strategies.wfo_engine import detect_atr_slots
     cache = {
         "strategy_name": strategy_name,
         "_strategy_fingerprint": strategy_fingerprint,
@@ -744,6 +874,7 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
         "final_results": final_results,
         "base_settings": indicator_params,
         "used_groups": sorted(used_groups),
+        "atr_slots": detect_atr_slots(selected_strategy),
     }
     st.session_state["_wfo_cached_results"] = cache
     _display_wfo_results(cache)
@@ -762,9 +893,14 @@ def _display_wfo_results(cache):
 
     # ---- Parameters table ----
     st.markdown("**Winning Parameters per OOS Step**")
+    from strategies.wfo_engine import ATR_OVERLAY_PREFIX
+    atr_slots = cache.get("atr_slots", [])
     # Collect only the params that were optimised (differ from base)
     param_keys = set()
     for group in used_groups:
+        if group.startswith("atr_slot:"):
+            # ATR slots are rendered as "{label} — period" / "{label} — multiplier" rows
+            continue
         defaults = _WFO_RANGES.get(group, {})
         if group == "ema":
             ema_count = len(base_settings.get("ema_periods", []))
@@ -790,6 +926,21 @@ def _display_wfo_results(cache):
                 else:
                     row.append("—")
         param_rows[pk] = row
+
+    # ATR slot rows
+    for slot in atr_slots:
+        slot_id = slot["slot_id"]
+        period_label = f"{slot['label']} — period"
+        mult_label = f"{slot['label']} — multiplier"
+        period_row = []
+        mult_row = []
+        for params in winning_params:
+            p = params.get(f"{ATR_OVERLAY_PREFIX}{slot_id}__atr_period")
+            m = params.get(f"{ATR_OVERLAY_PREFIX}{slot_id}__atr_multiplier")
+            period_row.append(str(int(p)) if p is not None else str(slot["atr_period"]))
+            mult_row.append(f"{float(m):.2f}" if m is not None else f"{slot['atr_multiplier']:.2f}")
+        param_rows[period_label] = period_row
+        param_rows[mult_label] = mult_row
 
     col_names = [f"OOS {i+1}" for i in range(n_folds)]
     params_table = pd.DataFrame(param_rows, index=col_names).T
@@ -923,63 +1074,7 @@ def _run_on_date_range(df_full, selected_strategy, all_combos,
     return all_stats
 
 
-def _build_metrics_table(results_dict):
-    """Build a DataFrame with metric rows and one column per result."""
-    from ui.performance_tab import _mc_avg_profit_str
-    metric_names = [
-        "Number of Trades",
-        "Win %",
-        "Lose %",
-        "Avg Profit",
-        "Avg Loss",
-        "Total P&L",
-        "Expected Value",
-        "Target Exit %",
-        "Static %",
-        "Dynamic %",
-        "EOD %",
-        "Avg RR Ratio",
-        "MC Avg Profit (5% DD)",
-        "SQN",
-    ]
-
-    table_data = {}
-    for label, agg in results_dict.items():
-        table_data[label] = [
-            f"{agg['num_trades']}",
-            f"{agg['win_pct']:.0f}%",
-            f"{agg['lose_pct']:.0f}%",
-            f"{agg['avg_win_pnl']:.2f}R",
-            f"{agg['avg_lose_pnl']:.2f}R",
-            f"{agg['total_pnl']:.2f}R",
-            f"{agg['expected_value']:.2f}R",
-            f"{agg['target_exit_pct']:.0f}%",
-            f"{agg['static_exit_pct']:.0f}%",
-            f"{agg['dynamic_exit_pct']:.0f}%",
-            f"{agg.get('eod_exit_pct', 0):.0f}%",
-            f"{agg.get('rr_ratio', 0):.2f}",
-            _mc_avg_profit_str(agg),
-            f"{agg['sqn']:.2f}",
-        ]
-
-    return pd.DataFrame(table_data, index=metric_names)
-
-
-def _empty_agg():
-    """Return an empty aggregation dict (no trades)."""
-    return {
-        'num_trades': 0,
-        'win_pct': 0.0,
-        'lose_pct': 0.0,
-        'avg_win_pnl': 0.0,
-        'avg_lose_pnl': 0.0,
-        'total_pnl': 0.0,
-        'expected_value': 0.0,
-        'target_exit_pct': 0.0,
-        'static_exit_pct': 0.0,
-        'dynamic_exit_pct': 0.0,
-        'eod_exit_pct': 0.0,
-        'rr_ratio': 0.0,
-        'max_drawdown': 0.0,
-        'sqn': 0.0,
-    }
+# Share the metrics table + empty-agg definitions with Grid Search and the
+# Performance tab so all three display identical metric sets.
+_build_metrics_table = _perf_build_metrics_table
+_empty_agg = _perf_empty_agg

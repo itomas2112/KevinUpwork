@@ -63,6 +63,98 @@ PAGE_SIZE = 50
 # keeps the per-candidate enrichment fast across hundreds/thousands of candidates.
 GS_MC_N_SIMULATIONS = 1000
 
+# Metrics where the threshold acts as a maximum (value must be <= threshold).
+# All other metrics in SORT_METRICS use minimum semantics (value must be >= threshold).
+MAX_FILTER_METRICS = {"abs_correlation", "avg_holding_period"}
+
+
+def filter_props(metric_key, metric_label):
+    """Return (label, default, step, fmt) for a filter input.
+
+    Defaults are chosen so that the out-of-the-box value disables the filter.
+    Min metrics: very low default. Max metrics: very high default.
+    """
+    if metric_key == "num_trades":
+        return f"Min {metric_label}", 0.0, 1.0, "%.0f"
+    if metric_key == "avg_lose_pnl":
+        return f"Max {metric_label}", -999.0, 0.01, "%.2f"
+    if metric_key == "mc_avg_profit":
+        return f"Min {metric_label}", 0.0, 1000.0, "%.0f"
+    if metric_key == "abs_correlation":
+        return f"Max {metric_label}", 100.0, 1.0, "%.0f"
+    if metric_key == "avg_holding_period":
+        # Default high so unset filter admits everything (holding periods are
+        # typically < 1,000 bars). Lower the value to cap long-holding candidates.
+        return f"Max {metric_label}", 100000.0, 1.0, "%.1f"
+    return f"Min {metric_label}", -999.0, 0.01, "%.2f"
+
+
+def passes_thresholds(agg, thresholds):
+    """Return True if `agg` passes every (key -> threshold) bound in `thresholds`.
+
+    Honours MAX_FILTER_METRICS for metrics where the threshold is an upper bound.
+    Missing values (None) skip that filter rather than excluding the candidate.
+    """
+    for metric_key, threshold_val in thresholds.items():
+        val = agg.get(metric_key)
+        if val is None:
+            continue
+        if metric_key in MAX_FILTER_METRICS:
+            if val > threshold_val:
+                return False
+        else:
+            if val < threshold_val:
+                return False
+    return True
+
+
+def enrich_aggs_with_mc(agg_dicts, balance, n_sims, target_dd=5.0,
+                        progress_label="Computing Monte Carlo stats"):
+    """Enrich a flat list of agg dicts with `mc_avg_profit` (in-place).
+
+    Uses each agg's own `num_trades` as trades/sim. Spawns a multiprocessing
+    pool; falls back to serial execution if pool setup fails. Aggs with
+    num_trades == 0 are filled with 0.0 without entering the pool.
+    """
+    from strategies.mc_enrichment_worker import init_worker as mc_init, enrich_one
+    from strategies.monte_carlo_core import compute_mc_avg_profit_at_target_dd
+
+    tasks = []  # (idx, win_pct, rr_ratio, num_trades)
+    for idx, agg in enumerate(agg_dicts):
+        n_trades = agg.get('num_trades', 0)
+        if n_trades == 0:
+            agg['mc_avg_profit'] = 0.0
+            continue
+        tasks.append((idx, agg.get('win_pct', 0),
+                      agg.get('rr_ratio', 0), n_trades))
+
+    if not tasks:
+        return
+
+    n_workers = min(len(tasks), max(1, os.cpu_count() or 1))
+    progress = st.progress(0, text=f"{progress_label} ({len(tasks)} aggs, {n_workers} workers)...")
+
+    try:
+        with multiprocessing.Pool(
+            processes=n_workers,
+            initializer=mc_init,
+            initargs=(balance, n_sims, target_dd),
+        ) as pool:
+            completed = 0
+            for idx, value in pool.imap_unordered(enrich_one, tasks, chunksize=4):
+                agg_dicts[idx]['mc_avg_profit'] = value
+                completed += 1
+                progress.progress(completed / len(tasks),
+                                  text=f"{progress_label} {completed}/{len(tasks)}")
+    except Exception as e:
+        st.warning(f"MC parallel enrichment failed ({e}); falling back to serial.")
+        for idx, win_pct, rr_ratio, num_trades in tasks:
+            agg_dicts[idx]['mc_avg_profit'] = compute_mc_avg_profit_at_target_dd(
+                win_pct, rr_ratio, balance, target_dd=target_dd,
+                trades_per_sim=num_trades, n_sims=n_sims)
+
+    progress.empty()
+
 
 # ======================================================================
 # Main entry point
@@ -215,25 +307,11 @@ def render_grid_search_tab(sidebar_config):
     # Build threshold inputs for every metric in SORT_METRICS
     thresholds = {}
 
-    def _filter_props(metric_key, metric_label):
-        """Return (label, default, step, fmt) for a filter input."""
-        if metric_key == "num_trades":
-            return f"Min {metric_label}", 0.0, 1.0, "%.0f"
-        if metric_key == "avg_lose_pnl":
-            return f"Max {metric_label}", -999.0, 0.01, "%.2f"
-        if metric_key == "mc_avg_profit":
-            return f"Min {metric_label}", 0.0, 1000.0, "%.0f"
-        if metric_key == "abs_correlation":
-            return f"Max {metric_label}", 100.0, 1.0, "%.0f"
-        if metric_key == "avg_holding_period":
-            return f"Min {metric_label}", 0.0, 1.0, "%.1f"
-        return f"Min {metric_label}", -999.0, 0.01, "%.2f"
-
     # Row 1 — first 5 metrics (includes MC Avg Profit @ 5% DD)
     cols_r1 = st.columns(5)
     for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[:5]):
         with cols_r1[ci]:
-            lbl, default, step, fmt = _filter_props(metric_key, metric_label)
+            lbl, default, step, fmt = filter_props(metric_key, metric_label)
             thresholds[metric_key] = st.number_input(
                 lbl, value=default, step=step,
                 format=fmt, key=f"gs_thresh_{metric_key}")
@@ -241,7 +319,7 @@ def render_grid_search_tab(sidebar_config):
     cols_r2 = st.columns(5)
     for ci, (metric_key, metric_label) in enumerate(SORT_METRICS[5:10]):
         with cols_r2[ci]:
-            lbl, default, step, fmt = _filter_props(metric_key, metric_label)
+            lbl, default, step, fmt = filter_props(metric_key, metric_label)
             thresholds[metric_key] = st.number_input(
                 lbl, value=default, step=step,
                 format=fmt, key=f"gs_thresh_{metric_key}")
@@ -251,7 +329,7 @@ def render_grid_search_tab(sidebar_config):
         cols_r3 = st.columns(max(len(remaining), 1))
         for ci, (metric_key, metric_label) in enumerate(remaining):
             with cols_r3[ci]:
-                lbl, default, step, fmt = _filter_props(metric_key, metric_label)
+                lbl, default, step, fmt = filter_props(metric_key, metric_label)
                 thresholds[metric_key] = st.number_input(
                     lbl, value=default, step=step,
                     format=fmt, key=f"gs_thresh_{metric_key}")
@@ -1153,69 +1231,16 @@ def _aggregate_stats_dicts(all_stats_dicts):
 # ======================================================================
 
 def _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0):
-    """Compute mc_avg_profit for every agg dict using a multiprocessing Pool.
+    """Enrich Grid Search results (list of (label, global_agg, sel_results))
+    with `mc_avg_profit` for every agg dict (global + each per-selection).
 
-    Each agg's MC simulation uses that agg's own num_trades as trades_per_sim,
-    so a candidate that produced 11 trades is simulated with 11 trades/sim.
-
-    Uses processes (not threads) to bypass the Python GIL on the binary-search
-    loop inside compute_mc_avg_profit_at_target_dd. On Windows (spawn), workers
-    re-import only the worker module (streamlit-free), so startup is cheap.
-
-    Writes results back into the agg dicts in-place. Falls back to serial
-    execution if the pool setup fails.
+    Thin wrapper around `enrich_aggs_with_mc` that flattens the nested shape.
     """
-    from strategies.mc_enrichment_worker import init_worker as mc_init, enrich_one
-    from strategies.monte_carlo_core import compute_mc_avg_profit_at_target_dd
-
-    # Collect every (agg_dict, key) pair to enrich. Key is (cand_idx, sel_name)
-    # where sel_name is None for the global agg, and the selection label otherwise.
-    agg_index = {}  # key -> agg dict
-    tasks = []      # list of (key, win_pct, rr_ratio, num_trades)
-
-    for cand_idx, (_label, global_agg, sel_results) in enumerate(results):
-        gkey = (cand_idx, None)
-        agg_index[gkey] = global_agg
-        tasks.append((gkey, global_agg.get('win_pct', 0),
-                      global_agg.get('rr_ratio', 0),
-                      global_agg.get('num_trades', 0)))
-        for sel_name, sel_agg in sel_results.items():
-            skey = (cand_idx, sel_name)
-            agg_index[skey] = sel_agg
-            tasks.append((skey, sel_agg.get('win_pct', 0),
-                          sel_agg.get('rr_ratio', 0),
-                          sel_agg.get('num_trades', 0)))
-
-    if not tasks:
-        return
-
-    n_workers = min(len(tasks), max(1, os.cpu_count() or 1))
-    progress = st.progress(0, text=f"Computing Monte Carlo stats ({len(tasks)} aggs, {n_workers} workers)...")
-
-    try:
-        with multiprocessing.Pool(
-            processes=n_workers,
-            initializer=mc_init,
-            initargs=(balance, n_sims, target_dd),
-        ) as pool:
-            completed = 0
-            for key, value in pool.imap_unordered(enrich_one, tasks, chunksize=4):
-                agg_index[key]['mc_avg_profit'] = value
-                completed += 1
-                progress.progress(completed / len(tasks),
-                                  text=f"Monte Carlo {completed}/{len(tasks)}")
-    except Exception as e:
-        # Fallback: sequential enrichment so grid search still completes.
-        st.warning(f"MC parallel enrichment failed ({e}); falling back to serial.")
-        for key, win_pct, rr_ratio, num_trades in tasks:
-            if num_trades == 0:
-                agg_index[key]['mc_avg_profit'] = 0.0
-            else:
-                agg_index[key]['mc_avg_profit'] = compute_mc_avg_profit_at_target_dd(
-                    win_pct, rr_ratio, balance, target_dd=target_dd,
-                    trades_per_sim=num_trades, n_sims=n_sims)
-
-    progress.empty()
+    flat_aggs = []
+    for _label, global_agg, sel_results in results:
+        flat_aggs.append(global_agg)
+        flat_aggs.extend(sel_results.values())
+    enrich_aggs_with_mc(flat_aggs, balance, n_sims, target_dd=target_dd)
 
 
 # ======================================================================
@@ -1521,27 +1546,10 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
 def _display_results(results, strategy_name, thresholds, sort_key, sort_descending):
     """Display filtered, sorted, paginated results with Global + per-selection breakdown."""
 
-    # Metrics where threshold is a maximum (value must be <= threshold to pass)
-    _MAX_FILTER_METRICS = {"abs_correlation"}
-
     # Filter based on Global metrics — all thresholds applied dynamically
-    filtered = []
-    for label, global_agg, sel_results in results:
-        passes = True
-        for metric_key, threshold_val in thresholds.items():
-            val = global_agg.get(metric_key)
-            if val is None:
-                continue  # undefined metric (e.g. no refs) → skip filter
-            if metric_key in _MAX_FILTER_METRICS:
-                if val > threshold_val:
-                    passes = False
-                    break
-            else:
-                if val < threshold_val:
-                    passes = False
-                    break
-        if passes:
-            filtered.append((label, global_agg, sel_results))
+    filtered = [(label, global_agg, sel_results)
+                for label, global_agg, sel_results in results
+                if passes_thresholds(global_agg, thresholds)]
 
     st.subheader(f"Results — {strategy_name}")
     st.caption(f"{len(filtered)} of {len(results)} candidates pass filters")
