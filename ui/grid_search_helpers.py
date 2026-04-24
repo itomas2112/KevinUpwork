@@ -4,8 +4,12 @@ run generation for universal group sets.
 """
 import copy
 
-from config.constants import R_PROFIT_LOSS_ELEMENTS, ATR_TARGET_ELEMENTS
+from config.constants import (R_PROFIT_LOSS_ELEMENTS, ATR_TARGET_ELEMENTS,
+                              ELEMENT_TO_WFO_GROUP)
 from strategies.strategy_validator import validate_strategy
+from strategies.group_set_manager import (
+    candidate_variant_assignments, offset_label,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -57,35 +61,53 @@ def format_candidate_label(candidate):
         return f"{e1} vs {val}"
 
 
-def format_run_label(candidate, event):
+def _element_offset_prefix(element_name, offsets_by_group):
+    """If element_name belongs to a ranged group, return its '(0)'/'(+1)' prefix
+    (with trailing space). Otherwise empty string."""
+    if not offsets_by_group or not element_name:
+        return ""
+    g = ELEMENT_TO_WFO_GROUP.get(element_name)
+    if g and g in offsets_by_group:
+        return offset_label(offsets_by_group[g]) + " "
+    return ""
+
+
+def format_run_label(candidate, event, offsets_by_group=None):
     """Generate label for a grid search run: 'Element1 (event) Element2'.
 
-    Includes the event since runs have a specific event applied.
+    Includes the event since runs have a specific event applied. When
+    `offsets_by_group` is provided, prefixes each ranged-indicator element
+    with its variant offset (e.g. '(+1) RSI cross above 30').
     """
     if candidate is None:
         return "None"
 
     action = event.lower() if event else "?"
+    o = offsets_by_group or {}
 
-    # ATR static stop
+    # ATR static stop — the atr group's offset (if any) prefixes the whole label.
     if candidate.get("stop_type") == "ATR":
-        return f"ATR({candidate.get('atr_period', 14)}) x {candidate.get('atr_multiplier', 2.0)} ({action})"
+        prefix = offset_label(o["atr"]) + " " if "atr" in o else ""
+        return f"{prefix}ATR({candidate.get('atr_period', 14)}) x {candidate.get('atr_multiplier', 2.0)} ({action})"
 
     e1 = candidate.get("element1", "?")
 
     # ATR Target element
     if e1 == "ATR Target":
+        prefix = offset_label(o["atr"]) + " " if "atr" in o else ""
         atr_p = candidate.get("atr_period", 14)
         atr_m = candidate.get("atr_multiplier", 2.0)
-        return f"ATR Target({atr_p} x {atr_m}) ({action})"
+        return f"{prefix}ATR Target({atr_p} x {atr_m}) ({action})"
 
+    e1_pref = _element_offset_prefix(e1, o)
     compare = candidate.get("compare_type", "Indicator")
     if compare == "Indicator":
         e2 = candidate.get("element2", "?")
-        return f"{e1} ({action}) {e2}"
+        e2_pref = _element_offset_prefix(e2, o)
+        return f"{e1_pref}{e1} ({action}) {e2_pref}{e2}"
     else:
         val = candidate.get("value", "?")
-        return f"{e1} ({action}) {val}"
+        return f"{e1_pref}{e1} ({action}) {val}"
 
 
 # ---------------------------------------------------------------------------
@@ -145,30 +167,54 @@ def build_replacement_strategy(base_strategy, search_group, candidate, event,
 # ---------------------------------------------------------------------------
 
 def generate_run_configs(base_strategy, search_group, search_candidates,
-                         events, condition_candidates=None, condition_event=None):
-    """Return list of (label, strategy_dict) pairs.
+                         events, condition_candidates=None, condition_event=None,
+                         events_per_candidate=False, variant_groups=None):
+    """Return list of (label, strategy_dict, variant_id) triples.
 
-    Generates candidate × event cross-product.
+    `events_per_candidate=False` (default): every candidate is cross-producted with
+        every entry in `events`. (MODE_RUNTIME group sets.)
+    `events_per_candidate=True`: each candidate carries its own `event` field;
+        `events` is ignored. (MODE_PER_CANDIDATE group sets.)
+    `variant_groups`: optional {group_key: [(offset, params)]} from the set's
+        indicator_ranges. When provided, each candidate is further cross-producted
+        across variants of any ranged indicator group it touches; runs are
+        labeled with offset prefixes like '(0) RSI cross above 30'.
+
+    `variant_id` is None for runs against the default DataFrame, or a hashable
+    canonical key when the run uses a ranged-indicator variant. Callers use it
+    to look up the right per-variant DataFrame slice set.
+
     For target/dynamic_stop: further cross-combines with condition candidates if provided.
     """
     runs = []
 
-    for event in events:
-        if search_group in ("trigger", "condition", "static_stop"):
-            for candidate in search_candidates:
-                label = format_run_label(candidate, event)
-                strategy = build_replacement_strategy(base_strategy, search_group, candidate, event)
-                runs.append((label, strategy))
+    if events_per_candidate:
+        # Each candidate dict supplies its own event; iterate once per candidate.
+        candidate_event_pairs = [(c, c.get("event")) for c in search_candidates]
+    else:
+        candidate_event_pairs = [(c, e) for e in events for c in search_candidates]
 
-        elif search_group in ("target", "dynamic_stop"):
-            for candidate in search_candidates:
-                cand_label = format_run_label(candidate, event)
+    for candidate, event in candidate_event_pairs:
+        # Per-candidate variant assignments (Cartesian over ranged groups it touches).
+        # Returns [(None, {}, {})] when no variants apply, preserving 1-run-per-candidate behaviour.
+        assignments = candidate_variant_assignments(candidate, variant_groups)
+
+        for variant_id, offsets_by_group, _params in assignments:
+            if search_group in ("trigger", "condition", "static_stop"):
+                label = format_run_label(candidate, event, offsets_by_group)
+                strategy = build_replacement_strategy(base_strategy, search_group, candidate, event)
+                runs.append((label, strategy, variant_id))
+
+            elif search_group in ("target", "dynamic_stop"):
+                cand_label = format_run_label(candidate, event, offsets_by_group)
 
                 # Standalone run (no extra condition)
                 strategy = build_replacement_strategy(base_strategy, search_group, candidate, event)
-                runs.append((cand_label, strategy))
+                runs.append((cand_label, strategy, variant_id))
 
                 # Cross-combination with each condition candidate
+                # Note: condition candidates aren't variant-expanded — they re-use
+                # the search candidate's variant id (sharing its DataFrame).
                 if condition_candidates:
                     for cond_cand in condition_candidates:
                         strategy = build_replacement_strategy(
@@ -178,16 +224,16 @@ def generate_run_configs(base_strategy, search_group, search_candidates,
                         cond_label = format_candidate_label(cond_cand)
                         cond_op = _EVENT_TO_OPERATOR.get(condition_event, "above") if condition_event else "above"
                         combined_label = f"{cand_label} + {cond_label} ({cond_op.lower()})"
-                        runs.append((combined_label, strategy))
+                        runs.append((combined_label, strategy, variant_id))
 
     # Validate and filter out invalid strategies
     validated = []
     skipped = 0
-    for label, strat in runs:
+    for label, strat, vid in runs:
         ema_count = len(strat.get("indicator_settings", {}).get("ema_periods", []))
         is_valid, errors = validate_strategy(strat, ema_count=ema_count)
         if is_valid:
-            validated.append((label, strat))
+            validated.append((label, strat, vid))
         else:
             skipped += 1
 
@@ -198,13 +244,13 @@ def generate_run_configs(base_strategy, search_group, search_candidates,
     # Deduplicate labels
     seen = {}
     deduped = []
-    for label, strat in validated:
+    for label, strat, vid in validated:
         if label in seen:
             seen[label] += 1
-            deduped.append((f"{label} ({seen[label]})", strat))
+            deduped.append((f"{label} ({seen[label]})", strat, vid))
         else:
             seen[label] = 1
-            deduped.append((label, strat))
+            deduped.append((label, strat, vid))
 
     return deduped
 

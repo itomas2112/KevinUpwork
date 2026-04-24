@@ -21,6 +21,7 @@ from config.constants import (
     GROUP_MAP,
     R_PROFIT_LOSS_ELEMENTS,
     ATR_TARGET_ELEMENTS,
+    ATR_TRAILING_ELEMENTS,
     get_group_elements,
 )
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
@@ -1739,7 +1740,11 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
 
         # Trigger
         st.markdown("**Trigger**")
-        exit_group_options = ["R Profit / R Loss", "ATR Target"] + GROUP_NAMES
+        # ATR Trailing only makes sense as a stop (it's a Chandelier Exit)
+        exit_group_options = ["R Profit / R Loss", "ATR Target"]
+        if exit_type == "Stop":
+            exit_group_options.append("ATR Trailing")
+        exit_group_options += GROUP_NAMES
 
         col1, col2, col3 = st.columns([2, 1, 2])
 
@@ -1759,6 +1764,8 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
                 available_elements = R_PROFIT_LOSS_ELEMENTS
             elif trigger_group == "ATR Target":
                 available_elements = ATR_TARGET_ELEMENTS
+            elif trigger_group == "ATR Trailing":
+                available_elements = ATR_TRAILING_ELEMENTS
             else:
                 available_elements = get_group_elements(trigger_group, _ema_count())
 
@@ -1770,11 +1777,10 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
 
         is_r_element = trigger_element1 in R_PROFIT_LOSS_ELEMENTS
         is_atr_target = trigger_element1 in ATR_TARGET_ELEMENTS
+        is_atr_trailing = trigger_element1 in ATR_TRAILING_ELEMENTS
 
         with col2:
-            if is_atr_target:
-                # ATR Target: event is always Cross Above for Long / Cross Below for Short
-                # but let user choose (they may want Cross Below for a stop-like ATR Target)
+            if is_atr_target or is_atr_trailing:
                 event_options = STOP_EVENT_TYPES if exit_type == "Stop" else EVENT_TYPES
                 trigger_event = st.selectbox(
                     "Event",
@@ -1790,8 +1796,9 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
                 )
 
         with col3:
-            if is_atr_target:
-                # ATR Target: show ATR period + multiplier inputs
+            if is_atr_target or is_atr_trailing:
+                # Both share atr_period + atr_multiplier inputs; only the
+                # caption and runtime semantics differ.
                 if st.session_state.get(f"{prefix}_trigger_compare_type") != "ATR":
                     st.session_state[f"{prefix}_trigger_compare_type"] = "ATR"
                 atr_period = st.number_input(
@@ -1801,15 +1808,19 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
                     step=1,
                     key=f"{prefix}_atr_period"
                 )
+                default_mult = 3.0 if is_atr_trailing else 2.0
                 atr_mult = st.number_input(
                     "ATR Multiplier",
                     min_value=0.01,
-                    value=float(st.session_state.get(f"{prefix}_atr_multiplier", 2.0)),
+                    value=float(st.session_state.get(f"{prefix}_atr_multiplier", default_mult)),
                     step=0.01,
                     format="%.2f",
                     key=f"{prefix}_atr_multiplier"
                 )
-                st.caption(f"Target = Entry ± ATR({atr_period}) × {atr_mult}")
+                if is_atr_trailing:
+                    st.caption(f"Trail = highest_high(or lowest_low) ± ATR({atr_period}) × {atr_mult}")
+                else:
+                    st.caption(f"Target = Entry ± ATR({atr_period}) × {atr_mult}")
             elif is_r_element:
                 # R Profit/R Loss: always Fixed Value, no indicator comparison
                 # Force compare type to Fixed Value if switching from indicator mode
@@ -1887,6 +1898,8 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
         st.session_state[f'{prefix}_trigger_group1'] = 'R Profit / R Loss'
     elif element1 == 'ATR Target':
         st.session_state[f'{prefix}_trigger_group1'] = 'ATR Target'
+    elif element1 == 'ATR Trailing':
+        st.session_state[f'{prefix}_trigger_group1'] = 'ATR Trailing'
     else:
         st.session_state[f'{prefix}_trigger_group1'] = trigger.get('group', 'Price & Indicators')
 
@@ -1907,6 +1920,16 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
             direction = st.session_state.get('strategy_direction', 'Long')
             st.session_state[f'{prefix}_trigger_event'] = (
                 'Cross Above' if direction == 'Long' else 'Cross Below'
+            )
+    elif element1 == 'ATR Trailing':
+        st.session_state[f'{prefix}_trigger_compare_type'] = 'ATR'
+        st.session_state[f'{prefix}_atr_period'] = trigger.get('atr_period', 14)
+        st.session_state[f'{prefix}_atr_multiplier'] = trigger.get('atr_multiplier', 3.0)
+        # Default event for ATR Trailing if missing: long fires Cross Below, short Cross Above
+        if trigger.get('event') is None:
+            direction = st.session_state.get('strategy_direction', 'Long')
+            st.session_state[f'{prefix}_trigger_event'] = (
+                'Cross Below' if direction == 'Long' else 'Cross Above'
             )
     elif trigger.get('compare_type') == 'Indicator':
         st.session_state[f'{prefix}_trigger_element2'] = trigger.get('element2')

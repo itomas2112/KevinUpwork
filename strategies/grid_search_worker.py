@@ -1,19 +1,25 @@
 """
 Worker module for multiprocessing grid search.
 Separate from Streamlit code to avoid serialization issues on Windows (spawn).
+
+The worker holds a per-variant slice store: {variant_id: {combo_key: [(df_slice, ps, pe), ...]}}.
+Each task carries the variant_id of its run; the worker looks up the right
+slice set for each combo. variant_id == None means the default DataFrame
+(no indicator-range variants applied).
 """
 
 from strategies.first_strategy_numpy import execute_custom_strategy_numpy
 
 # Shared data set once per worker process via initializer
-_worker_combo_slices = None
+_worker_variant_slices = None  # {variant_id: {combo_key: [(df_slice, ps, pe), ...]}}
 _worker_combo_keys = None
 
 
-def init_worker(combo_slices, combo_keys):
-    """Called once per worker process. Receives shared data (pickled once per worker)."""
-    global _worker_combo_slices, _worker_combo_keys
-    _worker_combo_slices = combo_slices
+def init_worker(variant_combo_slices, combo_keys):
+    """Called once per worker process. Receives shared per-variant slice data
+    (pickled once per worker)."""
+    global _worker_variant_slices, _worker_combo_keys
+    _worker_variant_slices = variant_combo_slices
     _worker_combo_keys = combo_keys
 
 
@@ -21,17 +27,23 @@ def run_candidate(args):
     """Run a single candidate strategy across all combo/period slices.
 
     Args:
-        args: (idx, label, strategy_dict)
+        args: (idx, label, strategy_dict, variant_id)
 
     Returns:
         (idx, label, {combo_key: [stats_dict, ...]})
         stats_dict is a lightweight pickle-safe dict (no DataFrame).
     """
-    idx, label, strategy = args
+    idx, label, strategy, variant_id = args
     combo_results = {}
 
+    # Pick the right slice store for this run's variant. Falls back to the
+    # default variant if the requested one is missing (defensive).
+    slice_store = _worker_variant_slices.get(variant_id)
+    if slice_store is None:
+        slice_store = _worker_variant_slices.get(None) or {}
+
     for combo_key in _worker_combo_keys:
-        slices = _worker_combo_slices.get(combo_key, [])
+        slices = slice_store.get(combo_key, [])
         stats_list = []
         for df_slice, ps, pe in slices:
             try:

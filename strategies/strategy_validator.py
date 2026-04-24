@@ -12,6 +12,7 @@ from config.constants import (
     INDICATOR_MAP,
     R_PROFIT_LOSS_ELEMENTS,
     ATR_TARGET_ELEMENTS,
+    ATR_TRAILING_ELEMENTS,
     get_indicator_map,
 )
 
@@ -19,6 +20,7 @@ from config.constants import (
 _VALID_ELEMENTS = set(INDICATOR_MAP.keys())
 _VALID_R_ELEMENTS = set(R_PROFIT_LOSS_ELEMENTS)
 _VALID_ATR_TARGET_ELEMENTS = set(ATR_TARGET_ELEMENTS)
+_VALID_ATR_TRAILING_ELEMENTS = set(ATR_TRAILING_ELEMENTS)
 
 
 def _is_valid_element(name, ema_count=0):
@@ -28,6 +30,8 @@ def _is_valid_element(name, ema_count=0):
     if name in _VALID_R_ELEMENTS:
         return True
     if name in _VALID_ATR_TARGET_ELEMENTS:
+        return True
+    if name in _VALID_ATR_TRAILING_ELEMENTS:
         return True
     # Dynamic EMA names: "EMA 1", "EMA 2", etc.
     if name and name.startswith("EMA "):
@@ -169,7 +173,8 @@ def validate_strategy(strategy, ema_count=0):
                     _validate_trigger(s_trigger, f"{s_prefix}.trigger", errors, ema_count,
                                       allowed_events=STOP_EVENT_TYPES,
                                       allow_r_elements=True,
-                                      allow_atr_target=True)
+                                      allow_atr_target=True,
+                                      allow_atr_trailing=True)
 
                 for c_idx, cond in enumerate(stop.get("conditions", [])):
                     _validate_condition(cond, f"{s_prefix}.conditions[{c_idx}]", errors, ema_count)
@@ -194,7 +199,8 @@ def validate_strategy(strategy, ema_count=0):
 # ------------------------------------------------------------------
 
 def _validate_trigger(trigger, path, errors, ema_count,
-                      allowed_events, allow_r_elements, allow_atr_target):
+                      allowed_events, allow_r_elements, allow_atr_target,
+                      allow_atr_trailing=False):
     """Validate a single trigger dict (entry, exit target, or exit stop)."""
 
     element1 = trigger.get("element1")
@@ -204,19 +210,23 @@ def _validate_trigger(trigger, path, errors, ema_count,
     # Check element1
     is_r = element1 in _VALID_R_ELEMENTS
     is_atr_target = element1 in _VALID_ATR_TARGET_ELEMENTS
+    is_atr_trailing = element1 in _VALID_ATR_TRAILING_ELEMENTS
 
     if is_r and not allow_r_elements:
         errors.append(f"{path}.element1: R Profit/R Loss not allowed in entry triggers")
     elif is_atr_target and not allow_atr_target:
         errors.append(f"{path}.element1: ATR Target not allowed in entry triggers")
-    elif not is_r and not is_atr_target:
+    elif is_atr_trailing and not allow_atr_trailing:
+        errors.append(f"{path}.element1: ATR Trailing only allowed as a dynamic stop")
+    elif not (is_r or is_atr_target or is_atr_trailing):
         if not element1 or not _is_valid_element(element1, ema_count):
             errors.append(f"{path}.element1 must be a valid indicator name, got: {element1!r}")
 
     # Check event
-    if event is None:
+    if event is None and not is_atr_trailing:
+        # ATR Trailing accepts None event (defaults to direction-appropriate cross)
         errors.append(f"{path}.event must not be null")
-    elif event not in allowed_events:
+    elif event is not None and event not in allowed_events:
         errors.append(f"{path}.event must be one of {allowed_events}, got: {event!r}")
 
     # Check compare side
@@ -228,8 +238,8 @@ def _validate_trigger(trigger, path, errors, ema_count,
         if value is None or not isinstance(value, (int, float)):
             errors.append(f"{path}.value must be a number for R Profit/R Loss, got: {value!r}")
 
-    elif is_atr_target:
-        # ATR Target needs period and multiplier
+    elif is_atr_target or is_atr_trailing:
+        # ATR Target / Trailing both need period and multiplier
         atr_period = trigger.get("atr_period")
         if not isinstance(atr_period, (int, float)) or atr_period < 1:
             errors.append(f"{path}.atr_period must be >= 1, got: {atr_period!r}")

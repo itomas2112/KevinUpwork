@@ -149,10 +149,12 @@ class TestDetectUsedGroups:
             entry_value=100.0,
         )
         groups = detect_used_groups(strategy)
-        # Price element doesn't map to any indicator group. The ATR stop
-        # from make_strategy's default surfaces as an ATR-slot pseudo-group,
-        # which is WFO-optimisable but not an indicator.
-        indicator_groups = {g for g in groups if not g.startswith("atr_slot:")}
+        # Price element doesn't map to any indicator group. ATR-slot and
+        # value-slot pseudo-groups (from make_strategy's default ATR stop and
+        # the entry's fixed value) surface separately.
+        pseudo_prefixes = ("atr_slot:", "value_slot:")
+        indicator_groups = {g for g in groups
+                            if not any(g.startswith(p) for p in pseudo_prefixes)}
         assert len(indicator_groups) == 0
 
     def test_detects_new_indicators(self):

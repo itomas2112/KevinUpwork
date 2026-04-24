@@ -191,6 +191,11 @@ def collect_exit_config(group_idx, exit_type, exit_idx):
         trigger['atr_period'] = st.session_state.get(f'{prefix}_atr_period', 14)
         trigger['atr_multiplier'] = st.session_state.get(f'{prefix}_atr_multiplier', 2.0)
 
+    # ATR Trailing (Chandelier Exit): store period and multiplier
+    if element1 == 'ATR Trailing':
+        trigger['atr_period'] = st.session_state.get(f'{prefix}_atr_period', 14)
+        trigger['atr_multiplier'] = st.session_state.get(f'{prefix}_atr_multiplier', 3.0)
+
     # If element1 was never set the widget wasn't rendered – skip
     if trigger['element1'] is None:
         return None

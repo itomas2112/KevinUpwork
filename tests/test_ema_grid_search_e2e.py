@@ -69,7 +69,7 @@ def test_generate_run_configs_with_ema_candidates_produces_configs():
     )
 
     # Every run must be a properly structured strategy
-    for label, strat in runs:
+    for label, strat, _ in runs:
         assert strat["entry"]["trigger"]["element1"] in ("Price", "EMA 1", "EMA 2")
         assert strat["entry"]["trigger"]["element2"].startswith("EMA ")
         assert strat["indicator_settings"]["ema_periods"] == [10, 20, 50, 200]
@@ -103,7 +103,7 @@ def test_end_to_end_grid_search_with_ema_produces_results():
     period_end = df.index[-1]
 
     results = []
-    for label, strat in runs:
+    for label, strat, _ in runs:
         df_copy = df.copy()
         _, stats_df = execute_custom_strategy(df_copy, strat, period_start, period_end)
         assert stats_df is not None, f"Engine returned None for {label}"

@@ -252,13 +252,17 @@ def render_charting_tab(sidebar_config):
         'total_periods': 0,
     }
 
+    skipped_no_periods = []  # combos that had no DRM periods in the date range
+
     for pattern_type, primary, secondary in all_combos:
         drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
         if drm_df is None:
+            skipped_no_periods.append((pattern_type, primary, secondary))
             continue
 
         drm_periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
         if not drm_periods:
+            skipped_no_periods.append((pattern_type, primary, secondary))
             continue
 
         drm_periods.sort(key=lambda p: p[0], reverse=True)
@@ -294,6 +298,20 @@ def render_charting_tab(sidebar_config):
 
         cached_output['combo_sections'].append(section)
         total_periods += len(drm_periods)
+
+    # If every selected combo produced zero periods, surface this clearly
+    # instead of silently rendering nothing (the most common cause of
+    # "nothing happens when I click Calculate").
+    if not cached_output['combo_sections'] and skipped_no_periods:
+        skipped_lines = "\n".join(
+            f"- **{pt}** — {pri} → {sec}" for pt, pri, sec in skipped_no_periods
+        )
+        st.warning(
+            "No DRM periods found for the selected pattern(s). "
+            "Either the pattern has no entries in the uploaded DRM file, "
+            "or no period falls within the selected date range.\n\n"
+            f"Selected:\n{skipped_lines}"
+        )
 
     if show_custom_strategy and selected_custom_strategy is not None:
         strategy_label = selected_custom_strategy.get('strategy_name', 'Custom Strategy')

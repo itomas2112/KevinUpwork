@@ -76,38 +76,40 @@ def _vec_trigger(config, _arrays, indicator_map, _high, _low, _close, _n):
     elif event == "Cross Above":
         was_below = prev1 <= prev2
         if is_price:
-            now_above = _high > arr2
+            # Price exception: bar high at t+0 vs element2 at t-1 (the line that
+            # was actually crossed during this bar). Fill price = element2[t-1].
+            now_above = _high > prev2
         else:
             now_above = arr1 > arr2
         mask[:] = was_below & now_above
         mask[0] = False
         if is_price:
-            prices = arr2.copy()
+            prices = prev2.copy()
 
     elif event == "Cross Below":
         was_above = prev1 >= prev2
         if is_price:
-            now_below = _low < arr2
+            now_below = _low < prev2
         else:
             now_below = arr1 < arr2
         mask[:] = was_above & now_below
         mask[0] = False
         if is_price:
-            prices = arr2.copy()
+            prices = prev2.copy()
 
     elif event == "Cross":
         was_below = prev1 <= prev2
         was_above = prev1 >= prev2
         if is_price:
-            ca = was_below & (_high > arr2)
-            cb = was_above & (_low < arr2)
+            ca = was_below & (_high > prev2)
+            cb = was_above & (_low < prev2)
         else:
             ca = was_below & (arr1 > arr2)
             cb = was_above & (arr1 < arr2)
         mask[:] = ca | cb
         mask[0] = False
         if is_price:
-            prices = arr2.copy()
+            prices = prev2.copy()
 
     elif event == "At Level":
         mask[:] = np.abs(arr1 - arr2) < 0.01
@@ -481,6 +483,65 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
             return None
         return entry_price + v * atr_m * (1 if strategy_direction == 'Long' else -1)
 
+    # ---- ATR Trailing (Chandelier Exit) helpers ----
+    def _init_trailing_state(trigger, bar_idx):
+        atr_p = trigger.get('atr_period', 14)
+        atr_arr = _get_atr_target_array(atr_p)
+        v = atr_arr[bar_idx]
+        extreme = _high[bar_idx] if strategy_direction == 'Long' else _low[bar_idx]
+        if np.isnan(v):
+            return {'extreme': float(extreme), 'level': None, 'prev_level': None}
+        atr_m = trigger.get('atr_multiplier', 3.0)
+        if strategy_direction == 'Long':
+            level = float(extreme) - v * atr_m
+        else:
+            level = float(extreme) + v * atr_m
+        return {'extreme': float(extreme), 'level': float(level), 'prev_level': float(level)}
+
+    def _update_trailing_state(state, trigger, bar_idx):
+        if state is None:
+            return
+        state['prev_level'] = state['level']
+        atr_p = trigger.get('atr_period', 14)
+        atr_arr = _get_atr_target_array(atr_p)
+        v = atr_arr[bar_idx]
+        if strategy_direction == 'Long':
+            state['extreme'] = max(state['extreme'], float(_high[bar_idx]))
+        else:
+            state['extreme'] = min(state['extreme'], float(_low[bar_idx]))
+        if np.isnan(v):
+            return
+        atr_m = trigger.get('atr_multiplier', 3.0)
+        if strategy_direction == 'Long':
+            cand = state['extreme'] - v * atr_m
+            if state['level'] is None or cand > state['level']:
+                state['level'] = float(cand)
+        else:
+            cand = state['extreme'] + v * atr_m
+            if state['level'] is None or cand < state['level']:
+                state['level'] = float(cand)
+
+    def _check_atr_trailing(trigger, i, state):
+        if state is None or state.get('level') is None or i == 0:
+            return False
+        event = trigger.get('event')
+        if event is None:
+            event = "Cross Below" if strategy_direction == 'Long' else "Cross Above"
+        level = state['level']
+        prev_level = state.get('prev_level', level)
+        prev_close = _close[i - 1]
+        if strategy_direction == 'Long':
+            if event == "Cross Below" or event == "Cross":
+                return (prev_close >= prev_level) and (_low[i] < level)
+            elif event == "Close Below" or event == "Close":
+                return _close[i] < level
+        else:
+            if event == "Cross Above" or event == "Cross":
+                return (prev_close <= prev_level) and (_high[i] > level)
+            elif event == "Close Above" or event == "Close":
+                return _close[i] > level
+        return False
+
     # -------------------------------------------------
     # MAIN LOOP — uses pre-computed masks, minimal per-bar work
     # -------------------------------------------------
@@ -489,6 +550,18 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
     open_positions = []
 
     for i in range(_n):
+        # ----- STEP 0: Update ATR Trailing state for every open position -----
+        for pos in open_positions:
+            if pos['entry_bar_idx'] == i:
+                continue
+            trailing = pos.get('trailing_states')
+            if not trailing:
+                continue
+            for stop_key, state in trailing.items():
+                g_idx, _, s_idx = stop_key
+                stop_cfg = exit_groups[g_idx]['stops'][s_idx]
+                _update_trailing_state(state, stop_cfg.get('trigger', {}), i)
+
         # ----- STEP 1: Check exits for ALL open positions -----
         positions_to_remove = []
         for pos_idx, pos in enumerate(open_positions):
@@ -616,6 +689,11 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                                 if _check_atr_target(trigger, i, locked_p):
                                     hit = True
                                     s_exit_price = locked_p
+                            elif el1 == "ATR Trailing":
+                                state = pos.get('trailing_states', {}).get(stop_key)
+                                if _check_atr_trailing(trigger, i, state):
+                                    hit = True
+                                    s_exit_price = state['level']
                             elif stop_key in _exit_masks:
                                 if _exit_masks[stop_key][i]:
                                     hit = True
@@ -688,8 +766,9 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                 trade_counter -= 1
                 continue
 
-            # Compute locked ATR target prices
+            # Compute locked ATR target prices and initialise trailing states
             locked_atr_targets = {}
+            trailing_states = {}
             for g_idx, group in enumerate(exit_groups):
                 for t_idx, target in enumerate(group.get('targets', [])):
                     t_trigger = target.get('trigger', {})
@@ -699,6 +778,8 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                     s_trigger = stop.get('trigger', {})
                     if s_trigger.get('element1') == 'ATR Target':
                         locked_atr_targets[(g_idx, 'stop', s_idx)] = _compute_atr_target_level(s_trigger, new_entry_price, i)
+                    elif s_trigger.get('element1') == 'ATR Trailing':
+                        trailing_states[(g_idx, 'stop', s_idx)] = _init_trailing_state(s_trigger, i)
 
             open_positions.append({
                 'trade_id': trade_counter,
@@ -709,6 +790,7 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                 'active_exit_groups': set(range(len(exit_groups))),
                 'entry_bar_idx': i,
                 'locked_atr_targets': locked_atr_targets,
+                'trailing_states': trailing_states,
             })
 
     # -------------------------------------------------

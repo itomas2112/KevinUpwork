@@ -94,6 +94,12 @@ ATR_TARGET_ELEMENTS = [
     "ATR Target",
 ]
 
+# Special stop-only element: standard Chandelier Exit (level updates each bar
+# from the highest-high-since-entry for longs, lowest-low for shorts).
+ATR_TRAILING_ELEMENTS = [
+    "ATR Trailing",
+]
+
 EVENT_TYPES = [
     "Cross",
     "Cross Above",

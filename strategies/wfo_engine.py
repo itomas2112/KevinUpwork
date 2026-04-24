@@ -67,12 +67,20 @@ def detect_atr_slots(strategy):
                 })
         for s_idx, s in enumerate(grp.get("stops", []) or []):
             trig = s.get("trigger") or {}
-            if trig.get("element1") == "ATR Target":
+            el1 = trig.get("element1")
+            if el1 == "ATR Target":
                 slots.append({
                     "slot_id": f"dynstop:{g_idx}:{s_idx}",
                     "label": f"Dynamic Stop — Group {g_idx + 1}, Stop {s_idx + 1} (ATR Target)",
                     "atr_period": int(trig.get("atr_period", 14)),
                     "atr_multiplier": float(trig.get("atr_multiplier", 2.0)),
+                })
+            elif el1 == "ATR Trailing":
+                slots.append({
+                    "slot_id": f"dynstop:{g_idx}:{s_idx}",
+                    "label": f"Dynamic Stop — Group {g_idx + 1}, Stop {s_idx + 1} (ATR Trailing)",
+                    "atr_period": int(trig.get("atr_period", 14)),
+                    "atr_multiplier": float(trig.get("atr_multiplier", 3.0)),
                 })
 
     return slots
@@ -127,6 +135,202 @@ def apply_atr_overlay(strategy, overlay):
                     trig["atr_multiplier"] = float(vals["atr_multiplier"])
             except (IndexError, KeyError, ValueError):
                 continue
+    return s
+
+
+# ------------------------------------------------------------------
+# Generic value-slot support — every fixed numeric value in a strategy
+# (entry trigger, conditions, indicator stops, R Profit/Loss, etc.)
+# becomes a WFO-optimisable slot with its own range editor.
+# ------------------------------------------------------------------
+
+VALUE_OVERLAY_PREFIX = "__val__"
+
+
+def _step_for(value):
+    """Pick a sensible default Step for a slot's range editor based on the saved value."""
+    try:
+        v = abs(float(value))
+    except (TypeError, ValueError):
+        return 1.0
+    if v >= 100:
+        return 1.0
+    if v >= 1:
+        return 0.1
+    return 0.01
+
+
+def _label_for_event_or_op(slot):
+    """Render the operator/event symbol for a slot label."""
+    op = slot.get("operator_or_event") or ""
+    if op in ("Above", ">"):
+        return ">"
+    if op in ("Below", "<"):
+        return "<"
+    return op or "vs"
+
+
+def _make_value_slot(slot_id, label_prefix, element1, operator_or_event, value):
+    """Build a value-slot dict if value is a finite number, else None."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v != v:  # NaN guard
+        return None
+    return {
+        "slot_id": slot_id,
+        "element1": element1 or "?",
+        "operator_or_event": operator_or_event or "",
+        "value": v,
+        "label": f"{label_prefix} — {element1 or '?'} {operator_or_event or ''} {v:g}".strip(),
+    }
+
+
+def detect_value_slots(strategy):
+    """Return the list of fixed-value slots that WFO can optimise.
+
+    Includes any place the strategy stores a numeric `value` field where the
+    user picked Fixed Value as the comparison side (or for R Profit/Loss
+    elements which always use Fixed Value).
+
+    Each slot is uniquely identified by a slot_id string so it round-trips
+    through widget keys and the combo-dict namespace::
+
+        - "entry"                                     — entry trigger
+        - "entry_cond:{i}"                            — entry conditions[i]
+        - "initial_stop"                              — indicator-mode init stop
+        - "target:{g}:{t}"                            — exit_groups[g].targets[t] trigger
+        - "target_cond:{g}:{t}:{c}"                   — that target's conditions[c]
+        - "dynstop:{g}:{s}"                           — exit_groups[g].stops[s] trigger
+        - "dynstop_cond:{g}:{s}:{c}"                  — that stop's conditions[c]
+    """
+    slots = []
+
+    def _trigger_slot(slot_id, label_prefix, trig):
+        if not isinstance(trig, dict):
+            return None
+        if trig.get("compare_type") not in ("Fixed Value",):
+            return None
+        return _make_value_slot(slot_id, label_prefix,
+                                trig.get("element1"), trig.get("event"),
+                                trig.get("value"))
+
+    def _condition_slot(slot_id, label_prefix, cond):
+        if not isinstance(cond, dict):
+            return None
+        if cond.get("compare_type") not in ("Fixed Value",):
+            return None
+        return _make_value_slot(slot_id, label_prefix,
+                                cond.get("element1"), cond.get("operator"),
+                                cond.get("value"))
+
+    # Entry trigger
+    entry = strategy.get("entry") or {}
+    s = _trigger_slot("entry", "Entry Trigger", entry.get("trigger"))
+    if s:
+        slots.append(s)
+    # Entry conditions
+    for i, c in enumerate(entry.get("conditions") or []):
+        s = _condition_slot(f"entry_cond:{i}", f"Entry Cond {i + 1}", c)
+        if s:
+            slots.append(s)
+
+    # Initial stop (indicator-mode + Fixed Value path only — ATR stops are
+    # handled by detect_atr_slots)
+    istop = strategy.get("initial_stop") or {}
+    if istop.get("stop_type") != "ATR" and istop.get("compare_type") == "Fixed Value":
+        s = _make_value_slot("initial_stop", "Initial Stop",
+                             istop.get("element1"), istop.get("event"),
+                             istop.get("value"))
+        if s:
+            slots.append(s)
+
+    # Exit groups
+    for g_idx, grp in enumerate(strategy.get("exit_groups") or []):
+        for t_idx, t in enumerate(grp.get("targets") or []):
+            trig = t.get("trigger") or {}
+            s = _trigger_slot(f"target:{g_idx}:{t_idx}",
+                              f"Target G{g_idx + 1} T{t_idx + 1}", trig)
+            if s:
+                slots.append(s)
+            for c_idx, c in enumerate(t.get("conditions") or []):
+                s = _condition_slot(f"target_cond:{g_idx}:{t_idx}:{c_idx}",
+                                    f"Target G{g_idx + 1} T{t_idx + 1} Cond {c_idx + 1}",
+                                    c)
+                if s:
+                    slots.append(s)
+        for s_idx, st in enumerate(grp.get("stops") or []):
+            trig = st.get("trigger") or {}
+            s = _trigger_slot(f"dynstop:{g_idx}:{s_idx}",
+                              f"DynStop G{g_idx + 1} S{s_idx + 1}", trig)
+            if s:
+                slots.append(s)
+            for c_idx, c in enumerate(st.get("conditions") or []):
+                s = _condition_slot(f"dynstop_cond:{g_idx}:{s_idx}:{c_idx}",
+                                    f"DynStop G{g_idx + 1} S{s_idx + 1} Cond {c_idx + 1}",
+                                    c)
+                if s:
+                    slots.append(s)
+
+    return slots
+
+
+def split_value_overlay(params):
+    """Split a combo dict into (other_params, value_overlay).
+
+    value_overlay: {slot_id: new_value}
+    """
+    other = {}
+    overlay = {}
+    for k, v in params.items():
+        if k.startswith(VALUE_OVERLAY_PREFIX):
+            slot_id = k[len(VALUE_OVERLAY_PREFIX):]
+            overlay[slot_id] = v
+        else:
+            other[k] = v
+    return other, overlay
+
+
+def _set_value_at_path(strategy, slot_id, new_value):
+    """Mutate the strategy in-place: write `new_value` into the slot's value field.
+
+    Silently skips slots whose target path no longer exists.
+    """
+    s = strategy
+    try:
+        if slot_id == "entry":
+            s["entry"]["trigger"]["value"] = new_value
+        elif slot_id.startswith("entry_cond:"):
+            i = int(slot_id.split(":")[1])
+            s["entry"]["conditions"][i]["value"] = new_value
+        elif slot_id == "initial_stop":
+            s["initial_stop"]["value"] = new_value
+        elif slot_id.startswith("target:"):
+            _, g, t = slot_id.split(":")
+            s["exit_groups"][int(g)]["targets"][int(t)]["trigger"]["value"] = new_value
+        elif slot_id.startswith("target_cond:"):
+            _, g, t, c = slot_id.split(":")
+            s["exit_groups"][int(g)]["targets"][int(t)]["conditions"][int(c)]["value"] = new_value
+        elif slot_id.startswith("dynstop:"):
+            _, g, s_i = slot_id.split(":")
+            s["exit_groups"][int(g)]["stops"][int(s_i)]["trigger"]["value"] = new_value
+        elif slot_id.startswith("dynstop_cond:"):
+            _, g, s_i, c = slot_id.split(":")
+            s["exit_groups"][int(g)]["stops"][int(s_i)]["conditions"][int(c)]["value"] = new_value
+    except (IndexError, KeyError, ValueError, TypeError):
+        return
+
+
+def apply_value_overlay(strategy, overlay):
+    """Return a deepcopy of *strategy* with value-slot values set from *overlay*."""
+    if not overlay:
+        return strategy
+    s = copy.deepcopy(strategy)
+    for slot_id, new_value in overlay.items():
+        _set_value_at_path(s, slot_id, float(new_value))
     return s
 
 
@@ -211,6 +415,11 @@ def detect_used_groups(strategy):
     for slot in detect_atr_slots(strategy):
         groups.add(f"atr_slot:{slot['slot_id']}")
 
+    # Expose every fixed-value slot as its own pseudo-group so the WFO UI
+    # can render Min/Max/Step range editors for each.
+    for slot in detect_value_slots(strategy):
+        groups.add(f"value_slot:{slot['slot_id']}")
+
     return groups
 
 
@@ -276,6 +485,19 @@ def generate_param_grid(used_groups, ranges, base_settings):
                 axes.append((axis_name, _range_values(spec)))
             continue
 
+        # Value slots: a single axis per slot, namespaced with VALUE_OVERLAY_PREFIX.
+        # The user-supplied range dict for value slots is just {"value": (lo, hi, step)}.
+        if group.startswith("value_slot:"):
+            slot_id = group[len("value_slot:"):]
+            group_ranges = ranges.get(group, {})
+            spec = group_ranges.get("value")
+            if spec is None:
+                # No range provided — fix to a single value (no variation)
+                continue
+            axis_name = f"{VALUE_OVERLAY_PREFIX}{slot_id}"
+            axes.append((axis_name, _range_values(spec)))
+            continue
+
         group_ranges = ranges.get(group, WFO_DEFAULT_RANGES.get(group, {}))
 
         if group == "ema":
@@ -309,7 +531,7 @@ def generate_param_grid(used_groups, ranges, base_settings):
         for name, val in zip(names, combo):
             if name.startswith("_ema_"):
                 ema_vals[int(name.split("_")[2])] = val
-            elif name.startswith(ATR_OVERLAY_PREFIX):
+            elif name.startswith(ATR_OVERLAY_PREFIX) or name.startswith(VALUE_OVERLAY_PREFIX):
                 # Preserve namespaced key as-is; worker will split it out
                 settings[name] = val
             else:
@@ -334,6 +556,12 @@ def count_grid_size(used_groups, ranges, base_settings):
             for param, spec in group_ranges.items():
                 if param.startswith("_"):
                     continue
+                total *= len(_range_values(spec))
+            continue
+
+        if group.startswith("value_slot:"):
+            spec = (ranges.get(group) or {}).get("value")
+            if spec is not None:
                 total *= len(_range_values(spec))
             continue
 

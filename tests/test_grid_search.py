@@ -117,14 +117,15 @@ class TestGridSearchMultiprocessing:
         df_base = calculate_indicators(df_oscillation.copy(), **base["indicator_settings"])
         combo_slices = {combo_key: [(df_base, None, None)]}
 
-        # Initialize worker globals
-        init_worker(combo_slices, [combo_key])
+        # Worker now takes per-variant slice store; default variant uses None key.
+        variant_combo_slices = {None: combo_slices}
+        init_worker(variant_combo_slices, [combo_key])
 
         # Run the base strategy through the worker (same indicator settings as data)
         # Grid search varies strategy params, not indicator recalculation per candidate
         strategy = deepcopy(base)
         result_idx, result_label, combo_results = run_candidate(
-            (0, "rsi_14", strategy)
+            (0, "rsi_14", strategy, None)  # None = default variant
         )
 
         # Compare with single-thread results for the base RSI=14

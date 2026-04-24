@@ -8,6 +8,7 @@ import json
 import copy
 import math
 import multiprocessing
+from collections import OrderedDict
 import streamlit as st
 import pandas as pd
 
@@ -316,7 +317,76 @@ def render_strategy_testing_tab(sidebar_config):
     st.markdown("---")
 
     # ==================================================
-    # Section B: Test Set (one-shot)
+    # Section B: Simple Optimization (80/20 split of training set)
+    # ==================================================
+    st.subheader("Simple Optimization")
+    st.caption("Splits the training set 80% in-sample / 20% out-of-sample. "
+               "Runs every parameter combo on the in-sample period; shows the "
+               "top 10 by your selected sort metric, with both in-sample and "
+               "out-of-sample stats per candidate.")
+
+    if not sidebar_config.get('date_range_applied', False):
+        st.info("Set a Training Set date range in the sidebar and click "
+                "**Apply Training Set** to use Simple Optimization.")
+    else:
+        sopt_train_start = sidebar_config.get('global_start_date')
+        sopt_train_end = sidebar_config.get('global_end_date')
+        # Compute the 80/20 split
+        try:
+            train_ts = pd.Timestamp(sopt_train_start)
+            test_ts = pd.Timestamp(sopt_train_end) + pd.Timedelta(days=1)
+            duration = test_ts - train_ts
+            split_ts = train_ts + duration * 0.8
+            sopt_in_end = split_ts
+            sopt_oos_start = split_ts
+            sopt_in_start = train_ts
+            sopt_oos_end = test_ts
+            st.caption(
+                f"In-sample (80%): **{sopt_in_start.date()}** → **{(sopt_in_end - pd.Timedelta(seconds=1)).date()}** | "
+                f"Out-of-sample (20%): **{sopt_oos_start.date()}** → **{(sopt_oos_end - pd.Timedelta(seconds=1)).date()}**"
+            )
+        except Exception as e:
+            st.error(f"Could not compute 80/20 split: {e}")
+            sopt_in_start = sopt_in_end = sopt_oos_start = sopt_oos_end = None
+
+        sopt_used_groups = detect_used_groups(selected_strategy)
+
+        if not sopt_used_groups:
+            st.info("Strategy does not reference any optimisable indicators or values.")
+        elif sopt_in_start is not None:
+            # Param ranges (fragment, independent prefix from WFO)
+            _render_wfo_param_section(sopt_used_groups, indicator_params, 1,
+                                      selected_strategy, key_prefix="sopt")
+
+            sopt_ranges = st.session_state.get('_sopt_current_ranges', {})
+            sopt_grid_size = st.session_state.get('_sopt_current_grid_size', 0)
+            sopt_grid_too_large = st.session_state.get('_sopt_grid_too_large', False)
+
+            # Filter & sort UI (same metric set as WFO/Grid Search)
+            _render_wfo_filters(key_prefix="sopt")
+
+            sopt_calc = st.button("Run Simple Optimization", key="sopt_run",
+                                   type="primary", disabled=sopt_grid_too_large)
+
+            sopt_cache = st.session_state.get('_sopt_cached_results')
+            if sopt_cache and sopt_cache.get('_strategy_fingerprint') != strategy_fingerprint:
+                st.session_state.pop('_sopt_cached_results', None)
+                sopt_cache = None
+
+            if sopt_calc:
+                _run_simple_opt(
+                    df_key, indicator_params, selected_strategy, strategy_name,
+                    sopt_in_start, sopt_in_end, sopt_oos_start, sopt_oos_end,
+                    all_combos, drm_bullish, drm_bearish,
+                    sopt_used_groups, sopt_ranges, sopt_grid_size,
+                )
+            elif sopt_cache:
+                _display_simple_opt_results(sopt_cache)
+
+    st.markdown("---")
+
+    # ==================================================
+    # Section C: Test Set (one-shot)
     # ==================================================
     st.subheader("Test Set")
 
@@ -402,17 +472,23 @@ _DEFAULT_SORT_KEY = "mc_avg_profit"
 
 
 @st.fragment
-def _render_wfo_param_section(used_groups, base_settings, wfo_folds, strategy):
+def _render_wfo_param_section(used_groups, base_settings, n_runs_per_combo, strategy,
+                              key_prefix="wfo"):
     """Render param ranges + grid-size estimate as a Streamlit fragment.
 
     Editing inputs inside a fragment only reruns this function — the rest of
-    the strategy testing tab stays put. Latest values are persisted to
-    session state so the parent (which doesn't rerun) can read them.
+    the tab stays put. Latest values are persisted to session state under
+    `_{key_prefix}_current_ranges` etc. so the parent (which doesn't rerun)
+    can read them.
+
+    n_runs_per_combo: number of executions per combo (folds for WFO,
+    1 for Simple Optimization). Used only for time estimate.
     """
-    wfo_ranges = _render_wfo_param_ranges(used_groups, base_settings, strategy)
+    wfo_ranges = _render_wfo_param_ranges(used_groups, base_settings, strategy,
+                                          key_prefix=key_prefix)
 
     grid_size = count_grid_size(used_groups, wfo_ranges, base_settings)
-    est_seconds = grid_size * wfo_folds * 0.008  # ~8ms per combo per fold
+    est_seconds = grid_size * n_runs_per_combo * 0.008  # ~8ms per combo per run
     grid_too_large = False
     if grid_size <= 1:
         st.caption(f"Combinations: **{grid_size:,}** — Widen min/max ranges above to create parameter variations.")
@@ -424,36 +500,40 @@ def _render_wfo_param_section(used_groups, base_settings, wfo_folds, strategy):
     else:
         st.caption(f"Combinations: **{grid_size:,}** | Est. time: **~{max(1, int(est_seconds))} sec**")
 
-    st.session_state['_wfo_current_ranges'] = wfo_ranges
-    st.session_state['_wfo_current_grid_size'] = grid_size
-    st.session_state['_wfo_grid_too_large'] = grid_too_large
+    st.session_state[f'_{key_prefix}_current_ranges'] = wfo_ranges
+    st.session_state[f'_{key_prefix}_current_grid_size'] = grid_size
+    st.session_state[f'_{key_prefix}_grid_too_large'] = grid_too_large
 
 
-def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
+def _render_wfo_param_ranges(used_groups, base_settings, strategy=None, key_prefix="wfo"):
     """Render parameter range editors for each used indicator group.
 
     Defaults: min = max = strategy's saved value (no variation).
     User widens only the params they want to optimise.
     Shows per-group combo count so user sees the impact.
 
-    ATR slots (initial ATR stop + ATR Target triggers) are discovered from
-    *strategy* and rendered as dedicated sections with atr_period /
-    atr_multiplier range editors.
+    ATR slots (initial ATR stop + ATR Target triggers) and value slots
+    (every fixed numeric value in the strategy) are discovered from
+    *strategy* and rendered as dedicated sections.
 
     Returns the user-configured ranges dict.
     """
     from strategies.wfo_engine import (
-        _range_values, detect_atr_slots, ATR_SLOT_DEFAULT_RANGES,
+        _range_values, detect_atr_slots, detect_value_slots,
+        ATR_SLOT_DEFAULT_RANGES,
     )
 
     st.markdown("**Parameter Ranges** *(defaults = strategy's saved values — widen to optimise)*")
     ranges = {}
 
-    # Build a lookup of ATR slot metadata (saved values) by slot_id
+    # Build a lookup of slot metadata by slot_id
     atr_slots_by_id = {}
+    value_slots_by_id = {}
     if strategy is not None:
         for slot in detect_atr_slots(strategy):
             atr_slots_by_id[slot["slot_id"]] = slot
+        for slot in detect_value_slots(strategy):
+            value_slots_by_id[slot["slot_id"]] = slot
 
     for group in sorted(used_groups):
         # --- ATR Slot pseudo-group ---
@@ -462,7 +542,16 @@ def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
             slot = atr_slots_by_id.get(slot_id)
             if slot is None:
                 continue
-            ranges[group] = _render_atr_slot_range(slot)
+            ranges[group] = _render_atr_slot_range(slot, key_prefix=key_prefix)
+            continue
+
+        # --- Value Slot pseudo-group (any fixed numeric value) ---
+        if group.startswith("value_slot:"):
+            slot_id = group[len("value_slot:"):]
+            slot = value_slots_by_id.get(slot_id)
+            if slot is None:
+                continue
+            ranges[group] = _render_value_slot_range(slot, key_prefix=key_prefix)
             continue
 
         templates = _WFO_RANGES.get(group, {})
@@ -482,9 +571,9 @@ def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
                 # Get step from template
                 tmpl = templates.get("_ema_ranges", [])
                 tmpl_step = tmpl[idx][2] if idx < len(tmpl) else 1
-                lo = st.session_state.get(f"wfo_ema_{idx}_lo", int(saved_val))
-                hi = st.session_state.get(f"wfo_ema_{idx}_hi", int(saved_val))
-                step = st.session_state.get(f"wfo_ema_{idx}_step", int(tmpl_step))
+                lo = st.session_state.get(f"{key_prefix}_ema_{idx}_lo", int(saved_val))
+                hi = st.session_state.get(f"{key_prefix}_ema_{idx}_hi", int(saved_val))
+                step = st.session_state.get(f"{key_prefix}_ema_{idx}_step", int(tmpl_step))
                 n_vals = len(_range_values((lo, hi, step)))
                 group_combos *= n_vals
                 ema_ranges.append((lo, hi, step))
@@ -498,13 +587,13 @@ def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         lo = st.number_input(f"EMA {idx+1} Min", 1, 500, int(saved_val),
-                                             key=f"wfo_ema_{idx}_lo")
+                                             key=f"{key_prefix}_ema_{idx}_lo")
                     with c2:
                         hi = st.number_input(f"EMA {idx+1} Max", 1, 500, int(saved_val),
-                                             key=f"wfo_ema_{idx}_hi")
+                                             key=f"{key_prefix}_ema_{idx}_hi")
                     with c3:
                         step = st.number_input(f"EMA {idx+1} Step", 1, 100, int(tmpl_step),
-                                               key=f"wfo_ema_{idx}_step")
+                                               key=f"{key_prefix}_ema_{idx}_step")
                     ema_ranges[idx] = (lo, hi, step)
                 ranges[group]["_ema_ranges"] = ema_ranges
         else:
@@ -518,7 +607,7 @@ def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
                 is_discrete = isinstance(spec, list)
                 if is_discrete:
                     # Discrete: default to just the saved value
-                    cur_vals = st.session_state.get(f"wfo_{group}_{param}_disc")
+                    cur_vals = st.session_state.get(f"{key_prefix}_{group}_{param}_disc")
                     if cur_vals is not None:
                         try:
                             n_vals = len([float(v.strip()) for v in cur_vals.split(",") if v.strip()])
@@ -527,9 +616,9 @@ def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
                     else:
                         n_vals = 1
                 else:
-                    lo_key = f"wfo_{group}_{param}_lo"
-                    hi_key = f"wfo_{group}_{param}_hi"
-                    step_key = f"wfo_{group}_{param}_step"
+                    lo_key = f"{key_prefix}_{group}_{param}_lo"
+                    hi_key = f"{key_prefix}_{group}_{param}_hi"
+                    step_key = f"{key_prefix}_{group}_{param}_step"
                     _, _, tmpl_step = spec
                     lo = st.session_state.get(lo_key, saved_val if saved_val is not None else spec[0])
                     hi = st.session_state.get(hi_key, saved_val if saved_val is not None else spec[0])
@@ -548,7 +637,7 @@ def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
                         st.caption(f"**{param}**: discrete values")
                         vals_str = st.text_input(
                             f"{param} values", value=default_str,
-                            key=f"wfo_{group}_{param}_disc",
+                            key=f"{key_prefix}_{group}_{param}_disc",
                         )
                         try:
                             ranges[group][param] = [float(v.strip()) for v in vals_str.split(",") if v.strip()]
@@ -565,31 +654,31 @@ def _render_wfo_param_ranges(used_groups, base_settings, strategy=None):
                             if is_float:
                                 lo = st.number_input(f"{param} Min", 0.001, 999.0, float(default_val),
                                                      step=0.01, format="%.3f",
-                                                     key=f"wfo_{group}_{param}_lo")
+                                                     key=f"{key_prefix}_{group}_{param}_lo")
                             else:
                                 lo = st.number_input(f"{param} Min", 1, 999, int(default_val),
-                                                     key=f"wfo_{group}_{param}_lo")
+                                                     key=f"{key_prefix}_{group}_{param}_lo")
                         with c2:
                             if is_float:
                                 hi = st.number_input(f"{param} Max", 0.001, 999.0, float(default_val),
                                                      step=0.01, format="%.3f",
-                                                     key=f"wfo_{group}_{param}_hi")
+                                                     key=f"{key_prefix}_{group}_{param}_hi")
                             else:
                                 hi = st.number_input(f"{param} Max", 1, 999, int(default_val),
-                                                     key=f"wfo_{group}_{param}_hi")
+                                                     key=f"{key_prefix}_{group}_{param}_hi")
                         with c3:
                             if is_float:
                                 step = st.number_input(f"{param} Step", 0.001, 100.0, float(step_tmpl),
                                                        step=0.01, format="%.3f",
-                                                       key=f"wfo_{group}_{param}_step")
+                                                       key=f"{key_prefix}_{group}_{param}_step")
                             else:
                                 step = st.number_input(f"{param} Step", 1, 100, int(step_tmpl),
-                                                       key=f"wfo_{group}_{param}_step")
+                                                       key=f"{key_prefix}_{group}_{param}_step")
                         ranges[group][param] = (lo, hi, step)
     return ranges
 
 
-def _render_atr_slot_range(slot):
+def _render_atr_slot_range(slot, key_prefix="wfo"):
     """Render range editors for one ATR slot (period + multiplier).
 
     Defaults: min = max = strategy's saved value (no variation).
@@ -605,12 +694,12 @@ def _render_atr_slot_range(slot):
     mult_step_tmpl = ATR_SLOT_DEFAULT_RANGES["atr_multiplier"][2]
 
     # Pre-read widget values so the expander header can show a live combo count
-    p_lo = int(st.session_state.get(f"wfo_atr_{slot_id}_p_lo", saved_period))
-    p_hi = int(st.session_state.get(f"wfo_atr_{slot_id}_p_hi", saved_period))
-    p_step = int(st.session_state.get(f"wfo_atr_{slot_id}_p_step", int(period_step_tmpl)))
-    m_lo = float(st.session_state.get(f"wfo_atr_{slot_id}_m_lo", saved_mult))
-    m_hi = float(st.session_state.get(f"wfo_atr_{slot_id}_m_hi", saved_mult))
-    m_step = float(st.session_state.get(f"wfo_atr_{slot_id}_m_step", float(mult_step_tmpl)))
+    p_lo = int(st.session_state.get(f"{key_prefix}_atr_{slot_id}_p_lo", saved_period))
+    p_hi = int(st.session_state.get(f"{key_prefix}_atr_{slot_id}_p_hi", saved_period))
+    p_step = int(st.session_state.get(f"{key_prefix}_atr_{slot_id}_p_step", int(period_step_tmpl)))
+    m_lo = float(st.session_state.get(f"{key_prefix}_atr_{slot_id}_m_lo", saved_mult))
+    m_hi = float(st.session_state.get(f"{key_prefix}_atr_{slot_id}_m_hi", saved_mult))
+    m_step = float(st.session_state.get(f"{key_prefix}_atr_{slot_id}_m_step", float(mult_step_tmpl)))
 
     combos = max(1, len(_range_values((p_lo, p_hi, p_step)))) * \
              max(1, len(_range_values((m_lo, m_hi, m_step))))
@@ -622,27 +711,27 @@ def _render_atr_slot_range(slot):
         c1, c2, c3 = st.columns(3)
         with c1:
             p_lo = st.number_input("Period Min", 1, 500, saved_period, step=1,
-                                   key=f"wfo_atr_{slot_id}_p_lo")
+                                   key=f"{key_prefix}_atr_{slot_id}_p_lo")
         with c2:
             p_hi = st.number_input("Period Max", 1, 500, saved_period, step=1,
-                                   key=f"wfo_atr_{slot_id}_p_hi")
+                                   key=f"{key_prefix}_atr_{slot_id}_p_hi")
         with c3:
             p_step = st.number_input("Period Step", 1, 100, int(period_step_tmpl),
-                                     step=1, key=f"wfo_atr_{slot_id}_p_step")
+                                     step=1, key=f"{key_prefix}_atr_{slot_id}_p_step")
 
         c4, c5, c6 = st.columns(3)
         with c4:
             m_lo = st.number_input("Multiplier Min", 0.1, 100.0, saved_mult,
                                    step=0.1, format="%.2f",
-                                   key=f"wfo_atr_{slot_id}_m_lo")
+                                   key=f"{key_prefix}_atr_{slot_id}_m_lo")
         with c5:
             m_hi = st.number_input("Multiplier Max", 0.1, 100.0, saved_mult,
                                    step=0.1, format="%.2f",
-                                   key=f"wfo_atr_{slot_id}_m_hi")
+                                   key=f"{key_prefix}_atr_{slot_id}_m_hi")
         with c6:
             m_step = st.number_input("Multiplier Step", 0.01, 100.0,
                                      float(mult_step_tmpl), step=0.1, format="%.2f",
-                                     key=f"wfo_atr_{slot_id}_m_step")
+                                     key=f"{key_prefix}_atr_{slot_id}_m_step")
 
     return {
         "atr_period": (int(p_lo), int(p_hi), int(p_step)),
@@ -650,7 +739,44 @@ def _render_atr_slot_range(slot):
     }
 
 
-def _render_wfo_filters():
+def _render_value_slot_range(slot, key_prefix="wfo"):
+    """Render Min/Max/Step for one fixed-value slot.
+
+    Default: Min=Max=current value (no variation). Step is auto-sized to the
+    saved value. Returns {"value": (lo, hi, step)} consumed by generate_param_grid.
+    """
+    from strategies.wfo_engine import _range_values, _step_for
+
+    slot_id = slot["slot_id"]
+    saved = float(slot["value"])
+    step_default = _step_for(saved)
+
+    # Pre-read widget values so the expander header can show a live combo count
+    lo = float(st.session_state.get(f"{key_prefix}_val_{slot_id}_lo", saved))
+    hi = float(st.session_state.get(f"{key_prefix}_val_{slot_id}_hi", saved))
+    step = float(st.session_state.get(f"{key_prefix}_val_{slot_id}_step", step_default))
+    combos = max(1, len(_range_values((lo, hi, step))))
+
+    header = f"{slot['label']}  ({combos:,} combos)"
+    with st.expander(header, expanded=False):
+        st.caption(f"Saved value: {saved:g}")
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            lo = st.number_input("Min", value=saved, step=step_default,
+                                 format="%.4f", key=f"{key_prefix}_val_{slot_id}_lo")
+        with c2:
+            hi = st.number_input("Max", value=saved, step=step_default,
+                                 format="%.4f", key=f"{key_prefix}_val_{slot_id}_hi")
+        with c3:
+            step = st.number_input("Step", min_value=1e-6, value=step_default,
+                                   step=step_default, format="%.4f",
+                                   key=f"{key_prefix}_val_{slot_id}_step")
+
+    return {"value": (float(lo), float(hi), float(step))}
+
+
+def _render_wfo_filters(key_prefix="wfo"):
     """Render filter threshold and sort metric controls.
 
     Uses the same metric set, filter bounds, and sort defaults as Grid Search.
@@ -665,17 +791,18 @@ def _render_wfo_filters():
             with col:
                 lbl, default, step, fmt = filter_props(key, label)
                 st.number_input(lbl, value=default, step=step,
-                                key=f"wfo_filter_{key}", format=fmt)
+                                key=f"{key_prefix}_filter_{key}", format=fmt)
     # Sort — default to MC Avg Profit
     sc1, sc2 = st.columns(2)
     with sc1:
         sort_labels = [m[1] for m in SORT_METRICS]
         default_idx = next(
             (i for i, (k, _) in enumerate(SORT_METRICS) if k == _DEFAULT_SORT_KEY), 0)
-        st.selectbox("Sort by", sort_labels, index=default_idx, key="wfo_sort_metric")
+        st.selectbox("Sort by", sort_labels, index=default_idx,
+                     key=f"{key_prefix}_sort_metric")
     with sc2:
         st.radio("Order", ["Highest to Lowest", "Lowest to Highest"],
-                 horizontal=True, key="wfo_sort_order")
+                 horizontal=True, key=f"{key_prefix}_sort_order")
 
 
 def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
@@ -814,11 +941,13 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     from strategies.wfo_engine import (
         _extract_stats as _wfo_extract,
         split_atr_overlay, apply_atr_overlay,
+        split_value_overlay, apply_value_overlay,
     )
     from indicators.calculate_indicators import recalculate_groups, changed_groups as _cg
     for params in winning_params:
-        # Split indicator params from ATR slot overlay
-        ind_params, atr_overlay = split_atr_overlay(params)
+        # Split overlays out of the combo dict before indicator recalc
+        rest, atr_overlay = split_atr_overlay(params)
+        ind_params, value_overlay = split_value_overlay(rest)
 
         # Incremental recalc for final evaluation too (indicator-only view)
         groups_changed = _cg(indicator_params, ind_params)
@@ -828,8 +957,9 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
         else:
             df_feat = df_featured
 
-        # Apply ATR overlay to the strategy for this fold's winning combo
-        strategy_for_fold = apply_atr_overlay(selected_strategy, atr_overlay)
+        # Apply both overlays to the strategy for this fold's winning combo
+        strategy_for_fold = apply_value_overlay(selected_strategy, value_overlay)
+        strategy_for_fold = apply_atr_overlay(strategy_for_fold, atr_overlay)
 
         full_index = df_feat.index
         test_stats = []
@@ -865,7 +995,7 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     progress.empty()
 
     # Cache results
-    from strategies.wfo_engine import detect_atr_slots
+    from strategies.wfo_engine import detect_atr_slots, detect_value_slots
     cache = {
         "strategy_name": strategy_name,
         "_strategy_fingerprint": strategy_fingerprint,
@@ -875,6 +1005,7 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
         "base_settings": indicator_params,
         "used_groups": sorted(used_groups),
         "atr_slots": detect_atr_slots(selected_strategy),
+        "value_slots": detect_value_slots(selected_strategy),
     }
     st.session_state["_wfo_cached_results"] = cache
     _display_wfo_results(cache)
@@ -893,13 +1024,14 @@ def _display_wfo_results(cache):
 
     # ---- Parameters table ----
     st.markdown("**Winning Parameters per OOS Step**")
-    from strategies.wfo_engine import ATR_OVERLAY_PREFIX
+    from strategies.wfo_engine import ATR_OVERLAY_PREFIX, VALUE_OVERLAY_PREFIX
     atr_slots = cache.get("atr_slots", [])
+    value_slots = cache.get("value_slots", [])
     # Collect only the params that were optimised (differ from base)
     param_keys = set()
     for group in used_groups:
-        if group.startswith("atr_slot:"):
-            # ATR slots are rendered as "{label} — period" / "{label} — multiplier" rows
+        if group.startswith("atr_slot:") or group.startswith("value_slot:"):
+            # ATR / value slots get their own dedicated rows below
             continue
         defaults = _WFO_RANGES.get(group, {})
         if group == "ema":
@@ -942,6 +1074,15 @@ def _display_wfo_results(cache):
         param_rows[period_label] = period_row
         param_rows[mult_label] = mult_row
 
+    # Value slot rows
+    for slot in value_slots:
+        slot_id = slot["slot_id"]
+        row = []
+        for params in winning_params:
+            v = params.get(f"{VALUE_OVERLAY_PREFIX}{slot_id}")
+            row.append(f"{float(v):.4g}" if v is not None else f"{slot['value']:.4g}")
+        param_rows[slot["label"]] = row
+
     col_names = [f"OOS {i+1}" for i in range(n_folds)]
     params_table = pd.DataFrame(param_rows, index=col_names).T
     st.table(params_table)
@@ -955,6 +1096,265 @@ def _display_wfo_results(cache):
     perf_table = _build_metrics_table(results_dict)
     st.table(perf_table)
     _copy_to_clipboard(perf_table.to_csv(sep='\t', header=False, index=False), key="wfo_copy")
+
+
+# ------------------------------------------------------------------
+# Simple Optimization (single 80/20 split)
+# ------------------------------------------------------------------
+
+SIMPLE_OPT_TOP_N = 10
+
+
+def _run_simple_opt(df_key, indicator_params, selected_strategy, strategy_name,
+                    in_start, in_end, oos_start, oos_end,
+                    all_combos, drm_bullish, drm_bearish,
+                    used_groups, param_ranges, grid_size):
+    """Single 80/20 optimisation: every combo runs on in-sample, top N by
+    sort metric runs additionally on out-of-sample. Caches both result sets.
+    """
+    df_ohlc = st.session_state[df_key]
+    if df_ohlc.empty:
+        st.warning("No OHLC data available.")
+        return
+
+    # Pre-parse all DRM periods once (same shape WFO uses)
+    all_periods = []
+    for ptype, primary, secondary in all_combos:
+        drm_df = drm_bullish if ptype == "Bullish" else drm_bearish
+        if drm_df is None:
+            continue
+        for s_dt, e_dt in parse_drm_periods(drm_df, ptype, primary, secondary):
+            all_periods.append((s_dt, e_dt))
+
+    if not all_periods:
+        st.warning("No DRM periods found for the selected patterns.")
+        return
+
+    # Generate parameter grid
+    param_grid = generate_param_grid(used_groups, param_ranges, indicator_params)
+
+    # Read filter / sort settings from the sopt-prefixed widget keys
+    thresholds = {}
+    for key, label in SORT_METRICS:
+        _, default, _, _ = filter_props(key, label)
+        thresholds[key] = st.session_state.get(f"sopt_filter_{key}", default)
+    sort_labels = [m[1] for m in SORT_METRICS]
+    default_sort_label = next(
+        (label for k, label in SORT_METRICS if k == _DEFAULT_SORT_KEY), sort_labels[0])
+    sort_label = st.session_state.get("sopt_sort_metric", default_sort_label)
+    sort_key = next((k for k, l in SORT_METRICS if l == sort_label), _DEFAULT_SORT_KEY)
+    sort_desc = st.session_state.get("sopt_sort_order", "Highest to Lowest") == "Highest to Lowest"
+
+    mc_balance = st.session_state.get('mc_starting_balance', 10000.0)
+
+    progress = st.progress(0, text="Calculating base indicators...")
+    df_featured = calculate_indicators(df_ohlc, **indicator_params)
+
+    n_workers = max(1, multiprocessing.cpu_count() - 1)
+    batch_size = max(1, math.ceil(len(param_grid) / (n_workers * 4)))
+    strategy_fingerprint = json.dumps(selected_strategy, sort_keys=True, default=str)
+
+    # ---- In-sample run ----
+    in_ranges = [(in_start, in_end)]
+    batches = []
+    for b_start in range(0, len(param_grid), batch_size):
+        b_end = min(b_start + batch_size, len(param_grid))
+        batches.append((list(range(b_start, b_end)), param_grid[b_start:b_end], in_ranges))
+
+    progress.progress(0.05, text=f"Running {len(param_grid):,} combos on in-sample...")
+    in_results = []
+    try:
+        with multiprocessing.Pool(
+            n_workers,
+            initializer=init_wfo_worker,
+            initargs=(copy.deepcopy(selected_strategy), all_periods,
+                      dict(indicator_params), df_featured),
+        ) as pool:
+            for batch_result in pool.imap_unordered(run_wfo_batch, batches):
+                in_results.extend(batch_result)
+    except Exception as e:
+        st.error(f"Multiprocessing error: {e}")
+        init_wfo_worker(copy.deepcopy(selected_strategy), all_periods,
+                        dict(indicator_params), df_featured)
+        for batch in batches:
+            in_results.extend(run_wfo_batch(batch))
+
+    valid = [(idx, params, agg) for idx, params, agg in in_results if agg is not None]
+    if not valid:
+        progress.empty()
+        st.warning("No combos produced any trades on the in-sample period.")
+        return
+
+    progress.progress(0.5, text=f"Computing MC stats for {len(valid):,} candidates...")
+    enrich_aggs_with_mc(
+        [agg for _, _, agg in valid],
+        mc_balance, GS_MC_N_SIMULATIONS, target_dd=5.0,
+        progress_label="Simple Opt: in-sample MC")
+
+    # Filter + sort + take top N
+    filtered = [item for item in valid if passes_thresholds(item[2], thresholds)]
+    filtered.sort(key=lambda x: x[2].get(sort_key, 0) or 0, reverse=sort_desc)
+    top_n = filtered[:SIMPLE_OPT_TOP_N]
+
+    # ---- Out-of-sample evaluation for the top N ----
+    progress.progress(0.75, text=f"Evaluating top {len(top_n)} on out-of-sample...")
+    oos_ranges = [(oos_start, oos_end)]
+    if top_n:
+        oos_top_indices = [idx for idx, _, _ in top_n]
+        oos_top_combos = [params for _, params, _ in top_n]
+        oos_batch = (oos_top_indices, oos_top_combos, oos_ranges)
+        try:
+            with multiprocessing.Pool(
+                n_workers,
+                initializer=init_wfo_worker,
+                initargs=(copy.deepcopy(selected_strategy), all_periods,
+                          dict(indicator_params), df_featured),
+            ) as pool:
+                oos_results_raw = list(pool.imap_unordered(run_wfo_batch, [oos_batch]))
+            oos_flat = []
+            for batch in oos_results_raw:
+                oos_flat.extend(batch)
+        except Exception:
+            init_wfo_worker(copy.deepcopy(selected_strategy), all_periods,
+                            dict(indicator_params), df_featured)
+            oos_flat = run_wfo_batch(oos_batch)
+
+        # Index OOS aggs by original grid index for stable matching
+        oos_by_idx = {idx: agg for idx, _, agg in oos_flat if agg is not None}
+
+        if oos_by_idx:
+            enrich_aggs_with_mc(
+                list(oos_by_idx.values()),
+                mc_balance, GS_MC_N_SIMULATIONS, target_dd=5.0,
+                progress_label="Simple Opt: OOS MC")
+    else:
+        oos_by_idx = {}
+
+    progress.empty()
+
+    # Build final cache
+    from strategies.wfo_engine import (
+        detect_atr_slots, detect_value_slots,
+        ATR_OVERLAY_PREFIX, VALUE_OVERLAY_PREFIX,
+    )
+    cache = {
+        "strategy_name": strategy_name,
+        "_strategy_fingerprint": strategy_fingerprint,
+        "in_start": in_start, "in_end": in_end,
+        "oos_start": oos_start, "oos_end": oos_end,
+        "total_combos": len(param_grid),
+        "filtered_count": len(filtered),
+        "top_n": top_n,                  # list of (grid_idx, params, in_sample_agg)
+        "oos_by_idx": oos_by_idx,        # {grid_idx: oos_agg}
+        "sort_label": sort_label,
+        "base_settings": indicator_params,
+        "used_groups": sorted(used_groups),
+        "atr_slots": detect_atr_slots(selected_strategy),
+        "value_slots": detect_value_slots(selected_strategy),
+    }
+    st.session_state["_sopt_cached_results"] = cache
+    _display_simple_opt_results(cache)
+
+
+def _display_simple_opt_results(cache):
+    """Display Simple Optimization results: top N candidates with their winning
+    parameters and both in-sample + out-of-sample metric tables."""
+    from strategies.wfo_engine import ATR_OVERLAY_PREFIX, VALUE_OVERLAY_PREFIX
+
+    strategy_name = cache["strategy_name"]
+    top_n = cache.get("top_n", [])
+    oos_by_idx = cache.get("oos_by_idx", {})
+    base_settings = cache.get("base_settings", {})
+    used_groups = cache.get("used_groups", [])
+    atr_slots = cache.get("atr_slots", [])
+    value_slots = cache.get("value_slots", [])
+
+    st.caption(
+        f"Strategy: **{strategy_name}** | Sorted by **{cache.get('sort_label', '?')}** | "
+        f"{cache.get('filtered_count', 0):,} of {cache.get('total_combos', 0):,} combos passed filters"
+    )
+
+    if not top_n:
+        st.warning("No candidates passed the filters.")
+        return
+
+    n_shown = len(top_n)
+    st.markdown(f"**Top {n_shown} candidates** (in-sample → out-of-sample)")
+
+    # Build results-dict for _build_metrics_table: 2 columns per candidate
+    # (IS / OOS), labelled with the candidate rank.
+    results_dict = OrderedDict()
+    for rank, (grid_idx, params, in_agg) in enumerate(top_n, start=1):
+        results_dict[f"#{rank} IS"] = in_agg
+        oos_agg = oos_by_idx.get(grid_idx)
+        if oos_agg is None:
+            oos_agg = _empty_agg()
+        results_dict[f"#{rank} OOS"] = oos_agg
+
+    perf_table = _build_metrics_table(results_dict)
+    st.table(perf_table)
+    _copy_to_clipboard(perf_table.to_csv(sep='\t', header=False, index=False),
+                       key="sopt_perf_copy")
+
+    # ---- Winning parameters per candidate ----
+    st.markdown(f"**Winning parameters per candidate**")
+    param_keys = set()
+    for group in used_groups:
+        if group.startswith("atr_slot:") or group.startswith("value_slot:"):
+            continue
+        defaults = _WFO_RANGES.get(group, {})
+        if group == "ema":
+            ema_count = len(base_settings.get("ema_periods", []))
+            for i in range(ema_count):
+                param_keys.add(f"EMA {i + 1}")
+        else:
+            for param in defaults:
+                if not param.startswith("_"):
+                    param_keys.add(param)
+
+    rows_by_param = {}
+    col_names = [f"#{r}" for r in range(1, n_shown + 1)]
+
+    for pk in sorted(param_keys):
+        row = []
+        for _, params, _ in top_n:
+            if pk.startswith("EMA "):
+                idx = int(pk.split(" ")[1]) - 1
+                ema_list = params.get("ema_periods", [])
+                row.append(str(ema_list[idx]) if idx < len(ema_list) else "—")
+            else:
+                v = params.get(pk)
+                if v is not None:
+                    row.append(f"{v:.3f}" if isinstance(v, float) else str(v))
+                else:
+                    row.append("—")
+        rows_by_param[pk] = row
+
+    for slot in atr_slots:
+        slot_id = slot["slot_id"]
+        period_row = []
+        mult_row = []
+        for _, params, _ in top_n:
+            p = params.get(f"{ATR_OVERLAY_PREFIX}{slot_id}__atr_period")
+            m = params.get(f"{ATR_OVERLAY_PREFIX}{slot_id}__atr_multiplier")
+            period_row.append(str(int(p)) if p is not None else str(slot["atr_period"]))
+            mult_row.append(f"{float(m):.2f}" if m is not None else f"{slot['atr_multiplier']:.2f}")
+        rows_by_param[f"{slot['label']} — period"] = period_row
+        rows_by_param[f"{slot['label']} — multiplier"] = mult_row
+
+    for slot in value_slots:
+        slot_id = slot["slot_id"]
+        row = []
+        for _, params, _ in top_n:
+            v = params.get(f"{VALUE_OVERLAY_PREFIX}{slot_id}")
+            row.append(f"{float(v):.4g}" if v is not None else f"{slot['value']:.4g}")
+        rows_by_param[slot["label"]] = row
+
+    if rows_by_param:
+        params_table = pd.DataFrame(rows_by_param, index=col_names).T
+        st.table(params_table)
+        _copy_to_clipboard(params_table.to_csv(sep='\t', header=False, index=False),
+                           key="sopt_params_copy")
 
 
 # ------------------------------------------------------------------

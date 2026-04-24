@@ -18,7 +18,12 @@ from indicators.calculate_indicators import slice_for_graph, migrate_indicator_s
 from strategies.group_set_manager import (
     load_group_sets, save_group_set, update_group_set, delete_group_set,
     export_group_set, import_group_set,
-    save_group_sets_to_file,
+    save_group_sets_to_file, get_mode,
+    MODE_RUNTIME, MODE_PER_CANDIDATE,
+    extract_groups_from_set, extract_value_eligible_groups, apply_view,
+    candidate_groups,
+    candidate_wfo_groups, group_variant_combos, offset_label,
+    INDICATOR_PRIMARY_PARAM,
 )
 from ui.charting_tab import _get_or_calculate
 from ui.performance_tab import (_DEFAULT_INDICATOR_PARAMS, SELECTION_MODES,
@@ -234,26 +239,37 @@ def render_grid_search_tab(sidebar_config):
             key="gs_search_set_sel")
         search_set = all_group_sets[gs_sel]
 
-    # Event / Operator multi-select (depends on search component)
-    if search_group == "condition":
-        selected_events = st.multiselect(
-            "Operators", CONDITION_OPERATORS,
-            default=CONDITION_OPERATORS,
-            key="gs_events")
-    elif search_group == "trigger":
-        selected_events = st.multiselect(
-            "Events", EVENT_TYPES,
-            default=["Cross Above", "Cross Below"],
-            key="gs_events")
-    else:
-        selected_events = st.multiselect(
-            "Events", STOP_EVENT_TYPES,
-            default=["Cross Above", "Cross Below"],
-            key="gs_events")
+    search_set_mode = get_mode(search_set)
 
-    if not selected_events:
-        st.warning("Select at least one event/operator.")
-        return
+    # Filter view: group toggles + per-group value ranges (mutates search_set in place if user clicks Save)
+    effective_candidates, view_state = _render_set_view_filter(search_set, gs_sel)
+
+    # Event / Operator multi-select — only for MODE_RUNTIME sets.
+    # MODE_PER_CANDIDATE sets carry their event on each candidate.
+    if search_set_mode == MODE_PER_CANDIDATE:
+        st.caption("This group set has an event embedded per candidate — "
+                   "no global event selection needed.")
+        selected_events = None  # signals per-candidate mode downstream
+    else:
+        if search_group == "condition":
+            selected_events = st.multiselect(
+                "Operators", CONDITION_OPERATORS,
+                default=CONDITION_OPERATORS,
+                key="gs_events")
+        elif search_group == "trigger":
+            selected_events = st.multiselect(
+                "Events", EVENT_TYPES,
+                default=["Cross Above", "Cross Below"],
+                key="gs_events")
+        else:
+            selected_events = st.multiselect(
+                "Events", STOP_EVENT_TYPES,
+                default=["Cross Above", "Cross Below"],
+                key="gs_events")
+
+        if not selected_events:
+            st.warning("Select at least one event/operator.")
+            return
 
     # Cross-combination: condition group set for target/dynamic
     condition_candidates = None
@@ -272,16 +288,25 @@ def render_grid_search_tab(sidebar_config):
                 CONDITION_OPERATORS,
                 key="gs_cond_event")
 
-    # Show run count
-    n_search = len(search_set.get("candidates", []))
-    n_events = len(selected_events)
+    # Show run count (after filter)
+    n_total = len(search_set.get("candidates", []))
+    n_search = len(effective_candidates)
+    if n_search != n_total:
+        st.caption(f"Filter view: **{n_search}** of {n_total} candidates after toggles/ranges.")
+    n_events = 1 if search_set_mode == MODE_PER_CANDIDATE else len(selected_events)
     n_cond = len(condition_candidates) if condition_candidates else 0
     if search_group in ("target", "dynamic_stop") and n_cond > 0:
         total_runs = n_search * n_events * (n_cond + 1)
-        st.info(f"**{n_search}** candidates x **{n_events}** events x **{n_cond + 1}** (standalone + {n_cond} conditions) = **{total_runs}** total runs")
+        if search_set_mode == MODE_PER_CANDIDATE:
+            st.info(f"**{n_search}** candidates (per-candidate events) x **{n_cond + 1}** (standalone + {n_cond} conditions) = **{total_runs}** total runs")
+        else:
+            st.info(f"**{n_search}** candidates x **{n_events}** events x **{n_cond + 1}** (standalone + {n_cond} conditions) = **{total_runs}** total runs")
     else:
         total_runs = n_search * n_events
-        st.info(f"**{n_search}** candidates x **{n_events}** events = **{total_runs}** total runs")
+        if search_set_mode == MODE_PER_CANDIDATE:
+            st.info(f"**{n_search}** candidates (per-candidate events) = **{total_runs}** total runs")
+        else:
+            st.info(f"**{n_search}** candidates x **{n_events}** events = **{total_runs}** total runs")
 
     st.markdown("---")
 
@@ -292,8 +317,11 @@ def render_grid_search_tab(sidebar_config):
     st.markdown("---")
 
     # ── Section E: Indicator Settings ───────────────────
-    with st.expander("Indicator Settings", expanded=False):
-        _render_indicator_settings()
+    st.caption(
+        "Indicator settings come from the selected strategy and the group "
+        "set's *Indicator Ranges* (edit them in **Group Set Management** "
+        "above). The old global Indicator Settings panel has been retired."
+    )
 
     st.markdown("---")
 
@@ -362,7 +390,8 @@ def render_grid_search_tab(sidebar_config):
     cached = st.session_state.get("_gs_cached_results")
     if cached:
         fp = _build_cache_fingerprint(selected_strategy, search_group,
-                                       search_set, selected_events, condition_candidates)
+                                       search_set, selected_events, condition_candidates,
+                                       view_state)
         if cached.get("fingerprint") != fp:
             st.session_state.pop("_gs_cached_results", None)
             cached = None
@@ -371,9 +400,11 @@ def render_grid_search_tab(sidebar_config):
         results = _run_grid_search(
             selected_strategy, search_group, search_set, selected_events,
             condition_candidates, condition_event, sidebar_config,
+            effective_candidates=effective_candidates,
             use_original_engine=use_original_engine)
         fp = _build_cache_fingerprint(selected_strategy, search_group,
-                                       search_set, selected_events, condition_candidates)
+                                       search_set, selected_events, condition_candidates,
+                                       view_state)
         sel_labels = [selection_label(s) for s in st.session_state.get("gs_selections", [])]
         st.session_state["_gs_cached_results"] = {
             "fingerprint": fp,
@@ -391,6 +422,142 @@ def render_grid_search_tab(sidebar_config):
 
 
 # ======================================================================
+# Set "view" filter — toggle indicator groups on/off + per-group value ranges
+# (operates on the SELECTED set in the Search Configuration section)
+# ======================================================================
+
+def _render_set_view_filter(search_set, set_idx):
+    """Render the indicator-toggle / value-range filter beneath the selected
+    group set. Returns (filtered_candidates, view_state_dict).
+
+    view_state_dict captures the current (potentially unsaved) widget state
+    so the cache fingerprint can react to user changes.
+    """
+    candidates = search_set.get("candidates", [])
+    set_name = search_set.get("name", "")
+
+    if not candidates:
+        return [], {}
+
+    available_groups = extract_groups_from_set(candidates)
+    value_eligible = extract_value_eligible_groups(candidates)
+
+    # Saved view (defaults: all groups active, no value filters)
+    saved_active = search_set.get("active_groups")
+    if saved_active is None:
+        saved_active = list(available_groups)
+    else:
+        # Prune any saved groups that no longer exist in the set's candidates
+        saved_active = [g for g in saved_active if g in available_groups]
+    saved_filters = dict(search_set.get("value_filters") or {})
+
+    # Per-set widget keys so different sets don't clobber each other
+    safe_id = f"{set_idx}_{set_name}"
+    active_key = f"gs_view_active__{safe_id}"
+    reset_flag_key = f"gs_view_reset_flag__{safe_id}"
+
+    # Reset flag: if Reset was clicked last run, force widget defaults back
+    # to "everything on / no ranges" before instantiating the widgets.
+    if st.session_state.pop(reset_flag_key, False):
+        st.session_state.pop(active_key, None)
+        for g in value_eligible:
+            for f in ("low", "high", "step"):
+                st.session_state.pop(f"gs_view_{f}__{safe_id}__{g}", None)
+        saved_active = list(available_groups)
+        saved_filters = {}
+
+    with st.expander(f"Filter view ({len(candidates)} candidates available)",
+                     expanded=False):
+        st.caption("Untick indicators to drop their candidates for this run. "
+                   "For oscillators, set a value range to keep only matching "
+                   "fixed-value candidates. Click **Save Filter to Set** to "
+                   "persist; **Reset** to drop the saved view.")
+
+        # Group toggle multiselect (defaults to saved selection)
+        if active_key not in st.session_state:
+            st.session_state[active_key] = saved_active
+        active_selected = st.multiselect(
+            "Active indicator groups",
+            options=available_groups,
+            key=active_key,
+        )
+
+        # Per-group value range inputs (only for value-eligible groups
+        # that are currently active)
+        value_filters = {}
+        if value_eligible:
+            st.markdown("**Value ranges (Fixed Value candidates)**")
+            for g in value_eligible:
+                if g not in active_selected:
+                    continue
+                saved_vf = saved_filters.get(g, {})
+                # Sensible default range based on existing values in this group
+                vals_in_group = [c["value"] for c in candidates
+                                 if c.get("compare_type") == "Fixed Value"
+                                 and c.get("value") is not None
+                                 and g in candidate_groups(c)]
+                if vals_in_group:
+                    auto_low = float(min(vals_in_group))
+                    auto_high = float(max(vals_in_group))
+                else:
+                    auto_low, auto_high = 0.0, 100.0
+
+                low_key = f"gs_view_low__{safe_id}__{g}"
+                high_key = f"gs_view_high__{safe_id}__{g}"
+                step_key = f"gs_view_step__{safe_id}__{g}"
+                if low_key not in st.session_state:
+                    st.session_state[low_key] = float(saved_vf.get("low", auto_low))
+                if high_key not in st.session_state:
+                    st.session_state[high_key] = float(saved_vf.get("high", auto_high))
+                if step_key not in st.session_state:
+                    st.session_state[step_key] = float(saved_vf.get("step", 0))
+
+                col_lbl, col_lo, col_hi, col_st, col_off = st.columns([2, 1.2, 1.2, 1.2, 1])
+                with col_lbl:
+                    st.markdown(f"`{g}`")
+                with col_lo:
+                    low = st.number_input("Low", key=low_key, step=1.0, format="%.4f")
+                with col_hi:
+                    high = st.number_input("High", key=high_key, step=1.0, format="%.4f")
+                with col_st:
+                    step = st.number_input("Step (0 = any)", key=step_key,
+                                            min_value=0.0, step=0.5, format="%.4f")
+                with col_off:
+                    st.markdown("&nbsp;", unsafe_allow_html=True)
+                    enabled = st.checkbox("Apply", value=g in saved_filters,
+                                          key=f"gs_view_apply__{safe_id}__{g}")
+                if enabled:
+                    value_filters[g] = {"low": low, "high": high, "step": step}
+
+        # Save / Reset buttons — persist or clear the view on the saved set
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            if st.button("Save Filter to Set", key=f"gs_view_save__{safe_id}"):
+                search_set["active_groups"] = list(active_selected)
+                search_set["value_filters"] = value_filters
+                update_group_set(set_idx, search_set)
+                st.success("Filter view saved to the group set.")
+                st.rerun()
+        with bcol2:
+            if st.button("Reset (clear saved view)", key=f"gs_view_reset__{safe_id}"):
+                search_set.pop("active_groups", None)
+                search_set.pop("value_filters", None)
+                update_group_set(set_idx, search_set)
+                st.session_state[reset_flag_key] = True
+                st.success("Filter view cleared.")
+                st.rerun()
+
+    filtered = apply_view(candidates,
+                          active_groups=set(active_selected) if active_selected is not None else None,
+                          value_filters=value_filters)
+    view_state = {
+        "active": sorted(active_selected) if active_selected else [],
+        "filters": value_filters,
+    }
+    return filtered, view_state
+
+
+# ======================================================================
 # Group Set Management UI
 # ======================================================================
 
@@ -404,14 +571,22 @@ def _render_group_set_management():
                            format_func=lambda x, n=gs_names: n[x],
                            key="gs_mgmt_sel")
         selected_gs = all_sets[sel]
+        sel_mode = get_mode(selected_gs)
 
         # Show candidates
         if selected_gs.get("candidates"):
             cand_labels = [format_candidate_label(c) for c in selected_gs["candidates"]]
-            st.caption(f"{len(cand_labels)} candidates")
+            mode_lbl = ("event chosen at search time"
+                        if sel_mode == MODE_RUNTIME
+                        else "event embedded per candidate")
+            st.caption(f"{len(cand_labels)} candidates — *{mode_lbl}*")
             with st.expander("View candidates", expanded=False):
                 for i, lbl in enumerate(cand_labels):
-                    st.text(f"{i+1}. {lbl}")
+                    cand = selected_gs["candidates"][i]
+                    if sel_mode == MODE_PER_CANDIDATE and cand.get("event"):
+                        st.text(f"{i+1}. {lbl}  [{cand['event']}]")
+                    else:
+                        st.text(f"{i+1}. {lbl}")
 
         # Action buttons
         bc1, bc2, bc3 = st.columns(3)
@@ -435,14 +610,22 @@ def _render_group_set_management():
             edit_idx = st.session_state["gs_editing"]
             if edit_idx < len(all_sets):
                 edit_gs = all_sets[edit_idx]
+                edit_mode = get_mode(edit_gs)
                 st.markdown("---")
-                st.markdown(f"**Editing: {edit_gs['name']}**")
+                mode_lbl = ("Cross-product (event chosen at search time)"
+                            if edit_mode == MODE_RUNTIME
+                            else "Per-candidate event (event chosen per row)")
+                st.markdown(f"**Editing: {edit_gs['name']}**  \n*Logic: {mode_lbl}*")
                 edited_candidates = _render_candidate_editor(
-                    list(edit_gs.get("candidates", [])), "gs_edit")
+                    list(edit_gs.get("candidates", [])), "gs_edit", mode=edit_mode)
+                edited_ranges = _render_indicator_ranges_editor(
+                    edited_candidates, edit_gs.get("indicator_ranges") or {}, "gs_edit")
                 ec1, ec2 = st.columns(2)
                 with ec1:
                     if st.button("Save Changes", key="gs_edit_save", type="primary"):
                         edit_gs["candidates"] = _strip_uids(edited_candidates)
+                        edit_gs["mode"] = edit_mode
+                        edit_gs["indicator_ranges"] = edited_ranges
                         dupes = update_group_set(edit_idx, edit_gs)
                         if dupes:
                             st.warning(f"{dupes} duplicate candidate(s) removed.")
@@ -484,7 +667,31 @@ def _render_group_set_management():
     # Create new
     with st.expander("Create New Group Set", expanded=False):
         new_name = st.text_input("Name", key="gs_new_name")
-        new_candidates = _render_candidate_editor([], "gs_new")
+
+        mode_options = [
+            (MODE_RUNTIME,
+             "Cross-product — pick event(s) at search time"),
+            (MODE_PER_CANDIDATE,
+             "Per-candidate — choose an event for each row"),
+        ]
+        mode_idx = st.radio(
+            "Logic",
+            options=range(len(mode_options)),
+            format_func=lambda i: mode_options[i][1],
+            key="gs_new_mode_idx",
+            horizontal=False,
+        )
+        new_mode = mode_options[mode_idx][0]
+
+        # If user toggles mode, drop previously-built candidates so the editor
+        # rebuilds with the right shape (event field present or absent).
+        last_mode_key = "_gs_new_last_mode"
+        if st.session_state.get(last_mode_key) != new_mode:
+            st.session_state.pop("gs_new_candidates", None)
+            st.session_state[last_mode_key] = new_mode
+
+        new_candidates = _render_candidate_editor([], "gs_new", mode=new_mode)
+        new_ranges = _render_indicator_ranges_editor(new_candidates, {}, "gs_new")
         if st.button("Save New Set", key="gs_new_save", type="primary"):
             if not new_name.strip():
                 st.error("Please provide a name.")
@@ -493,15 +700,143 @@ def _render_group_set_management():
             else:
                 new_gs = {
                     "name": new_name.strip(),
+                    "mode": new_mode,
                     "candidates": _strip_uids(new_candidates),
+                    "indicator_ranges": new_ranges,
                 }
                 dupes = save_group_set(new_gs)
                 st.session_state.pop("gs_new_candidates", None)
+                st.session_state.pop(last_mode_key, None)
                 msg = f"Created **{new_name}** with {len(new_gs['candidates'])} candidates."
                 if dupes:
                     msg += f" ({dupes} duplicate(s) removed.)"
                 st.success(msg)
                 st.rerun()
+
+
+# ======================================================================
+# Indicator Ranges editor (per Group Set)
+# ======================================================================
+
+# Friendly display names for the rangeable indicator groups.
+_GROUP_KEY_DISPLAY = {
+    "rsi": "RSI", "stoch": "Stochastic", "adx": "ADX", "atr": "ATR",
+    "macd": "MACD", "supertrend": "Supertrend", "bb": "Bollinger Bands",
+    "kc": "Keltner Channel", "donchian": "Donchian Channel", "psar": "Parabolic SAR",
+    "willr": "Williams %R", "roc": "Rate of Change", "cci": "CCI",
+    "lr": "Linear Regression",
+}
+
+# Parameters whose UI step + default values should be float, not int.
+_FLOAT_PARAMS = {"psar_af_max", "supertrend_multiplier", "lr_multiplier",
+                 "bb_upper_stdev", "bb_lower_stdev",
+                 "kc_upper_mult", "kc_lower_mult"}
+
+
+def _ranged_groups_in_candidates(candidates):
+    """Return the sorted list of WFO group keys touched by these candidates
+    AND that we know how to range (have a primary param)."""
+    keys = set()
+    for c in candidates:
+        keys.update(candidate_wfo_groups(c))
+    return sorted(k for k in keys if k in INDICATOR_PRIMARY_PARAM)
+
+
+def _render_indicator_ranges_editor(candidates, current_ranges, prefix):
+    """Render (min, max, step) inputs per rangeable indicator group present
+    in the candidates. Returns a dict in the same shape as a Group Set's
+    `indicator_ranges` field. Groups left at their default ("not ranged")
+    are omitted from the returned dict."""
+    eligible = _ranged_groups_in_candidates(candidates)
+    if not eligible:
+        return {}
+
+    out = {}
+    with st.expander(f"Indicator Ranges ({len(eligible)} group(s))",
+                     expanded=False):
+        st.caption(
+            "For each indicator referenced by this set, optionally set a "
+            "min / max / step range. During Grid Search, candidates that "
+            "touch the indicator are duplicated for each value, labeled by "
+            "its offset from the range midpoint: `(0)` for the middle, "
+            "`(+1)` / `(-1)` per step. Untick *Apply* to skip ranging "
+            "that indicator."
+        )
+
+        for grp in eligible:
+            primary = INDICATOR_PRIMARY_PARAM[grp]
+            display = _GROUP_KEY_DISPLAY.get(grp, grp.upper())
+            saved = (current_ranges or {}).get(grp, {}).get(primary)
+
+            apply_key = f"{prefix}_irng_apply__{grp}"
+            lo_key = f"{prefix}_irng_lo__{grp}"
+            hi_key = f"{prefix}_irng_hi__{grp}"
+            st_key = f"{prefix}_irng_step__{grp}"
+
+            is_float = primary in _FLOAT_PARAMS
+            cast = float if is_float else int
+            step_w = 0.1 if is_float else 1.0
+            fmt = "%.4f" if is_float else "%d"
+
+            if saved is not None:
+                default_lo, default_hi, default_step = saved
+            else:
+                # Sensible defaults based on the param's type
+                if is_float:
+                    default_lo, default_hi, default_step = 1.0, 3.0, 0.5
+                else:
+                    default_lo, default_hi, default_step = 5, 50, 5
+
+            if apply_key not in st.session_state:
+                st.session_state[apply_key] = saved is not None
+            if lo_key not in st.session_state:
+                st.session_state[lo_key] = cast(default_lo)
+            if hi_key not in st.session_state:
+                st.session_state[hi_key] = cast(default_hi)
+            if st_key not in st.session_state:
+                st.session_state[st_key] = cast(default_step)
+
+            c_lbl, c_apply, c_lo, c_hi, c_st = st.columns([2, 1, 1.2, 1.2, 1.2])
+            with c_lbl:
+                st.markdown(f"**{display}** &nbsp; `{primary}`",
+                            unsafe_allow_html=True)
+            with c_apply:
+                st.markdown("&nbsp;", unsafe_allow_html=True)
+                applied = st.checkbox("Apply", key=apply_key)
+            with c_lo:
+                if is_float:
+                    lo = st.number_input("Min", key=lo_key, step=step_w, format=fmt)
+                else:
+                    lo = st.number_input("Min", key=lo_key, step=int(step_w), format=fmt)
+            with c_hi:
+                if is_float:
+                    hi = st.number_input("Max", key=hi_key, step=step_w, format=fmt)
+                else:
+                    hi = st.number_input("Max", key=hi_key, step=int(step_w), format=fmt)
+            with c_st:
+                if is_float:
+                    sp = st.number_input("Step", key=st_key, step=step_w, format=fmt,
+                                          min_value=step_w / 100)
+                else:
+                    sp = st.number_input("Step", key=st_key, step=int(step_w), format=fmt,
+                                          min_value=1)
+
+            if applied:
+                # Quick preview of the variant count and offsets
+                from strategies.group_set_manager import (
+                    enumerate_variant_values, compute_offsets,
+                )
+                vals = enumerate_variant_values(lo, hi, sp)
+                offsets = compute_offsets([cast(v) for v in vals])
+                if offsets:
+                    preview = ", ".join(
+                        f"{offset_label(o)}={v}" for o, v in offsets
+                    )
+                    st.caption(f"&nbsp;&nbsp;{len(offsets)} variants: {preview}",
+                               unsafe_allow_html=True)
+                out[grp] = {primary: [cast(lo), cast(hi), cast(sp)]}
+
+    return out
 
 
 # ======================================================================
@@ -513,9 +848,18 @@ def _clear_candidate_widget_keys_by_uid(prefix, uid):
     suffixes = [
         "_grp", "_e1", "_ev", "_cmp", "_e2", "_op", "_val",
         "_stype", "_atr_p", "_atr_m", "_cmp_d", "_cmp_at", "_rm",
+        "_event",
     ]
     for sfx in suffixes:
         st.session_state.pop(f"{prefix}_{uid}{sfx}", None)
+
+
+# Union of all events any search component might use — used by the
+# per-candidate Event picker (the candidate doesn't know yet which
+# component slot it'll be assigned to at search time).
+_ALL_EVENT_CHOICES = list(dict.fromkeys(
+    list(EVENT_TYPES) + list(STOP_EVENT_TYPES) + list(CONDITION_OPERATORS)
+))
 
 
 _candidate_uid_counter_key = "_gs_candidate_uid_counter"
@@ -546,8 +890,11 @@ def _ensure_candidate_uids(candidates):
 CANDIDATE_PAGE_SIZE = 20
 
 
-def _render_candidate_editor(initial_candidates, prefix):
-    """Render an editable list of candidates with pagination. Returns list of candidate dicts."""
+def _render_candidate_editor(initial_candidates, prefix, mode=MODE_RUNTIME):
+    """Render an editable list of candidates with pagination. Returns list of candidate dicts.
+
+    `mode` controls whether each row also shows an Event picker (MODE_PER_CANDIDATE).
+    """
     # Use session state to track candidates for this editor
     state_key = f"{prefix}_candidates"
     if state_key not in st.session_state:
@@ -591,7 +938,7 @@ def _render_candidate_editor(initial_candidates, prefix):
         cand = candidates[i]
         uid = cand['_uid']
         st.markdown(f"**Candidate {i+1}**")
-        updated = _render_single_candidate(cand, f"{prefix}_{uid}", ema_count)
+        updated = _render_single_candidate(cand, f"{prefix}_{uid}", ema_count, mode=mode)
         # Preserve UID
         updated['_uid'] = uid
         candidates[i] = updated
@@ -611,7 +958,7 @@ def _render_candidate_editor(initial_candidates, prefix):
         st.rerun()
 
     if st.button("+ Add Candidate", key=f"{prefix}_add"):
-        new_cand = _default_candidate()
+        new_cand = _default_candidate(mode=mode)
         new_cand['_uid'] = _next_candidate_uid()
         candidates.append(new_cand)
         st.session_state[state_key] = candidates
@@ -622,21 +969,26 @@ def _render_candidate_editor(initial_candidates, prefix):
     return candidates
 
 
-def _default_candidate():
+def _default_candidate(mode=MODE_RUNTIME):
     """Return a default universal candidate dict."""
-    return {
+    cand = {
         "group": "Price & Indicators",
         "element1": "Price",
         "compare_type": "Indicator",
         "element2": "Tenkan",
         "value": None,
     }
+    if mode == MODE_PER_CANDIDATE:
+        cand["event"] = "Cross Above"
+    return cand
 
 
-def _render_single_candidate(cand, prefix, ema_count):
+def _render_single_candidate(cand, prefix, ema_count, mode=MODE_RUNTIME):
     """Render widgets for a single universal candidate and return updated dict.
 
-    No event/operator — those are selected at search time.
+    In MODE_RUNTIME the row defines only (group, element1, element2/value);
+    the event is chosen at search time. In MODE_PER_CANDIDATE the row also
+    has its own event picker.
     """
     # Check if this is an ATR stop candidate
     is_atr_stop = cand.get("stop_type") == "ATR"
@@ -645,23 +997,48 @@ def _render_single_candidate(cand, prefix, ema_count):
     atr_stop_checked = st.checkbox("ATR Stop", value=is_atr_stop, key=f"{prefix}_atr_stop")
 
     if atr_stop_checked:
-        ac1, ac2 = st.columns(2)
-        with ac1:
+        if mode == MODE_PER_CANDIDATE:
+            evt_default = cand.get("event", "Cross Below")
+            if evt_default not in _ALL_EVENT_CHOICES:
+                evt_default = _ALL_EVENT_CHOICES[0]
+            ev_col, ac1_col, ac2_col = st.columns([1.5, 1, 1])
+            with ev_col:
+                event = st.selectbox("Event", _ALL_EVENT_CHOICES,
+                                     index=_ALL_EVENT_CHOICES.index(evt_default),
+                                     key=f"{prefix}_event")
+        else:
+            event = None
+            ac1_col, ac2_col = st.columns(2)
+        with ac1_col:
             atr_period = st.number_input("ATR Period", 1, 200,
                                          value=int(cand.get("atr_period", 14)),
                                          step=1, key=f"{prefix}_atr_p")
-        with ac2:
+        with ac2_col:
             atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
                                         value=float(cand.get("atr_multiplier", 2.0)),
                                         step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-        return {
+        result = {
             "stop_type": "ATR",
             "atr_period": atr_period,
             "atr_multiplier": atr_mult,
         }
+        if mode == MODE_PER_CANDIDATE:
+            result["event"] = event
+        return result
 
-    # Standard candidate: Group, Element 1, Compare, Element 2/Value
-    c_grp, c_e1, c_cmp, c_e2 = st.columns([2, 2, 1.5, 2])
+    # Standard candidate: (optional Event in MODE_PER_CANDIDATE), Group, Element 1, Compare, Element 2/Value
+    if mode == MODE_PER_CANDIDATE:
+        evt_default = cand.get("event", "Cross Above")
+        if evt_default not in _ALL_EVENT_CHOICES:
+            evt_default = _ALL_EVENT_CHOICES[0]
+        c_ev, c_grp, c_e1, c_cmp, c_e2 = st.columns([1.5, 2, 2, 1.5, 2])
+        with c_ev:
+            event = st.selectbox("Event", _ALL_EVENT_CHOICES,
+                                 index=_ALL_EVENT_CHOICES.index(evt_default),
+                                 key=f"{prefix}_event")
+    else:
+        event = None
+        c_grp, c_e1, c_cmp, c_e2 = st.columns([2, 2, 1.5, 2])
 
     with c_grp:
         group_idx = GROUP_NAMES.index(cand.get("group", GROUP_NAMES[0])) if cand.get("group") in GROUP_NAMES else 0
@@ -702,11 +1079,14 @@ def _render_single_candidate(cand, prefix, ema_count):
             atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
                                         value=float(cand.get("atr_multiplier", 2.0)),
                                         step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-            return {
+            atr_target_result = {
                 "element1": element1,
                 "atr_period": atr_period,
                 "atr_multiplier": atr_mult,
             }
+            if mode == MODE_PER_CANDIDATE:
+                atr_target_result["event"] = event
+            return atr_target_result
 
         elif compare == "Indicator":
             all_elements = []
@@ -723,13 +1103,16 @@ def _render_single_candidate(cand, prefix, ema_count):
             value = st.number_input("Value", value=float(cand.get("value") or 0.0),
                                     step=0.01, format="%.4f", key=f"{prefix}_val")
 
-    return {
+    result = {
         "group": group,
         "element1": element1,
         "compare_type": compare,
         "element2": element2,
         "value": value,
     }
+    if mode == MODE_PER_CANDIDATE:
+        result["event"] = event
+    return result
 
 
 # ======================================================================
@@ -1249,24 +1632,23 @@ def _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0):
 
 def _run_grid_search(selected_strategy, search_group, search_set, selected_events,
                      condition_candidates, condition_event, sidebar_config,
-                     use_original_engine=False):
+                     effective_candidates=None, use_original_engine=False):
     """Run backtests for all candidate runs.
 
     Returns list of (label, global_agg, selection_results) where
     selection_results is an OrderedDict {selection_label: agg_dict}.
     """
 
-    # Build indicator params: start from defaults, overlay strategy settings, then gs_ overrides
+    # Build base indicator params: start from defaults, overlay the selected
+    # strategy's saved settings. The retired global gs_* widgets are no longer
+    # consulted — ranges come from the group set's indicator_ranges field.
     indicator_params = dict(_DEFAULT_INDICATOR_PARAMS)
     strategy_settings = selected_strategy.get("indicator_settings")
     if strategy_settings:
         strategy_settings = migrate_indicator_settings(strategy_settings)
         indicator_params.update(strategy_settings)
-    # Override with gs_ UI settings
-    gs_settings = collect_gs_indicator_settings(st.session_state)
-    indicator_params.update(gs_settings)
 
-    # Calculate indicators once
+    # Calculate base indicators once
     g_start = sidebar_config.get("global_start_date")
     g_end = sidebar_config.get("global_end_date")
 
@@ -1333,16 +1715,30 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
     base = copy.deepcopy(selected_strategy)
     base["indicator_settings"] = dict(indicator_params)
 
-    search_candidates = search_set.get("candidates", [])
+    search_candidates = (effective_candidates if effective_candidates is not None
+                         else search_set.get("candidates", []))
+    events_per_candidate = get_mode(search_set) == MODE_PER_CANDIDATE
+
+    # Variant expansion: read per-set indicator ranges and enumerate offsets.
+    variant_groups = group_variant_combos(search_set, indicator_params)
+
     run_configs = generate_run_configs(
         base, search_group, search_candidates, selected_events,
-        condition_candidates=condition_candidates, condition_event=condition_event)
+        condition_candidates=condition_candidates, condition_event=condition_event,
+        events_per_candidate=events_per_candidate,
+        variant_groups=variant_groups)
 
     if not run_configs:
         st.warning("No run configurations generated.")
         return []
 
-    # Compute reference directions for correlation (if references selected)
+    # Compute the per-variant DataFrames + slice them per pattern combo.
+    # Always include the default variant (None) so non-ranged candidates work.
+    variant_combo_slices = _build_variant_combo_slices(
+        df_full, indicator_params, run_configs, variant_groups,
+        combo_slices, global_combo_keys)
+
+    # Compute reference directions for correlation (against default DataFrame)
     ref_indices = st.session_state.get("gs_ref_strategies", [])
     ref_directions = None
     if ref_indices:
@@ -1351,11 +1747,11 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
 
     if use_original_engine:
         results = _run_grid_search_original_engine(
-            run_configs, combo_slices, global_combo_keys,
+            run_configs, variant_combo_slices, global_combo_keys,
             selection_combo_map, ref_directions)
     else:
         results = _run_grid_search_multiprocessing(
-            run_configs, combo_slices, global_combo_keys,
+            run_configs, variant_combo_slices, global_combo_keys,
             selection_combo_map, ref_directions)
 
     # Enrich every agg dict with MC Avg Profit @ 5% avg max DD
@@ -1376,7 +1772,65 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
     return results
 
 
-def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_keys,
+def _build_variant_combo_slices(df_full, base_indicator_params, run_configs,
+                                 variant_groups, default_combo_slices,
+                                 global_combo_keys):
+    """For every distinct variant_id used by run_configs, recompute the
+    indicator group(s) for that variant on a copy of df_full, then slice it
+    per pattern combo using the same combo_slices structure.
+
+    Returns: {variant_id: {combo_key: [(df_slice, ps, pe), ...]}}
+    The default variant (None) always points at default_combo_slices."""
+    from indicators.calculate_indicators import recalculate_groups
+    from collections import OrderedDict
+
+    out = {None: default_combo_slices}
+
+    if not variant_groups:
+        return out
+
+    # Build (group, offset) -> params lookup once.
+    offset_params = {}
+    for grp, variants in variant_groups.items():
+        for offset, params in variants:
+            offset_params[(grp, offset)] = params
+
+    # Collect distinct non-default variant ids actually used
+    needed = sorted({vid for _label, _strat, vid in run_configs if vid is not None})
+
+    # Build pattern slice structure (which periods belong to which combo).
+    # Reuse the period boundaries from default_combo_slices so we can re-slice
+    # the per-variant DataFrame consistently.
+    combo_periods = OrderedDict()
+    for ck in global_combo_keys:
+        combo_periods[ck] = [(ps, pe) for _df, ps, pe in default_combo_slices.get(ck, [])]
+
+    for vid in needed:
+        # vid is a tuple of ((group, offset), ...) — recover params overrides.
+        df_v = df_full.copy()
+        for (group, offset) in vid:
+            params = offset_params.get((group, offset), {})
+            merged = dict(base_indicator_params)
+            merged.update(params)
+            recalculate_groups(df_v, [group], **merged)
+
+        # Slice the variant DataFrame using the same period bounds per combo.
+        variant_slices = OrderedDict()
+        for ck, periods in combo_periods.items():
+            slices = []
+            for ps, pe in periods:
+                # df_full is already date-bounded; periods are already trimmed to
+                # match each combo's DRM windows. Use the same boundaries.
+                df_slice = df_v.loc[ps:pe]
+                if not df_slice.empty:
+                    slices.append((df_slice, ps, pe))
+            variant_slices[ck] = slices
+        out[vid] = variant_slices
+
+    return out
+
+
+def _run_grid_search_original_engine(run_configs, variant_combo_slices, global_combo_keys,
                                       selection_combo_map, ref_directions=None):
     """Run grid search using the ORIGINAL (non-numpy) engine, single-process.
     Used for debugging to compare results with the numpy engine.
@@ -1399,10 +1853,11 @@ def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_key
     progress = st.progress(0, text=f"Running grid search (original engine, single-process)...")
 
     results = []
-    for idx, (label, strategy) in enumerate(run_configs):
+    for idx, (label, strategy, variant_id) in enumerate(run_configs):
+        slice_store = variant_combo_slices.get(variant_id) or variant_combo_slices.get(None) or {}
         combo_results = {}
         for combo_key in global_combo_keys:
-            slices = combo_slices.get(combo_key, [])
+            slices = slice_store.get(combo_key, [])
             stats_list = []
             for df_slice, ps, pe in slices:
                 try:
@@ -1445,7 +1900,7 @@ def _run_grid_search_original_engine(run_configs, combo_slices, global_combo_key
     return results
 
 
-def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_keys,
+def _run_grid_search_multiprocessing(run_configs, variant_combo_slices, global_combo_keys,
                                       selection_combo_map, ref_directions=None):
     """Run grid search using multiprocessing Pool.
     Each worker process handles one candidate across all combo/period slices.
@@ -1456,14 +1911,19 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
     n_workers = min(n_candidates, max(1, os.cpu_count() or 1))
 
     progress = st.progress(0, text=f"Running grid search with {n_workers} processes...")
-    st.caption(f"Using {n_workers} CPU cores for {n_candidates} candidates")
+    n_variants = len([k for k in variant_combo_slices.keys() if k is not None])
+    if n_variants:
+        st.caption(f"Using {n_workers} CPU cores for {n_candidates} runs across {n_variants + 1} indicator variant(s)")
+    else:
+        st.caption(f"Using {n_workers} CPU cores for {n_candidates} candidates")
 
-    # Convert combo_slices keys to plain tuples (ensure picklable)
-    combo_slices_dict = dict(combo_slices)
+    # Convert structures to plain dicts (ensure picklable)
+    variant_slices_dict = {k: dict(v) for k, v in variant_combo_slices.items()}
     combo_keys_list = list(global_combo_keys)
 
-    # Build task args: (idx, label, strategy) per candidate — idx for safe keying
-    tasks = [(idx, label, strategy) for idx, (label, strategy) in enumerate(run_configs)]
+    # Build task args: (idx, label, strategy, variant_id) per run
+    tasks = [(idx, label, strategy, variant_id)
+             for idx, (label, strategy, variant_id) in enumerate(run_configs)]
 
     # Run with Pool — shared data passed via initializer (pickled once per worker)
     results = []
@@ -1471,7 +1931,7 @@ def _run_grid_search_multiprocessing(run_configs, combo_slices, global_combo_key
         with multiprocessing.Pool(
             processes=n_workers,
             initializer=init_worker,
-            initargs=(combo_slices_dict, combo_keys_list)
+            initargs=(variant_slices_dict, combo_keys_list)
         ) as pool:
             completed = 0
             candidate_results = {}
@@ -1647,15 +2107,19 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
 # Cache helpers
 # ======================================================================
 
-def _build_cache_fingerprint(strategy, search_group, search_set, selected_events, condition_candidates):
+def _build_cache_fingerprint(strategy, search_group, search_set, selected_events,
+                             condition_candidates, view_state=None):
     """Build a hashable fingerprint for cache invalidation."""
     import json
     parts = [
         strategy.get("strategy_name", ""),
         search_group,
         search_set.get("name", ""),
+        get_mode(search_set),
         json.dumps(search_set.get("candidates", []), sort_keys=True),
-        json.dumps(sorted(selected_events)),
+        json.dumps(search_set.get("indicator_ranges") or {}, sort_keys=True),
+        json.dumps(sorted(selected_events)) if selected_events else "",
         json.dumps(condition_candidates, sort_keys=True) if condition_candidates else "",
+        json.dumps(view_state, sort_keys=True) if view_state else "",
     ]
     return "|".join(parts)

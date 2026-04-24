@@ -522,6 +522,99 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         """Return the locked ATR target price (exact level for exit price)."""
         return locked_atr_price
 
+    # -------------------------------------------------
+    # Helper: ATR Trailing Stop (Chandelier Exit)
+    # Level is recomputed each bar:
+    #   Long: max(prev_level, highest_high_since_entry - ATR(N) * mult)
+    #   Short: min(prev_level, lowest_low_since_entry  + ATR(N) * mult)
+    # The level only ratchets in the favourable direction.
+    # -------------------------------------------------
+    def init_trailing_state(trigger_config, bar_idx):
+        """Compute initial trailing state on the entry bar."""
+        atr_period = trigger_config.get('atr_period', 14)
+        atr_series = _get_atr_target_series(atr_period)
+        atr_val = atr_series.iloc[bar_idx]
+        if strategy_direction == 'Long':
+            extreme = df['high'].iloc[bar_idx]
+        else:
+            extreme = df['low'].iloc[bar_idx]
+        if pd.isna(atr_val):
+            return {'extreme': extreme, 'level': None, 'prev_level': None}
+        atr_mult = trigger_config.get('atr_multiplier', 3.0)
+        if strategy_direction == 'Long':
+            level = extreme - atr_val * atr_mult
+        else:
+            level = extreme + atr_val * atr_mult
+        return {'extreme': extreme, 'level': level, 'prev_level': level}
+
+    def update_trailing_state(state, trigger_config, bar_idx):
+        """Update trailing state for one ATR Trailing stop after a new bar."""
+        if state is None:
+            return state
+        # Ratchet: remember the level we crossed against last bar
+        state['prev_level'] = state['level']
+        atr_period = trigger_config.get('atr_period', 14)
+        atr_series = _get_atr_target_series(atr_period)
+        atr_val = atr_series.iloc[bar_idx]
+        if strategy_direction == 'Long':
+            state['extreme'] = max(state['extreme'], df['high'].iloc[bar_idx])
+        else:
+            state['extreme'] = min(state['extreme'], df['low'].iloc[bar_idx])
+        if pd.isna(atr_val):
+            return state
+        atr_mult = trigger_config.get('atr_multiplier', 3.0)
+        if strategy_direction == 'Long':
+            candidate = state['extreme'] - atr_val * atr_mult
+            if state['level'] is None or candidate > state['level']:
+                state['level'] = candidate
+        else:
+            candidate = state['extreme'] + atr_val * atr_mult
+            if state['level'] is None or candidate < state['level']:
+                state['level'] = candidate
+        return state
+
+    def check_atr_trailing_trigger(trigger_config, current_idx, state):
+        """Check if an ATR Trailing stop fires this bar based on its event type.
+
+        Default event when None: Long fires on Cross Below, Short on Cross Above.
+        """
+        if state is None or state.get('level') is None:
+            return False
+
+        event = trigger_config.get('event')
+        if event is None:
+            event = "Cross Below" if strategy_direction == 'Long' else "Cross Above"
+
+        level = state['level']
+        prev_level = state.get('prev_level', level)
+
+        # Use intra-bar low/high for cross detection, close for "close" events.
+        if strategy_direction == 'Long':
+            low_p = df['low'].iloc[current_idx]
+            close_p = df['latest'].iloc[current_idx]
+            prev_close = df['latest'].iloc[current_idx - 1] if current_idx > 0 else close_p
+            if event == "Cross Below":
+                return (prev_close >= prev_level) and (low_p < level)
+            elif event == "Close Below":
+                return close_p < level
+            elif event == "Cross":
+                return (prev_close >= prev_level) and (low_p < level)
+            elif event == "Close":
+                return close_p < level
+        else:  # Short
+            high_p = df['high'].iloc[current_idx]
+            close_p = df['latest'].iloc[current_idx]
+            prev_close = df['latest'].iloc[current_idx - 1] if current_idx > 0 else close_p
+            if event == "Cross Above":
+                return (prev_close <= prev_level) and (high_p > level)
+            elif event == "Close Above":
+                return close_p > level
+            elif event == "Cross":
+                return (prev_close <= prev_level) and (high_p > level)
+            elif event == "Close":
+                return close_p > level
+        return False
+
     def compute_atr_target_level(trigger_config, entry_price, bar_idx):
         """
         Compute the locked ATR target price at entry time.
@@ -623,32 +716,32 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             return cross_above or cross_below
 
         elif event == "Cross Above":
-            # Previous bar must have been below, current bar's high exceeds the value
+            # Standard cross: prev1 <= prev2 (both at t-1) AND now1 > now2 (both at t+0).
+            # Price exception: use bar high at t+0 against element2 at t-1 (the line
+            # that price actually crossed during this bar, not a t+0 reference that
+            # may have moved).
             if current_idx == 0:
                 return False
             if pd.isna(value1_prev) or pd.isna(value2_prev):
                 return False
             if value1_prev > value2_prev:
                 return False
-            # Use high price for element1 if it's Price, otherwise use the indicator value
             if col1 == "latest":
                 high_val = df["high"].iloc[current_idx]
-                return high_val > value2
+                return high_val > value2_prev
             else:
                 return value1 > value2
 
         elif event == "Cross Below":
-            # Previous bar must have been above, current bar's low goes below the value
             if current_idx == 0:
                 return False
             if pd.isna(value1_prev) or pd.isna(value2_prev):
                 return False
             if value1_prev < value2_prev:
                 return False
-            # Use low price for element1 if it's Price, otherwise use the indicator value
             if col1 == "latest":
                 low_val = df["low"].iloc[current_idx]
-                return low_val < value2
+                return low_val < value2_prev
             else:
                 return value1 < value2
 
@@ -661,8 +754,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             if col1 == "latest":
                 high_val = df["high"].iloc[current_idx]
                 low_val = df["low"].iloc[current_idx]
-                cross_above = (value1_prev <= value2_prev) and (high_val > value2)
-                cross_below = (value1_prev >= value2_prev) and (low_val < value2)
+                cross_above = (value1_prev <= value2_prev) and (high_val > value2_prev)
+                cross_below = (value1_prev >= value2_prev) and (low_val < value2_prev)
             else:
                 cross_above = (value1 > value2) and (value1_prev <= value2_prev)
                 cross_below = (value1 < value2) and (value1_prev >= value2_prev)
@@ -700,8 +793,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 else:
                     element2 = trigger_config.get('element2')
                     col2 = indicator_map.get(element2)
-                    if col2 and col2 in df.columns:
-                        return df[col2].iloc[current_idx]
+                    if col2 and col2 in df.columns and current_idx > 0:
+                        # Price crossed element2's t-1 value during bar t+0;
+                        # use that as the fill level (matches the cross-detection logic).
+                        return df[col2].iloc[current_idx - 1]
 
         return df['latest'].iloc[current_idx]
 
@@ -766,7 +861,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # Helper function to check exit (target or stop)
     # -------------------------------------------------
     def check_exit_signal(exit_config, current_idx, pos_entry_price=None, pos_r_distance=0.0,
-                          locked_atr_targets=None, exit_key=None):
+                          locked_atr_targets=None, exit_key=None,
+                          trailing_states=None):
         """Check if an exit signal (target or stop) is triggered"""
         trigger = exit_config.get('trigger', {})
         conditions = exit_config.get('conditions', [])
@@ -788,6 +884,16 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
             # Look up the locked price for this specific exit config
             locked_price = locked_atr_targets.get(exit_key)
             if not check_atr_target_trigger(trigger, current_idx, locked_price):
+                return False
+            for condition in conditions:
+                if not check_condition(condition, current_idx):
+                    return False
+            return True
+
+        # ATR Trailing (Chandelier) — uses per-position trailing state
+        if element1 == "ATR Trailing" and trailing_states is not None:
+            state = trailing_states.get(exit_key)
+            if not check_atr_trailing_trigger(trigger, current_idx, state):
                 return False
             for condition in conditions:
                 if not check_condition(condition, current_idx):
@@ -973,6 +1079,20 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
         bar_exit = False
         bar_exit_type = None
 
+        # ----- STEP 0: Update ATR Trailing state for every open position -----
+        # (must happen before the exit check so the level is current for this bar)
+        for pos in open_positions:
+            if pos['entry_bar_idx'] == i:
+                continue  # entry bar already initialised below
+            trailing = pos.get('trailing_states')
+            if not trailing:
+                continue
+            for stop_key, state in trailing.items():
+                _, _, s_idx = stop_key
+                g_idx = stop_key[0]
+                stop_cfg = exit_groups[g_idx]['stops'][s_idx]
+                update_trailing_state(state, stop_cfg.get('trigger', {}), i)
+
         # ----- STEP 1: Check exits for ALL open positions -----
         positions_to_remove = []
         for pos_idx, pos in enumerate(open_positions):
@@ -1050,7 +1170,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                             stop_key = (group_idx, 'stop', s_idx)
                             if check_exit_signal(stop, i, pos['entry_price'], pos['r_distance'],
                                                  locked_atr_targets=pos.get('locked_atr_targets'),
-                                                 exit_key=stop_key):
+                                                 exit_key=stop_key,
+                                                 trailing_states=pos.get('trailing_states')):
                                 pos_exit_triggered = True
                                 pos_exit_type = "Stop"
 
@@ -1060,6 +1181,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                                     s_exit_price = get_r_trigger_price(stop_trigger, i, pos['entry_price'], pos['r_distance'])
                                 elif s_el1 == "ATR Target":
                                     s_exit_price = get_atr_target_price(pos.get('locked_atr_targets', {}).get(stop_key))
+                                elif s_el1 == "ATR Trailing":
+                                    trailing = pos.get('trailing_states', {}).get(stop_key, {})
+                                    s_exit_price = trailing.get('level', get_trigger_price(stop_trigger, i))
                                 else:
                                     s_exit_price = get_trigger_price(stop_trigger, i)
                                 all_trades.append({
@@ -1139,7 +1263,9 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                     bar_entry = False
                 else:
                     # Compute locked ATR target prices for any ATR Target exits
+                    # and initialise trailing state for any ATR Trailing stops.
                     locked_atr_targets = {}
+                    trailing_states = {}
                     for g_idx, group in enumerate(exit_groups):
                         for t_idx, target in enumerate(group.get('targets', [])):
                             t_trigger = target.get('trigger', {})
@@ -1151,6 +1277,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                             if s_trigger.get('element1') == 'ATR Target':
                                 level = compute_atr_target_level(s_trigger, new_entry_price, i)
                                 locked_atr_targets[(g_idx, 'stop', s_idx)] = level
+                            elif s_trigger.get('element1') == 'ATR Trailing':
+                                trailing_states[(g_idx, 'stop', s_idx)] = init_trailing_state(s_trigger, i)
 
                     open_positions.append({
                         'trade_id': trade_counter,
@@ -1161,6 +1289,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                         'active_exit_groups': set(range(len(exit_groups))),
                         'entry_bar_idx': i,
                         'locked_atr_targets': locked_atr_targets,
+                        'trailing_states': trailing_states,
                     })
 
         # ----- STEP 3: Record bar signals -----

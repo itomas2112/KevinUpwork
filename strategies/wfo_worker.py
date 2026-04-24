@@ -14,6 +14,7 @@ from strategies.first_strategy_numpy import execute_custom_strategy_numpy
 from strategies.wfo_engine import (
     _extract_stats, aggregate_stats_dicts,
     split_atr_overlay, apply_atr_overlay,
+    split_value_overlay, apply_value_overlay,
 )
 
 
@@ -69,7 +70,9 @@ def _evaluate_single(params, date_ranges):
     the ATR overlay prefix) are split off and applied to a deepcopy of the
     strategy before execution.
     """
-    indicator_params, atr_overlay = split_atr_overlay(params)
+    # Strip out namespaced overlay keys before they reach indicator recalc.
+    rest, atr_overlay = split_atr_overlay(params)
+    indicator_params, value_overlay = split_value_overlay(rest)
 
     # Determine which groups changed (indicator-only view)
     groups = changed_groups(_worker_base_params, indicator_params)
@@ -80,7 +83,9 @@ def _evaluate_single(params, date_ranges):
     else:
         df = _worker_df_featured
 
-    strategy = apply_atr_overlay(_worker_strategy, atr_overlay)
+    # Apply both overlays — value overlay first since it doesn't conflict with ATR.
+    strategy = apply_value_overlay(_worker_strategy, value_overlay)
+    strategy = apply_atr_overlay(strategy, atr_overlay)
     full_index = df.index
     all_stats = []
 
