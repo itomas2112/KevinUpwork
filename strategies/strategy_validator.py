@@ -13,8 +13,25 @@ from config.constants import (
     R_PROFIT_LOSS_ELEMENTS,
     ATR_TARGET_ELEMENTS,
     ATR_TRAILING_ELEMENTS,
+    MIN_LOOKBACK,
+    MAX_LOOKBACK,
     get_indicator_map,
 )
+
+
+def _validate_lookback(d, path, errors):
+    """A lookback field is optional; if present it must be a positive int."""
+    lb = d.get("lookback")
+    if lb is None:
+        return
+    if not isinstance(lb, (int, float)) or isinstance(lb, bool):
+        errors.append(f"{path}.lookback must be an integer, got: {lb!r}")
+        return
+    lb_int = int(lb)
+    if lb_int != lb or lb_int < MIN_LOOKBACK or lb_int > MAX_LOOKBACK:
+        errors.append(
+            f"{path}.lookback must be an integer in [{MIN_LOOKBACK}, {MAX_LOOKBACK}], got: {lb!r}"
+        )
 
 # All valid indicator element names (without EMA, those are dynamic)
 _VALID_ELEMENTS = set(INDICATOR_MAP.keys())
@@ -126,6 +143,8 @@ def validate_strategy(strategy, ema_count=0):
             atr_mult = initial_stop.get("atr_multiplier")
             if not isinstance(atr_mult, (int, float)) or atr_mult <= 0:
                 errors.append(f"initial_stop.atr_multiplier must be > 0, got: {atr_mult!r}")
+
+        _validate_lookback(initial_stop, "initial_stop", errors)
 
     # ------------------------------------------------------------------
     # Exit groups
@@ -260,6 +279,8 @@ def _validate_trigger(trigger, path, errors, ema_count,
     else:
         errors.append(f"{path}.compare_type must be 'Indicator' or 'Fixed Value', got: {compare_type!r}")
 
+    _validate_lookback(trigger, path, errors)
+
 
 def _validate_condition(condition, path, errors, ema_count):
     """Validate a single condition dict."""
@@ -283,6 +304,8 @@ def _validate_condition(condition, path, errors, ema_count):
             errors.append(f"{path}.value must be a number when compare_type='Fixed Value', got: {value!r}")
     else:
         errors.append(f"{path}.compare_type must be 'Indicator' or 'Fixed Value', got: {compare_type!r}")
+
+    _validate_lookback(condition, path, errors)
 
 
 def _validate_indicator_settings(settings, errors):

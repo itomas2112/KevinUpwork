@@ -4,8 +4,17 @@ Strategy management utilities - save, load, delete
 import streamlit as st
 import json
 import pandas as pd
-from config.constants import STRATEGIES_FILE
+from config.constants import STRATEGIES_FILE, DEFAULT_LOOKBACK
 from strategies.strategy_validator import validate_strategy
+
+
+def _read_lookback(key):
+    """Read a lookback value from session state, defaulting to 1 if absent."""
+    val = st.session_state.get(key, DEFAULT_LOOKBACK)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return DEFAULT_LOOKBACK
 
 
 def save_strategy_to_session(strategy_name):
@@ -43,7 +52,8 @@ def save_strategy_to_session(strategy_name):
                 "element2": st.session_state.get('entry_trigger_element2') if st.session_state.get(
                     'entry_trigger_compare_type', 'Indicator') == "Indicator" else None,
                 "value": st.session_state.get('entry_trigger_value') if st.session_state.get(
-                    'entry_trigger_compare_type', 'Indicator') == "Fixed Value" else None
+                    'entry_trigger_compare_type', 'Indicator') == "Fixed Value" else None,
+                "lookback": _read_lookback('entry_trigger_lookback'),
             },
             "position_size": st.session_state.get('entry_position_size'),
             "conditions_count": st.session_state['entry_conditions_count'],
@@ -104,7 +114,8 @@ def save_strategy_to_session(strategy_name):
             "operator": st.session_state.get(f'entry_cond_{i}_operator'),
             "compare_type": compare_type,
             "element2": st.session_state.get(f'entry_cond_{i}_element2') if compare_type == "Indicator" else None,
-            "value": st.session_state.get(f'entry_cond_{i}_value') if compare_type == "Fixed Value" else None
+            "value": st.session_state.get(f'entry_cond_{i}_value') if compare_type == "Fixed Value" else None,
+            "lookback": _read_lookback(f'entry_cond_{i}_lookback'),
         }
         strategy_data["entry"]["conditions"].append(condition)
 
@@ -184,6 +195,7 @@ def collect_exit_config(group_idx, exit_type, exit_idx):
             st.session_state.get(f'{prefix}_trigger_value')
             if compare_type == 'Fixed Value' else None
         ),
+        'lookback': _read_lookback(f'{prefix}_trigger_lookback'),
     }
 
     # ATR Target: store period and multiplier
@@ -221,6 +233,7 @@ def collect_exit_config(group_idx, exit_type, exit_idx):
                 st.session_state.get(f'{cond_prefix}_value')
                 if cond_compare_type == 'Fixed Value' else None
             ),
+            'lookback': _read_lookback(f'{cond_prefix}_lookback'),
         }
         conditions.append(condition)
 

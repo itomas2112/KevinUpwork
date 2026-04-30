@@ -3,10 +3,20 @@
 import copy
 import pandas as pd
 import numpy as np
-from config.constants import get_indicator_map
+from config.constants import get_indicator_map, DEFAULT_LOOKBACK
 from indicators.atr_indicator import atr_indicator
 from strategies.strategy_validator import validate_strategy
 from strategies.risk_validation import validate_risk_distance as _validate_risk
+
+
+def _coerce_lookback(config):
+    """Read and clamp the lookback field from a trigger/condition/stop dict.
+    Missing or invalid -> DEFAULT_LOOKBACK (1) for backward compatibility."""
+    lb = config.get('lookback') if isinstance(config, dict) else None
+    if not isinstance(lb, (int, float)) or isinstance(lb, bool):
+        return DEFAULT_LOOKBACK
+    lb_i = int(lb)
+    return lb_i if lb_i >= 1 else DEFAULT_LOOKBACK
 
 
 # ---------------------------------------------------------------------------
@@ -324,40 +334,43 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # Helper function to check if condition is met
     # -------------------------------------------------
     def check_condition(condition_config, current_idx):
-        """Check if a single condition is met at given index"""
+        """Check if a condition is met at current_idx, optionally OR'd over the
+        last `lookback` bars (default 1 = current bar only)."""
         element1_name = condition_config.get('element1')
         operator = condition_config.get('operator')
         compare_type = condition_config.get('compare_type', 'Indicator')
         element2_name = condition_config.get('element2')
         fixed_value = condition_config.get('value')
 
-        # Get the column for element1
         col1 = indicator_map.get(element1_name)
-
         if col1 is None or col1 not in df.columns:
             return False
-
         series1 = df[col1]
-        value1 = series1.iloc[current_idx]
 
-        # Determine what to compare against
         if compare_type == "Fixed Value":
             if fixed_value is None:
                 return False
-            value2 = fixed_value
+            series2 = None
         else:
             col2 = indicator_map.get(element2_name)
             if col2 is None or col2 not in df.columns:
                 return False
             series2 = df[col2]
-            value2 = series2.iloc[current_idx]
 
-        # Check the operator
-        if operator == "Above":
-            return value1 > value2
-        elif operator == "Below":
-            return value1 < value2
+        def _at(idx):
+            v1 = series1.iloc[idx]
+            v2 = fixed_value if series2 is None else series2.iloc[idx]
+            if operator == "Above":
+                return v1 > v2
+            elif operator == "Below":
+                return v1 < v2
+            return False
 
+        lookback = _coerce_lookback(condition_config)
+        max_back = min(lookback, current_idx + 1)
+        for k in range(max_back):
+            if _at(current_idx - k):
+                return True
         return False
 
     # -------------------------------------------------
@@ -637,14 +650,18 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     def check_trigger(trigger_config, current_idx, locked_value=None):
         """
-        Check if a trigger event occurred at given index.
-
-        Parameters:
-        -----------
-        locked_value : float, optional
-            If provided, overrides the element2 value with this fixed price.
-            Used by the initial (static) stop to lock the indicator value at entry time.
+        Check if a trigger event occurred at given index, OR'd over the last
+        `lookback` bars (default 1 = current bar only).
         """
+        lookback = _coerce_lookback(trigger_config)
+        max_back = min(lookback, current_idx + 1)
+        for k in range(max_back):
+            if _check_trigger_at(trigger_config, current_idx - k, locked_value):
+                return True
+        return False
+
+    def _check_trigger_at(trigger_config, current_idx, locked_value=None):
+        """Single-bar trigger check (no lookback). Used as the inner loop step."""
         element1_name = trigger_config.get('element1')
         event = trigger_config.get('event')
         compare_type = trigger_config.get('compare_type', 'Indicator')

@@ -7,11 +7,32 @@ import copy
 import warnings
 import pandas as pd
 import numpy as np
-from config.constants import get_indicator_map
+from config.constants import get_indicator_map, DEFAULT_LOOKBACK
 from indicators.atr_indicator import atr_indicator
 from strategies.strategy_validator import validate_strategy
 from strategies.first_strategy import _prepare_ichimoku_columns
 from strategies.risk_validation import validate_risk_distance as _validate_risk
+
+
+def _coerce_lookback(config):
+    """Read and clamp the lookback field from a trigger/condition/stop dict.
+    Missing or invalid -> DEFAULT_LOOKBACK (1) for backward compatibility."""
+    lb = config.get('lookback') if isinstance(config, dict) else None
+    if not isinstance(lb, (int, float)) or isinstance(lb, bool):
+        return DEFAULT_LOOKBACK
+    lb_i = int(lb)
+    return lb_i if lb_i >= 1 else DEFAULT_LOOKBACK
+
+
+def _apply_lookback_mask(mask, lookback):
+    """Rolling-OR over the last `lookback` bars (including current).
+    out[i] = any(mask[max(0, i-lookback+1) : i+1])."""
+    if lookback <= 1:
+        return mask
+    out = mask.copy()
+    for k in range(1, lookback):
+        out[k:] |= mask[:-k]
+    return out
 
 
 # ======================================================================
@@ -114,6 +135,17 @@ def _vec_trigger(config, _arrays, indicator_map, _high, _low, _close, _n):
     elif event == "At Level":
         mask[:] = np.abs(arr1 - arr2) < 0.01
 
+    # Apply lookback ("event fired within last N bars"). Bars added by the
+    # lookback window (where the event itself didn't fire on bar i) get the
+    # current bar's close as fill price — we're entering now because the
+    # event happened recently, not back-filling at the original cross price.
+    lookback = _coerce_lookback(config)
+    if lookback > 1:
+        new_mask = _apply_lookback_mask(mask, lookback)
+        added = new_mask & ~mask
+        prices = np.where(added, _close, prices)
+        mask = new_mask
+
     return mask, prices
 
 
@@ -142,10 +174,13 @@ def _vec_condition(config, _arrays, indicator_map, _n):
         arr2 = _arrays[col2]
 
     if operator == "Above":
-        return arr1 > arr2
+        mask = arr1 > arr2
     elif operator == "Below":
-        return arr1 < arr2
-    return np.zeros(_n, dtype=bool)
+        mask = arr1 < arr2
+    else:
+        return np.zeros(_n, dtype=bool)
+
+    return _apply_lookback_mask(mask, _coerce_lookback(config))
 
 
 def _vec_stop_violated(config, _arrays, indicator_map, strategy_direction, _n):
@@ -178,15 +213,18 @@ def _vec_stop_violated(config, _arrays, indicator_map, strategy_direction, _n):
         arr2 = _arrays[col2]
 
     if event in ("Cross Below", "Close Below"):
-        return arr1 < arr2
+        mask = arr1 < arr2
     elif event in ("Cross Above", "Close Above"):
-        return arr1 > arr2
+        mask = arr1 > arr2
     elif event in ("Cross", "Close"):
         if strategy_direction == 'Long':
-            return arr1 < arr2
+            mask = arr1 < arr2
         else:
-            return arr1 > arr2
-    return np.zeros(_n, dtype=bool)
+            mask = arr1 > arr2
+    else:
+        return np.zeros(_n, dtype=bool)
+
+    return _apply_lookback_mask(mask, _coerce_lookback(config))
 
 
 # ======================================================================

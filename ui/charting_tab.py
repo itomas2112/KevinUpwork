@@ -1,6 +1,7 @@
 """
 Charting tab (Tab 1) UI and logic
 """
+import time
 import streamlit as st
 import streamlit.components.v1 as _components
 from data.loader import load_ohlc, load_drm, parse_drm_periods
@@ -10,6 +11,10 @@ from graphs.graph import render_charts
 from strategies.first_strategy import ichimoku_tenkan_kijun_strategy, execute_custom_strategy
 import pandas as pd
 import json
+
+# Idle time after the last parameter change before auto-recalc fires.
+# Coalesces rapid changes so we don't run the full pipeline on every slider tick.
+DEBOUNCE_MS = 750
 
 
 def _backtest_fingerprint(strategy, indicator_params, **overlay_flags):
@@ -164,29 +169,49 @@ def render_charting_tab(sidebar_config):
         st.info("Please configure pattern selections in the sidebar to display charts.")
         return
 
-    # -- Recalculate gate --
+    # -- Auto-recalculate gate (debounced, with manual button as fallback) --
     current_fp = _build_charting_fingerprint(sidebar_config)
     last_calc_fp = st.session_state.get('_charting_calc_fp')
 
-    calculate_clicked = st.button("Calculate", key="charting_calculate", type="primary")
-
-    # First time -- nothing cached yet, need an initial calculate
-    if last_calc_fp is None and not calculate_clicked:
-        st.info("Click **Calculate** to render charts.")
-        return
-
-    params_changed = (last_calc_fp is not None and current_fp != last_calc_fp)
-
-    if params_changed and not calculate_clicked:
-        _inject_sticky_recalculate_bar()
-
-    if not calculate_clicked and last_calc_fp is not None:
+    # Cached output is up-to-date -- render it and skip everything else.
+    if last_calc_fp is not None and current_fp == last_calc_fp:
         cached = st.session_state.get('_charting_cached_output')
         if cached:
             _display_cached_output(cached, sidebar_config)
             return
 
-    # -- Expensive pipeline (only runs on Calculate click) --
+    # Track when the fingerprint last changed so we can debounce.
+    now = time.time()
+    if st.session_state.get('_charting_pending_fp') != current_fp:
+        st.session_state['_charting_pending_fp'] = current_fp
+        st.session_state['_charting_pending_ts'] = now
+    elapsed_ms = (now - st.session_state['_charting_pending_ts']) * 1000
+
+    calculate_clicked = st.button(
+        "Calculate", key="charting_calculate", type="primary",
+        help="Force immediate recalculation (otherwise auto-fires after a short pause).",
+    )
+
+    if not calculate_clicked and elapsed_ms < DEBOUNCE_MS:
+        # Show the cached output (if any) plus a "recalculating..." caption,
+        # then sleep the remaining debounce window and rerun. Streamlit cancels
+        # in-flight scripts at the next widget interaction, so if the user
+        # changes another param during the sleep, this render is interrupted
+        # and a fresh render starts with the new value -- naturally coalescing
+        # rapid changes.
+        secs = max(0.05, (DEBOUNCE_MS - elapsed_ms) / 1000)
+        if last_calc_fp is not None:
+            cached = st.session_state.get('_charting_cached_output')
+            if cached:
+                st.caption(f"Parameters changed -- recalculating in {secs:.1f}s...")
+                _display_cached_output(cached, sidebar_config)
+                time.sleep(secs)
+                st.rerun()
+        st.info(f"Auto-calculating in {secs:.1f}s... or click **Calculate** above.")
+        time.sleep(secs)
+        st.rerun()
+
+    # -- Expensive pipeline (auto-fires after debounce, or on Calculate click) --
 
     st.session_state['_charting_html_cache'] = {}
 
@@ -379,37 +404,6 @@ def _display_cached_output(cached, sidebar_config):
     if all_stats:
         with global_perf_container:
             render_global_performance(all_stats, strategy_label, total_periods)
-
-
-def _inject_sticky_recalculate_bar():
-    """Inject CSS + HTML for a fixed bar at the bottom of the viewport."""
-    st.markdown("""
-    <style>
-    .sticky-recalc-bar {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        border-top: 2px solid #e67e22;
-        padding: 12px 24px;
-        z-index: 999999;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 16px;
-        box-shadow: 0 -4px 12px rgba(0,0,0,0.4);
-    }
-    .sticky-recalc-bar span {
-        color: #e67e22;
-        font-weight: 600;
-        font-size: 0.95rem;
-    }
-    </style>
-    <div class="sticky-recalc-bar">
-        <span>Parameters changed -- click Calculate above to update charts</span>
-    </div>
-    """, unsafe_allow_html=True)
 
 
 def render_file_uploaders():

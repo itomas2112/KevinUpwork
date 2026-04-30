@@ -22,6 +22,9 @@ from config.constants import (
     R_PROFIT_LOSS_ELEMENTS,
     ATR_TARGET_ELEMENTS,
     ATR_TRAILING_ELEMENTS,
+    DEFAULT_LOOKBACK,
+    MIN_LOOKBACK,
+    MAX_LOOKBACK,
     get_group_elements,
 )
 from strategies.strategy_manager import save_strategy_to_session, delete_strategy, delete_all_strategies, save_strategies_to_file
@@ -30,6 +33,21 @@ from strategies.strategy_manager import save_strategy_to_session, delete_strateg
 def _ema_count():
     """Get the current number of EMA overlays configured in strategy builder."""
     return len(st.session_state.get('sb_ema_periods', []))
+
+
+def _lookback_input(key, label="Within last (periods)"):
+    """A consistent number_input for the per-event lookback window.
+    1 = current bar only (default, backward-compatible). N = event/condition
+    is satisfied if it fired at any of the last N closed bars."""
+    return st.number_input(
+        label,
+        min_value=MIN_LOOKBACK,
+        max_value=MAX_LOOKBACK,
+        value=int(st.session_state.get(key, DEFAULT_LOOKBACK)),
+        step=1,
+        key=key,
+        help="1 = current bar only. Greater = OR over the last N closed bars.",
+    )
 
 
 def render_strategy_builder_tab():
@@ -92,6 +110,7 @@ def _apply_pending_edit():
     st.session_state['entry_trigger_element1'] = entry_trigger.get('element1')
     st.session_state['entry_trigger_event'] = entry_trigger.get('event')
     st.session_state['entry_trigger_compare_type'] = entry_trigger.get('compare_type', 'Indicator')
+    st.session_state['entry_trigger_lookback'] = int(entry_trigger.get('lookback', DEFAULT_LOOKBACK))
 
     if entry_trigger.get('compare_type') == 'Indicator':
         st.session_state['entry_trigger_element2'] = entry_trigger.get('element2')
@@ -109,6 +128,7 @@ def _apply_pending_edit():
         st.session_state[f'entry_cond_{i}_element1'] = cond.get('element1')
         st.session_state[f'entry_cond_{i}_operator'] = cond.get('operator')
         st.session_state[f'entry_cond_{i}_compare_type'] = cond.get('compare_type', 'Indicator')
+        st.session_state[f'entry_cond_{i}_lookback'] = int(cond.get('lookback', DEFAULT_LOOKBACK))
 
         if cond.get('compare_type') == 'Indicator':
             st.session_state[f'entry_cond_{i}_element2'] = cond.get('element2')
@@ -122,6 +142,7 @@ def _apply_pending_edit():
         initial = st.session_state['initial_stop']
         st.session_state['initial_stop_type'] = initial.get('stop_type', 'Indicator')
         st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
+        st.session_state['initial_stop_lookback'] = int(initial.get('lookback', DEFAULT_LOOKBACK))
         if initial.get('stop_type') == 'ATR':
             st.session_state['initial_stop_atr_period'] = initial.get('atr_period', 14)
             st.session_state['initial_stop_atr_multiplier'] = initial.get('atr_multiplier', 1.5)
@@ -566,6 +587,7 @@ def _restore_entry_keys_if_needed():
     st.session_state['entry_trigger_element1'] = entry_trigger.get('element1')
     st.session_state['entry_trigger_event'] = entry_trigger.get('event')
     st.session_state['entry_trigger_compare_type'] = entry_trigger.get('compare_type', 'Indicator')
+    st.session_state['entry_trigger_lookback'] = int(entry_trigger.get('lookback', DEFAULT_LOOKBACK))
     if entry_trigger.get('compare_type') == 'Indicator':
         st.session_state['entry_trigger_element2'] = entry_trigger.get('element2')
     else:
@@ -577,6 +599,7 @@ def _restore_entry_keys_if_needed():
         st.session_state[f'entry_cond_{i}_element1'] = cond.get('element1')
         st.session_state[f'entry_cond_{i}_operator'] = cond.get('operator')
         st.session_state[f'entry_cond_{i}_compare_type'] = cond.get('compare_type', 'Indicator')
+        st.session_state[f'entry_cond_{i}_lookback'] = int(cond.get('lookback', DEFAULT_LOOKBACK))
         if cond.get('compare_type') == 'Indicator':
             st.session_state[f'entry_cond_{i}_element2'] = cond.get('element2')
         else:
@@ -588,6 +611,7 @@ def _restore_entry_keys_if_needed():
         initial = st.session_state['initial_stop']
         st.session_state['initial_stop_type'] = initial.get('stop_type', 'Indicator')
         st.session_state['initial_stop_event'] = initial.get('event', 'Cross Below')
+        st.session_state['initial_stop_lookback'] = int(initial.get('lookback', DEFAULT_LOOKBACK))
         if initial.get('stop_type') == 'ATR':
             st.session_state['initial_stop_atr_period'] = initial.get('atr_period', 14)
             st.session_state['initial_stop_atr_multiplier'] = initial.get('atr_multiplier', 1.5)
@@ -630,6 +654,7 @@ def render_entry_box():
                 EVENT_TYPES,
                 key="entry_trigger_event"
             )
+            entry_trigger_lookback = _lookback_input("entry_trigger_lookback")
 
         with col3:
             # Choose between indicator or fixed value
@@ -698,6 +723,7 @@ def render_entry_box():
                 STOP_EVENT_TYPES,
                 key="initial_stop_event"
             )
+            initial_stop_lookback = _lookback_input("initial_stop_lookback")
 
         with sc3:
             if initial_stop_type == "Indicator":
@@ -739,7 +765,8 @@ def render_entry_box():
                 'stop_type': 'Indicator',
                 'event': initial_stop_event,
                 'compare_type': 'Indicator',
-                'element2': initial_stop_element2
+                'element2': initial_stop_element2,
+                'lookback': initial_stop_lookback,
             }
         else:  # ATR
             st.session_state['initial_stop'] = {
@@ -748,6 +775,7 @@ def render_entry_box():
                 'event': initial_stop_event,
                 'atr_period': initial_stop_atr_period,
                 'atr_multiplier': initial_stop_atr_mult,
+                'lookback': initial_stop_lookback,
             }
 
         st.divider()
@@ -797,6 +825,7 @@ def render_entry_box():
                             CONDITION_OPERATORS,
                             key=f"entry_cond_{i}_operator"
                         )
+                        _lookback_input(f"entry_cond_{i}_lookback")
 
                     with col3:
                         # Choose between indicator or fixed value
@@ -861,6 +890,7 @@ def render_exit_box():
                 EVENT_TYPES,
                 key="exit_trigger_event"
             )
+            _lookback_input("exit_trigger_lookback")
 
         with col3:
             # Choose between indicator or fixed value
@@ -953,6 +983,7 @@ def render_exit_box():
                             CONDITION_OPERATORS,
                             key=f"exit_cond_{i}_operator"
                         )
+                        _lookback_input(f"exit_cond_{i}_lookback")
 
                     with col3:
                         # Choose between indicator or fixed value
@@ -1794,6 +1825,11 @@ def render_exit_config(group_idx, exit_type, exit_idx, exit_config):
                     event_options,
                     key=f"{prefix}_trigger_event"
                 )
+            # R Profit/Loss, ATR Target, and ATR Trailing have their own per-bar
+            # detection logic that doesn't use the rolling-OR mask, so lookback
+            # is only meaningful for indicator-vs-indicator/value triggers.
+            if not (is_r_element or is_atr_target or is_atr_trailing):
+                _lookback_input(f"{prefix}_trigger_lookback")
 
         with col3:
             if is_atr_target or is_atr_trailing:
@@ -1936,6 +1972,11 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
     else:
         st.session_state[f'{prefix}_trigger_value'] = trigger.get('value', 50.0)
 
+    # Lookback (only meaningful for indicator-vs-indicator/value triggers; the
+    # input widget is hidden for R/ATR Target/ATR Trailing, but storing the
+    # value is harmless either way).
+    st.session_state[f'{prefix}_trigger_lookback'] = int(trigger.get('lookback', DEFAULT_LOOKBACK))
+
     # Load conditions
     conditions = exit_config.get('conditions', [])
     st.session_state[f'{prefix}_conditions_count'] = len(conditions)
@@ -1946,6 +1987,7 @@ def _load_exit_widget_keys(group_idx, exit_type, exit_idx, exit_config):
         st.session_state[f'{cond_prefix}_element1'] = cond.get('element1')
         st.session_state[f'{cond_prefix}_operator'] = cond.get('operator')
         st.session_state[f'{cond_prefix}_compare_type'] = cond.get('compare_type', 'Indicator')
+        st.session_state[f'{cond_prefix}_lookback'] = int(cond.get('lookback', DEFAULT_LOOKBACK))
 
         if cond.get('compare_type') == 'Indicator':
             st.session_state[f'{cond_prefix}_element2'] = cond.get('element2')
@@ -1978,6 +2020,7 @@ def render_exit_condition(group_idx, exit_type, exit_idx, cond_idx):
             CONDITION_OPERATORS,
             key=f"{exit_type}_{group_idx}_{exit_idx}_cond_{cond_idx}_operator"
         )
+        _lookback_input(f"{exit_type}_{group_idx}_{exit_idx}_cond_{cond_idx}_lookback")
 
     with col3:
         cond_compare_type = st.radio(

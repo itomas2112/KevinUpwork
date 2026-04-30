@@ -109,6 +109,13 @@ EVENT_TYPES = [
     "Close Below",
 ]
 
+# Default "within last N periods" lookback for events. 1 = current bar only
+# (no lookback). Stored on every trigger/condition/stop dict; the executor
+# treats the event as fired if it was true at any of the last N closed bars.
+DEFAULT_LOOKBACK = 1
+MIN_LOOKBACK = 1
+MAX_LOOKBACK = 100
+
 STOP_EVENT_TYPES = [
     "Cross Above",
     "Cross Below",
