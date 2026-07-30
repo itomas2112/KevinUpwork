@@ -420,6 +420,7 @@ def render_file_uploaders():
         if uploaded_file is not None:
             df_raw = load_ohlc(uploaded_file)
             st.session_state["df_raw"] = df_raw
+            st.session_state["data_file_name"] = uploaded_file.name
             # Apply current aggregation (default = base timeframe, just a copy)
             from data.loader import resample_ohlc
             agg_tf = st.session_state.get("_agg_timeframe", base_tf)

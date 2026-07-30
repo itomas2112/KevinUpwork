@@ -15,7 +15,11 @@ __pycache__/
 # Local strategy data
 saved_strategies.json
 saved_strategies.json
+saved_wave_markings.json
 ui/strategy_builder_tab.py.tmp.9644.1773737781762
 saved_group_sets.json
 *.pdf
+
+# Screen recordings sent by the client -- ~1 GB and no business in the repo
+images_client/
 

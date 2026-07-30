@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Wave Chart</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: #121212;
+            overflow: hidden;
+        }
+        #wave-root {
+            position: relative;
+            width: 100%;
+        }
+        /* Focusable (tabindex="-1") so keyboard shortcuts reach the iframe as
+           soon as the user clicks the chart -- without the focus ring. */
+        #wave-chart {
+            width: 100%;
+            outline: none;
+        }
+
+        /* Toolbar overlay -- centred over the top of the price pane. The strip
+           itself must never swallow wheel/drag events, so only its controls
+           take pointer events. */
+        #wave-toolbar {
+            position: absolute;
+            top: 6px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            z-index: 5;
+            pointer-events: none;
+            font: 12px Arial, sans-serif;
+            color: #c8c8c8;
+            white-space: nowrap;
+        }
+        /* The status chip lives on its own row: showing it must not reflow the
+           button row on a narrow chart. */
+        #wave-toolbar .wa-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 4px;
+        }
+        #wave-toolbar button,
+        #wave-toolbar select,
+        #wave-toolbar .wa-chip {
+            pointer-events: auto;
+        }
+        .wa-slot {
+            position: relative;
+        }
+        #wave-toolbar button {
+            background: #1e1e1e;
+            border: 1px solid #2a2a2a;
+            color: #c8c8c8;
+            font: 12px Arial, sans-serif;
+            padding: 3px 8px;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+        #wave-toolbar button:hover {
+            background: #2a2a2a;
+        }
+        #wave-toolbar button.wa-armed {
+            border-color: #FFD700;
+            color: #FFD700;
+        }
+        #wave-toolbar select {
+            background: #1e1e1e;
+            border: 1px solid #2a2a2a;
+            color: #c8c8c8;
+            font: 12px Arial, sans-serif;
+            padding: 3px 4px;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+        .wa-menu {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            margin-top: 2px;
+            background: #1e1e1e;
+            border: 1px solid #2a2a2a;
+            border-radius: 2px;
+            display: none;
+            flex-direction: column;
+            pointer-events: auto;
+        }
+        .wa-menu.wa-open {
+            display: flex;
+        }
+        .wa-menu button {
+            border: 0;
+            border-radius: 0;
+            text-align: left;
+            width: 100%;
+        }
+        .wa-chip {
+            background: #1e1e1e;
+            border: 1px solid #2a2a2a;
+            border-radius: 2px;
+            padding: 3px 8px;
+            display: none;
+        }
+        .wa-chip.wa-on {
+            display: inline-block;
+        }
+        .wa-chip.wa-flash {
+            border-color: #ef5350;
+            color: #ef5350;
+        }
+        /* The chip's Delete button: sits inline with the selection readout. */
+        #wave-toolbar .wa-chip button.wa-del {
+            margin-left: 8px;
+            padding: 0 5px;
+            line-height: 16px;
+            vertical-align: baseline;
+        }
+        #wave-toolbar .wa-chip button.wa-del:hover {
+            border-color: #ef5350;
+            color: #ef5350;
+        }
+
+        /* Fullscreen toggle -- last control in the row, set slightly apart. */
+        #wave-toolbar button.wa-fs-btn {
+            margin-left: 8px;
+        }
+        #wave-toolbar button.wa-fs-btn.wa-on {
+            border-color: #FFD700;
+            color: #FFD700;
+        }
+
+        /* Fullscreen layout. Native fullscreen puts #wave-root itself on the
+           screen; the fallback pins the whole iframe to the parent viewport and
+           marks <body>. In both cases the root has to fill the viewport it was
+           given -- the chart canvas is sized in JS, this is for the backdrop. */
+        #wave-root:fullscreen {
+            width: 100vw;
+            height: 100vh;
+            background: #121212;
+        }
+        body.wa-fs,
+        body.wa-fs #wave-root {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="wave-root">
+        <div id="wave-chart" tabindex="-1"></div>
+        <div id="wave-toolbar"></div>
+    </div>
+    <script src="lightweight-charts.standalone.production.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>
