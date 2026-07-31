@@ -3,6 +3,7 @@ Wave Analysis tab (Tab 8) UI and logic
 """
 import copy
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -14,6 +15,10 @@ from ui.components.wave_chart import wave_chart
 
 # Static for the life of the process -- built once, handed to every render.
 WAVE_DEFS = wave_defs()
+
+# The component's Streamlit key. Also the session-state key its return value is
+# stored under, which is where the held fingerprint is read from.
+CHART_KEY = "wave_chart_main"
 
 # How many mutations Ctrl+Z can walk back. Deep copies of a timeframe's whole
 # pattern list, so the ceiling is about memory, not about the client's patience.
@@ -44,8 +49,63 @@ def build_fingerprint(df, timeframe, dataset_key):
             f"|{df.index[0].isoformat()}|{df.index[-1].isoformat()}")
 
 
+def dedupe_bars(df):
+    """One row per timestamp, strictly increasing in time.
+
+    Lightweight Charts' ``setData`` rejects the *entire* dataset on the first
+    non-strictly-increasing time, and it does so silently: a blank price pane,
+    a live crosshair over nothing. Real exports hit this -- the client's
+    ten-year Gold file repeats 1,985 timestamps, every one of them a verbatim
+    second copy of a bar. Repeats need not be verbatim in general, though: on a
+    contract-roll day two contracts can both print at the same minute, and the
+    one that was actually trading is the one carrying the volume. So the
+    highest-volume row wins the timestamp, and with no usable volume the last
+    row does, which is the export's own ordering.
+
+    Indicators are computed downstream of this, so a bar that lost the contest
+    never reaches a rolling window either.
+
+    The frame is only copied when there is something to fix -- this runs on
+    every payload build, over a quarter of a million rows.
+    """
+    if df.index.is_unique and df.index.is_monotonic_increasing:
+        return df
+
+    frame = df
+    if not frame.index.is_unique:
+        if "volume" in frame.columns:
+            volume = pd.to_numeric(frame["volume"], errors="coerce").to_numpy(dtype="float64")
+            # A row with no readable volume must lose to any row that has one,
+            # and must not beat its own duplicates on a NaN comparison.
+            volume = np.where(np.isnan(volume), -np.inf, volume)
+        else:
+            volume = np.zeros(len(frame))
+        # Both sorts are stable, so rows of equal volume -- and every row of a
+        # timestamp with no usable volume at all -- keep the frame's original
+        # order and ``keep="last"`` resolves the tie in favour of the last one.
+        frame = frame.iloc[np.argsort(volume, kind="stable")]
+        frame = frame.sort_index(kind="mergesort")
+        frame = frame[~frame.index.duplicated(keep="last")]
+
+    # The invariant, not an optimisation: a payload whose times are not
+    # strictly increasing blanks the chart, so pathological input (unsorted
+    # rows, an unparsable timestamp) loses the offending rows here rather than
+    # taking the whole pane down in the browser.
+    if not (frame.index.is_unique and frame.index.is_monotonic_increasing):
+        frame = frame[frame.index.notna()]
+        frame = frame.sort_index(kind="mergesort")
+        frame = frame[~frame.index.duplicated(keep="last")]
+    return frame
+
+
 def build_wave_payload(df, timeframe, dataset_key):
     """Build the JSON-serializable payload the wave chart frontend consumes."""
+    # Identity of the *input* frame: the tab computes the same fingerprint from
+    # the same frame to decide whether this payload is still current, and it
+    # must not pay for a dedup pass to do it. The dedup is deterministic, so
+    # one identity implies the other.
+    fingerprint = build_fingerprint(df, timeframe, dataset_key)
+    df = dedupe_bars(df)
     close = _close_column(df)
 
     rsi_series = rsi(close, 14)
@@ -67,8 +127,32 @@ def build_wave_payload(df, timeframe, dataset_key):
         "ci_13": _floats(ci_13),
         "ci_33": _floats(ci_33),
         "timeframe": timeframe,
-        "fingerprint": build_fingerprint(df, timeframe, dataset_key),
+        "fingerprint": fingerprint,
     }
+
+
+def choose_payload(payload, held):
+    """The payload to hand the component: the real one, or a stub.
+
+    A decade of 15m bars serialises to tens of megabytes, and Streamlit ships
+    every component argument to the iframe again on every single rerun -- a
+    widget toggled in another tab would otherwise re-send the whole chart. The
+    frontend reports the fingerprint it currently holds, so once that matches
+    what we would send there is nothing to send: a stub carrying the same
+    fingerprint says "your data is still current" in a few dozen bytes.
+
+    Anything else -- no value yet, a stale fingerprint, a frontend that lost
+    its state to a hard refresh -- gets the full payload.
+    """
+    fingerprint = payload.get("fingerprint")
+    if held is not None and held == fingerprint:
+        return {"fingerprint": fingerprint, "stub": True}
+    return payload
+
+
+def held_fingerprint(value):
+    """The fingerprint the frontend last reported holding, or None."""
+    return value.get("held") if isinstance(value, dict) else None
 
 
 def _is_int(value):
@@ -251,8 +335,20 @@ def render_wave_analysis_tab(sidebar_config):
 
     # The ack tells the frontend which events it may drop from its outbox.
     last_seq = st.session_state.get("_wa_event_seq", 0)
-    value = wave_chart(payload, config, patterns, WAVE_DEFS, last_seq,
-                       key="wave_chart_main")
+
+    # Read what the frontend is holding *before* the component call: the call's
+    # own return value only lands afterwards, and deciding one rerun late would
+    # cost a full resend every time the data changed. The component's value
+    # lives in session state under its key -- its widget identity is keyed on
+    # the key alone, so swapping the payload for a stub never disturbs it.
+    stored = st.session_state.get(CHART_KEY)
+    if not isinstance(stored, dict):
+        stored = st.session_state.get("_wa_last_value")
+    held = held_fingerprint(stored)
+
+    value = wave_chart(choose_payload(payload, held), config, patterns, WAVE_DEFS,
+                       last_seq, key=CHART_KEY)
+    st.session_state["_wa_last_value"] = value
 
     # Streamlit re-delivers the last component value on every rerun, so the
     # monotonic event seq -- not the value itself -- decides what is new.

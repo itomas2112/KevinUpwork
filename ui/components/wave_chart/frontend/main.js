@@ -61,16 +61,21 @@
 
     var container = document.getElementById("wave-chart");
     var toolbarRoot = document.getElementById("wave-toolbar");
+    var errorEl = document.getElementById("wave-error");
     // The element that goes fullscreen: chart + toolbar together, so the
     // toolbar stays reachable while fullscreen.
     var rootEl = document.getElementById("wave-root");
 
     var chart = null;
     var series = {};
-    var lastFingerprint = null;
+    // Fingerprint of the payload currently applied to the chart. Reported back
+    // to Python on every post, which is what lets it send a stub instead of
+    // tens of megabytes of unchanged bars. Module scope, so it survives every
+    // rerun (the iframe is not remounted) but not a hard refresh -- and a
+    // refresh is exactly the case the stub-mismatch recovery covers.
+    var heldFingerprint = null;
     var lastConfig = {};
     var lastLogicalRange = null;
-    var readySent = false;
     var needsInitialScroll = false;
     var wheelTarget = null;
 
@@ -133,10 +138,17 @@
     // first would simply overwrite it. Instead the whole outbox is posted every
     // time: Python applies every event above its stored seq and hands back an
     // ack, which is what finally drops events from the outbox here.
+    //
+    // ``held`` rides along on the same value object: it is what Python compares
+    // against the current fingerprint to decide between the full payload and a
+    // stub. Posting is deliberately rare -- an event fired, a payload was just
+    // applied, or a stub arrived that we cannot honour -- and never from the
+    // path where the stub matched, which is what keeps the steady state quiet.
     function postOutbox() {
         setComponentValue({
             seq: outbox.length ? outbox[outbox.length - 1].eseq : eventSeq - 1,
             events: outbox.slice(),
+            held: heldFingerprint,
         });
     }
 
@@ -979,6 +991,39 @@
         series.ci_33.setData(lineData(t, payload.ci_33));
     }
 
+    function showDataError(err) {
+        if (!errorEl) return;
+        var message = (err && err.message) ? err.message : String(err);
+        errorEl.textContent = "Chart data error: " + message +
+            " — try re-uploading your CSV";
+        errorEl.classList.add("wa-on");
+    }
+
+    function clearDataError() {
+        if (errorEl) errorEl.classList.remove("wa-on");
+    }
+
+    // The only way data reaches the chart. setData() throws on anything it will
+    // not accept -- times that do not strictly increase being the classic one --
+    // and an uncaught throw here leaves a blank pane and a console assertion
+    // nobody outside this file will ever read. Python's dedup should make that
+    // unreachable; this is for the next data quirk, and there will be one.
+    //
+    // Returns whether the data landed. It did not -> ``heldFingerprint`` is left
+    // alone, so Python keeps sending the full payload and a later attempt (a
+    // re-upload, a different timeframe) can still succeed.
+    function applyData(payload) {
+        try {
+            setAllData(payload);
+        } catch (err) {
+            console.error("[wave-chart] could not apply the chart data: " + err);
+            showDataError(err);
+            return false;
+        }
+        clearDataError();
+        return true;
+    }
+
     // pane.setHeight() behaves as a stretch factor and each sequential call steals
     // height from the panes set before it, so the requested pixels never land.
     // Stretch factors are plain relative weights -- feeding the requested pixel
@@ -1769,40 +1814,9 @@
         refreshRendered();
     }
 
-    function render(payload, config, patternList, defs, ack) {
-        if (!payload || !payload.time || !payload.time.length) return;
-
-        if (defs && !waveDefs) {
-            waveDefs = defs;
-            indexDegrees(defs);
-        }
-
-        // Ack first: pruning the outbox before the authoritative list lands
-        // means one recompute, not two, and no flicker in between.
-        applyAck(ack);
-
-        if (!chart) {
-            buildChart(payload, config);
-            lastConfig = config;
-            setAllData(payload);
-            applyPaneHeights(config.pane_heights, config.height);
-            chart.timeScale().scrollToPosition(5, false);
-            needsInitialScroll = !document.body.clientWidth;
-            lastFingerprint = payload.fingerprint;
-            buildToolbar();
-            setPatterns(patternList);
-            setFrameHeight(config.height);
-            if (!readySent) {
-                setComponentValue({ seq: 0, events: [] });
-                readySent = true;
-            }
-            return;
-        }
-
-        buildToolbar();
-
-        // Config-only updates -- never touch the time scale, so the user's
-        // view position survives Streamlit reruns.
+    // Config-only updates -- never touch the time scale, so the user's view
+    // position survives Streamlit reruns.
+    function applyConfigChanges(config) {
         var prevConfig = lastConfig;
         lastConfig = config;
         // A rerun landing mid-fullscreen must not resize the chart back down or
@@ -1823,10 +1837,69 @@
         if (config.bar_spacing !== prevConfig.bar_spacing) {
             chart.timeScale().applyOptions({ barSpacing: config.bar_spacing });
         }
+    }
+
+    function render(payload, config, patternList, defs, ack) {
+        if (!payload) return;
+        // A stub carries a fingerprint and nothing else: Python withheld the
+        // bars because we already hold them.
+        var stub = payload.stub === true;
+        if (!stub && (!payload.time || !payload.time.length)) return;
+
+        if (defs && !waveDefs) {
+            waveDefs = defs;
+            indexDegrees(defs);
+        }
+
+        // Ack first: pruning the outbox before the authoritative list lands
+        // means one recompute, not two, and no flicker in between.
+        applyAck(ack);
+
+        // A stub for data we do not hold -- a hard refresh wiped the state, or
+        // the data changed in the same instant. Keep whatever is on screen and
+        // report our fingerprint (null or stale); that mismatch is precisely
+        // what makes Python send the full payload on the rerun this post
+        // triggers. One round trip, and the matching path below never posts, so
+        // it cannot cycle.
+        if (stub && payload.fingerprint !== heldFingerprint) {
+            postOutbox();
+            return;
+        }
+
+        if (stub) {
+            // Data unchanged: everything except the data path.
+            if (!chart) return;     // unreachable -- nothing is held before one exists
+            buildToolbar();
+            applyConfigChanges(config);
+            setPatterns(patternList);
+            return;
+        }
+
+        if (!chart) {
+            buildChart(payload, config);
+            lastConfig = config;
+            var applied = applyData(payload);
+            applyPaneHeights(config.pane_heights, config.height);
+            chart.timeScale().scrollToPosition(5, false);
+            needsInitialScroll = !document.body.clientWidth;
+            buildToolbar();
+            setPatterns(patternList);
+            setFrameHeight(config.height);
+            if (applied) {
+                heldFingerprint = payload.fingerprint;
+                // Tells Python it may stub from here on -- and doubles as the
+                // first component value, which is what the ack protocol rides on.
+                postOutbox();
+            }
+            return;
+        }
+
+        buildToolbar();
+        applyConfigChanges(config);
 
         // Same data -> only the pattern list can have changed, and that must
         // never touch the time scale either.
-        if (payload.fingerprint === lastFingerprint) {
+        if (payload.fingerprint === heldFingerprint) {
             setPatterns(patternList);
             return;
         }
@@ -1838,10 +1911,16 @@
         selectedId = null;
         outbox = [];
         chart.timeScale().applyOptions({ timeVisible: intraday(payload.timeframe) });
-        setAllData(payload);
+        if (!applyData(payload)) {
+            // The banner is up and nothing is held: Python keeps sending the
+            // full payload, so a re-upload can still put this right.
+            setPatterns(patternList);
+            return;
+        }
         chart.timeScale().scrollToPosition(5, false);
-        lastFingerprint = payload.fingerprint;
+        heldFingerprint = payload.fingerprint;
         setPatterns(patternList);
+        postOutbox();
     }
 
     function onMessage(event) {

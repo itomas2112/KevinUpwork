@@ -21,6 +21,26 @@
             outline: none;
         }
 
+        /* Data error banner -- a strip across the top of the chart area. Shown
+           only when applying a payload threw, so the pane is never silently
+           blank; cleared by the next successful data application. */
+        #wave-error {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 6;
+            display: none;
+            box-sizing: border-box;
+            padding: 6px 10px;
+            background: #5c1f1f;
+            color: #ffffff;
+            font: 12px Arial, sans-serif;
+        }
+        #wave-error.wa-on {
+            display: block;
+        }
+
         /* Toolbar overlay -- centred over the top of the price pane. The strip
            itself must never swallow wheel/drag events, so only its controls
            take pointer events. */
@@ -154,9 +174,11 @@
 <body>
     <div id="wave-root">
         <div id="wave-chart" tabindex="-1"></div>
+        <div id="wave-error"></div>
         <div id="wave-toolbar"></div>
     </div>
-    <script src="lightweight-charts.standalone.production.js"></script>
-    <script src="main.js"></script>
+    <!-- ?v= busts browser caches -- bump it whenever either file changes. -->
+    <script src="lightweight-charts.standalone.production.js?v=1"></script>
+    <script src="main.js?v=10"></script>
 </body>
 </html>
