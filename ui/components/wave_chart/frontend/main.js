@@ -85,6 +85,7 @@
     var degreeNames = [];         // degree names, most senior first
     var patterns = [];            // authoritative list (Python is the source of truth)
     var rendered = [];            // authoritative list + outbox replayed on top
+    var originHidden = {};        // pattern id -> true when its 0 belongs to a parent
     var outbox = [];              // events sent but not yet acked by Python
     var bars = [];                // current bar series data (rows with full OHLC)
     var allTimes = [];            // every payload time -- the time scale's index space
@@ -324,6 +325,48 @@
         return list;
     }
 
+    // -----------------------------------------------------------------
+    // Parent/child relation -- mirrors config/wave_analysis.child_leg_index
+    // and find_parent. The two must stay in sync: Python owns the degrees a
+    // child derives, this copy only decides whose origin glyph to hide.
+    //
+    // A child spans exactly one leg of its parent, endpoint for endpoint, and
+    // a pivot is a (time, kind) pair -- a bar's high and its low are two
+    // different pivots. Only yellow patterns take part; a red one is already
+    // flagged invalid and is in no relation.
+    // -----------------------------------------------------------------
+    function pointsMatch(a, b) {
+        return !!a && !!b && a.time === b.time && a.kind === b.kind;
+    }
+
+    function childLegIndex(parent, child) {
+        if (!parent || !child || parent.id === child.id) return null;
+        var pp = parent.points, cp = child.points;
+        if (!pp || pp.length < 2 || !cp || cp.length < 2) return null;
+        for (var k = 0; k < pp.length - 1; k++) {
+            if (pointsMatch(cp[0], pp[k]) && pointsMatch(cp[cp.length - 1], pp[k + 1])) return k;
+        }
+        return null;
+    }
+
+    // Recomputed once per state change rather than inside the draw path:
+    // drawing runs on every pane render, including every frame of a wheel-pan.
+    function refreshOriginHidden() {
+        originHidden = {};
+        for (var c = 0; c < rendered.length; c++) {
+            var child = rendered[c];
+            if (!child || child.color !== "yellow") continue;
+            for (var p = 0; p < rendered.length; p++) {
+                var parent = rendered[p];
+                if (p === c || !parent || parent.color !== "yellow") continue;
+                if (childLegIndex(parent, child) !== null) {
+                    originHidden[child.id] = true;
+                    break;
+                }
+            }
+        }
+    }
+
     function refreshRendered() {
         var list = patterns.slice();
         for (var i = 0; i < outbox.length; i++) list = replayEvent(list, outbox[i]);
@@ -337,6 +380,7 @@
             });
         }
         rendered = list;
+        refreshOriginHidden();
         if (selectedId && !findRendered(selectedId)) selectedId = null;
         updateStatus();
         redraw();
@@ -401,6 +445,10 @@
             var labels = labelsFor(pattern.pattern_type, pattern.variation);
             if (!deg || !labels || !pattern.points) continue;
             for (var i = 0; i < pattern.points.length && i < labels.length; i++) {
+                // A child's point 0 is its parent's pivot and already carries
+                // the parent's label; only a root shows an origin glyph. The
+                // point keeps everything else -- handle, polyline, annotation.
+                if (i === 0 && originHidden[pattern.id]) continue;
                 items.push({
                     patternId: pattern.id,
                     pointIndex: i,

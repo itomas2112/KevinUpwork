@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from config.wave_projection import period_map
+from data.loader import resample_ohlc
 from ui.wave_analysis_tab import (build_wave_payload, build_fingerprint,
                                   choose_payload, dedupe_bars, held_fingerprint)
 
@@ -206,6 +208,48 @@ def test_unsorted_duplicate_free_frame_is_sorted(df_oscillation_15m):
     assert len(result) == len(reversed_df)
     assert result.index.is_monotonic_increasing
     assert result.index.is_unique
+
+
+# ---------------------------------------------------------------------------
+# One frame, one grid
+#
+# The bars the chart holds and the period map a projection is built on must come
+# from the same base frame. If they disagree by so much as one bar, a projected
+# pivot lands on a bar the chart does not have and the marking simply vanishes.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("timeframe", ["1H", "4H", "1D"])
+def test_payload_times_are_exactly_the_period_maps_display_bars(
+        df_oscillation_15m, timeframe):
+    base_df = dedupe_bars(df_oscillation_15m)
+    display_df = resample_ohlc(base_df, timeframe, "15m")
+
+    payload = build_wave_payload(display_df, timeframe, "gold.csv")
+    pmap = period_map(base_df, timeframe, "15m")
+
+    assert payload["time"] == pmap.display_times
+
+
+def test_the_raw_and_deduped_frames_do_not_resample_alike(df_oscillation_15m):
+    # Why the tab derives its display frame from the deduped base frame instead
+    # of reusing the sidebar's ``df_ohlc``: the sidebar resamples the *raw*
+    # frame, duplicates and all. The client's current export happens to repeat
+    # bars verbatim, so on his file the two agree by luck -- a duplicate that is
+    # not a verbatim repeat is all it takes for them to part company.
+    df = df_oscillation_15m
+    row = df.iloc[[10]].copy()
+    row["high"] = float(df["high"].iloc[10]) + 500.0
+    row["volume"] = 0.0                     # loses the dedup contest
+    raw = pd.concat([df.iloc[:11], row, df.iloc[11:]])
+
+    from_raw = resample_ohlc(raw, "1D", "15m")
+    from_base = resample_ohlc(dedupe_bars(raw), "1D", "15m")
+
+    assert list(from_raw["high"]) != list(from_base["high"])
+    # ...and it is the deduped frame that agrees with the bars the chart shows.
+    payload = build_wave_payload(raw, "15m", "gold.csv")
+    assert payload["high"][10] == float(df["high"].iloc[10])
+    assert float(from_base["high"].iloc[0]) == max(payload["high"])
 
 
 # ---------------------------------------------------------------------------

@@ -157,8 +157,10 @@ def is_valid_pattern(pattern):
 # ------------------------------------------------------------------ containment
 #
 # Two patterns belong to the same "degree component" when one is nested inside
-# the other. A degree change made on any member cascades through the whole
-# component so a parent can never end up junior to its own child.
+# the other. This is the honest name for plain containment and is kept as such,
+# but it is no longer what drives degrees: the cascade now runs on the strict
+# parent/child relation further down, because merely overlapping another
+# pattern's span never made something a child of it.
 
 
 def pattern_span(pattern):
@@ -280,18 +282,268 @@ def validate_patterns(patterns):
     return recoloured
 
 
+# -------------------------------------------------------- parent/child relation
+#
+# The client's definition of a child is strict: a child spans exactly one leg of
+# its parent -- the origin of wave v until the end of wave v -- endpoint for
+# endpoint. Merely sitting *inside* another pattern (which is all ``related``
+# above knows about) is not enough, because that also catches a pattern drawn
+# across the middle of another one, which is not a wave count at all.
+#
+# A child never owns its degree: it is always one step junior to its parent, so
+# a nest always reads as consecutive degrees. Only yellow patterns take part --
+# a red pattern is already flagged as invalid, and deriving degrees from it (or
+# for it) would spread the mistake instead of letting the client fix it.
+
+
+def _points_match(point_a, point_b):
+    """Same pivot: same time *and* same kind.
+
+    A bar's high and its low are two different pivots and must never be
+    conflated -- a child hanging off the wrong one is not a child at all.
+    """
+    if not isinstance(point_a, dict) or not isinstance(point_b, dict):
+        return False
+    if not _is_int(point_a.get("time")) or not _is_int(point_b.get("time")):
+        return False
+    if point_a.get("kind") not in POINT_KINDS or point_b.get("kind") not in POINT_KINDS:
+        return False
+    return point_a["time"] == point_b["time"] and point_a["kind"] == point_b["kind"]
+
+
+def child_leg_index(parent, child):
+    """The index k of the parent leg the child spans exactly, or None.
+
+    Endpoints match on both time and kind. A pattern is never its own child.
+
+    Mirrored by ``childLegIndex`` in frontend/main.js, which hides a child's
+    origin glyph -- the two must stay in sync.
+    """
+    if not isinstance(parent, dict) or not isinstance(child, dict):
+        return None
+    if parent is child:
+        return None
+    parent_id, child_id = parent.get("id"), child.get("id")
+    if isinstance(parent_id, str) and parent_id and parent_id == child_id:
+        return None
+
+    parent_points = parent.get("points")
+    child_points = child.get("points")
+    if not isinstance(parent_points, list) or len(parent_points) < 2:
+        return None
+    if not isinstance(child_points, list) or len(child_points) < 2:
+        return None
+
+    first, last = child_points[0], child_points[-1]
+    for k in range(len(parent_points) - 1):
+        if (_points_match(first, parent_points[k])
+                and _points_match(last, parent_points[k + 1])):
+            return k
+    return None
+
+
+def _usable(patterns):
+    """The entries of a pattern list that carry a usable id, in input order."""
+    if not isinstance(patterns, list):
+        return []
+    return [p for p in patterns
+            if isinstance(p, dict) and isinstance(p.get("id"), str) and p["id"]]
+
+
+def _span_length(pattern):
+    span = pattern_span(pattern)
+    return None if span is None else span[1] - span[0]
+
+
+def find_parent(patterns, child):
+    """(parent, leg_index) for the child, or (None, None).
+
+    Only yellow patterns on either side -- a red pattern is in no relation.
+    Ties (two patterns exposing the identical leg) resolve to the one with the
+    SMALLEST span, then the lowest id. Deliberately not "the most junior degree":
+    degrees are being rewritten by reconcile_degrees, so the tie-break must not
+    depend on them.
+    """
+    if not isinstance(child, dict) or child.get("color") != "yellow":
+        return (None, None)
+
+    best = None                     # (span length, id, parent, leg index)
+    for candidate in _usable(patterns):
+        if candidate.get("color") != "yellow":
+            continue
+        leg = child_leg_index(candidate, child)
+        if leg is None:
+            continue
+        length = _span_length(candidate)
+        if length is None:
+            continue
+        key = (length, candidate["id"])
+        if best is None or key < (best[0], best[1]):
+            best = (length, candidate["id"], candidate, leg)
+
+    return (None, None) if best is None else (best[2], best[3])
+
+
+def find_children(patterns, parent):
+    """Every pattern whose find_parent resolves to this one. Input order."""
+    if not isinstance(parent, dict):
+        return []
+    parent_id = parent.get("id")
+    if not isinstance(parent_id, str) or not parent_id:
+        return []
+
+    children = []
+    for candidate in _usable(patterns):
+        if candidate["id"] == parent_id:
+            continue
+        found, _leg = find_parent(patterns, candidate)
+        if found is not None and found.get("id") == parent_id:
+            children.append(candidate)
+    return children
+
+
+def children_by_leg(patterns):
+    """{parent id: {leg index: [child, ...]}} for the whole list, in one pass.
+
+    ``find_children`` re-runs ``find_parent`` for every candidate, so calling it
+    per pattern per level makes a three-level walk cubic. This builds the whole
+    downward index with one ``find_parent`` per pattern instead, exactly as
+    ``reconcile_degrees`` already does internally.
+
+    Yellow-only, like the rest of the relation. Children keep the input list's
+    order within a leg.
+
+    Every yellow pattern gets a key, so a childless one reads as an empty
+    mapping rather than a missing key -- a caller walking a nest downward would
+    otherwise have to guard every lookup.
+    """
+    usable = _usable(patterns)
+    index = {p["id"]: {} for p in usable if p.get("color") == "yellow"}
+    for candidate in usable:
+        parent, leg = find_parent(usable, candidate)
+        if parent is None:
+            continue
+        index.setdefault(parent["id"], {}).setdefault(leg, []).append(candidate)
+    return index
+
+
+def relation_component(patterns, pattern_id):
+    """Ids transitively connected to pattern_id through the parent/child
+    relation, treated as undirected. Includes pattern_id itself. Yellow-only:
+    a red pattern's component is just itself. Follows the input list's order.
+    """
+    usable = _usable(patterns)
+    start = next((p for p in usable if p["id"] == pattern_id), None)
+    if start is None:
+        return []
+
+    # One pass over the list is enough to build the whole undirected graph, and
+    # it keeps find_parent -- which is itself a scan -- off the BFS inner loop.
+    edges = {p["id"]: set() for p in usable}
+    for candidate in usable:
+        parent, _leg = find_parent(usable, candidate)
+        if parent is None:
+            continue
+        edges[candidate["id"]].add(parent["id"])
+        edges[parent["id"]].add(candidate["id"])
+
+    seen = {start["id"]}
+    queue = [start["id"]]
+    while queue:
+        current = queue.pop()
+        for neighbour in edges.get(current, ()):
+            if neighbour not in seen:
+                seen.add(neighbour)
+                queue.append(neighbour)
+
+    return [p["id"] for p in usable if p["id"] in seen]
+
+
+def reconcile_degrees(patterns):
+    """Every child's degree := its parent's degree + 1. Roots keep theirs.
+
+    Walks roots first so a parent is settled before its children. Pure: returns
+    a new list, never mutates the input.
+
+    Clamp: a child of a Pico parent has no junior degree to move to, so it stays
+    at Pico. The same-degree overlap check then turns both red, which is the
+    honest signal -- the nest is deeper than the degree scale allows.
+    """
+    if not isinstance(patterns, list):
+        return []
+
+    usable = _usable(patterns)
+    parent_of = {}
+    children_of = {p["id"]: [] for p in usable}
+    for candidate in usable:
+        parent, _leg = find_parent(usable, candidate)
+        if parent is None:
+            continue
+        parent_of[candidate["id"]] = parent["id"]
+        children_of[parent["id"]].append(candidate["id"])
+
+    # A child's span is strictly inside its parent's (every pattern has at least
+    # three legs), so spans shrink along every parent->child edge and the
+    # relation cannot contain a cycle. ``settled`` is still tracked, so
+    # pathological input costs one wasted visit rather than an endless walk.
+    degrees = {p["id"]: p.get("degree") for p in usable}
+    settled = set()
+    queue = [p["id"] for p in usable if p["id"] not in parent_of]
+    for pattern_id in queue:
+        settled.add(pattern_id)
+    while queue:
+        current = queue.pop(0)
+        parent_rank = degree_index(degrees.get(current))
+        for child_id in children_of.get(current, ()):
+            if child_id in settled:
+                continue
+            settled.add(child_id)
+            # An unknown parent degree has no rank to step down from; the child
+            # keeps whatever it has rather than being flung to the senior end.
+            if parent_rank >= 0:
+                degrees[child_id] = DEGREES[min(parent_rank + 1, len(DEGREES) - 1)][0]
+            queue.append(child_id)
+
+    reconciled = []
+    for pattern in patterns:
+        if not isinstance(pattern, dict) or pattern.get("id") not in degrees:
+            reconciled.append(pattern)
+            continue
+        degree = degrees[pattern["id"]]
+        reconciled.append(pattern if pattern.get("degree") == degree
+                          else dict(pattern, degree=degree))
+    return reconciled
+
+
+def settle(patterns):
+    """Colours and degrees brought to their fixed point: reconcile, validate.
+
+    Colour is an output, never an input. Every pattern is handed to the
+    reconciliation as yellow -- valid until an overlap proves otherwise -- and
+    validate_patterns then has the final say on what is actually red.
+
+    Reconciling *before* colours are decided is the whole fix for the client's
+    core defect. A child drawn at its parent's own degree overlaps its parent's
+    interior, so validating first paints the pair red; the relation is
+    yellow-only, so a red pair reconciles to nothing, and the collision that
+    the junior degree would have resolved is now the very thing preventing the
+    junior degree from being derived. Red is exactly where that pair got stuck
+    on his recording.
+
+    Two passes are enough, and the result is a fixed point:
+    settle(settle(x)) == settle(x). Reconciling against the whole relation --
+    rather than the yellow subgraph -- already gives every child parent+1, so a
+    second reconciliation over any subgraph of it has nothing left to change,
+    and validate_patterns is idempotent on fixed degrees.
+    """
+    if not isinstance(patterns, list):
+        return []
+    presumed = [dict(pattern, color="yellow") if isinstance(pattern, dict) else pattern
+                for pattern in patterns]
+    return validate_patterns(reconcile_degrees(presumed))
+
+
 # ------------------------------------------------------------------- reducers
-
-
-def _timeframe_list(patterns_by_tf, timeframe):
-    existing = patterns_by_tf.get(timeframe)
-    return existing if isinstance(existing, list) else []
-
-
-def _with_list(patterns_by_tf, timeframe, new_list):
-    updated = dict(patterns_by_tf)
-    updated[timeframe] = new_list
-    return updated
 
 
 def _find(pattern_list, pattern_id):
@@ -301,33 +553,31 @@ def _find(pattern_list, pattern_id):
     return -1, None
 
 
-def _apply_pattern_completed(patterns_by_tf, timeframe, event):
+def _apply_pattern_completed(patterns, event):
     pattern = event.get("pattern")
     if not is_valid_pattern(pattern):
-        return patterns_by_tf
+        return patterns
 
-    existing = _timeframe_list(patterns_by_tf, timeframe)
-    if any(isinstance(p, dict) and p.get("id") == pattern["id"] for p in existing):
-        return patterns_by_tf
+    if any(isinstance(p, dict) and p.get("id") == pattern["id"] for p in patterns):
+        return patterns
 
-    return _with_list(patterns_by_tf, timeframe, list(existing) + [pattern])
+    return list(patterns) + [pattern]
 
 
-def _apply_delete_pattern(patterns_by_tf, timeframe, event):
+def _apply_delete_pattern(patterns, event):
     pattern_id = event.get("id")
     if not isinstance(pattern_id, str) or not pattern_id:
-        return patterns_by_tf
+        return patterns
 
-    existing = _timeframe_list(patterns_by_tf, timeframe)
-    remaining = [p for p in existing
+    remaining = [p for p in patterns
                  if not (isinstance(p, dict) and p.get("id") == pattern_id)]
-    if len(remaining) == len(existing):
-        return patterns_by_tf                       # unknown id -- no-op
+    if len(remaining) == len(patterns):
+        return patterns                             # unknown id -- no-op
 
-    return _with_list(patterns_by_tf, timeframe, remaining)
+    return remaining
 
 
-def _apply_move_point(patterns_by_tf, timeframe, event):
+def _apply_move_point(patterns, event):
     pattern_id = event.get("id")
     index = event.get("point_index")
     time = event.get("time")
@@ -335,71 +585,71 @@ def _apply_move_point(patterns_by_tf, timeframe, event):
     kind = event.get("kind")
 
     if not isinstance(pattern_id, str) or not _is_int(index) or not _is_int(time):
-        return patterns_by_tf
+        return patterns
     if not _is_number(price) or kind not in POINT_KINDS:
-        return patterns_by_tf
+        return patterns
 
-    existing = _timeframe_list(patterns_by_tf, timeframe)
-    position, pattern = _find(existing, pattern_id)
+    position, pattern = _find(patterns, pattern_id)
     if pattern is None:
-        return patterns_by_tf
+        return patterns
 
     points = pattern.get("points")
     if not isinstance(points, list) or not (0 <= index < len(points)):
-        return patterns_by_tf
+        return patterns
 
     # The moved point must stay strictly between its neighbours; the first and
     # last points are bounded on one side only.
     if index > 0 and not _is_int(points[index - 1].get("time")):
-        return patterns_by_tf
+        return patterns
     if index > 0 and time <= points[index - 1]["time"]:
-        return patterns_by_tf
+        return patterns
     if index < len(points) - 1 and not _is_int(points[index + 1].get("time")):
-        return patterns_by_tf
+        return patterns
     if index < len(points) - 1 and time >= points[index + 1]["time"]:
-        return patterns_by_tf
+        return patterns
 
     moved_points = list(points)
     moved_points[index] = {"time": time, "price": price, "kind": kind}
     moved = dict(pattern, points=moved_points)
     if not is_valid_pattern(moved):
-        return patterns_by_tf
+        return patterns
 
-    updated_list = list(existing)
+    updated_list = list(patterns)
     updated_list[position] = moved
-    return _with_list(patterns_by_tf, timeframe, updated_list)
+    return updated_list
 
 
-def _apply_shift_degree(patterns_by_tf, timeframe, event):
+def _apply_shift_degree(patterns, event):
     pattern_id = event.get("id")
     delta = event.get("delta")
     if not isinstance(pattern_id, str) or not _is_int(delta) or delta not in (1, -1):
-        return patterns_by_tf
+        return patterns
 
-    existing = _timeframe_list(patterns_by_tf, timeframe)
-    component = set(degree_component(existing, pattern_id))
+    # The nest, not everything that happens to overlap: a red pattern's
+    # component is itself, which is what lets the client walk it to a free
+    # degree by hand to resolve a collision.
+    component = set(relation_component(patterns, pattern_id))
     if not component:
-        return patterns_by_tf
+        return patterns
 
     # All-or-nothing: one member hitting the end of the degree list cancels the
     # whole cascade, so relative seniority inside a nest is never flattened.
     # A positive delta means "more senior", which is a *lower* index.
     shifted = {}
-    for pattern in existing:
+    for pattern in patterns:
         if not isinstance(pattern, dict) or pattern.get("id") not in component:
             continue
         target = degree_index(pattern.get("degree")) - delta
         if not (0 <= target < len(DEGREES)):
-            return patterns_by_tf
+            return patterns
         shifted[pattern["id"]] = DEGREES[target][0]
 
     if len(shifted) != len(component):
-        return patterns_by_tf
+        return patterns
 
-    updated_list = [dict(p, degree=shifted[p["id"]])
-                    if isinstance(p, dict) and p.get("id") in shifted else p
-                    for p in existing]
-    return _with_list(patterns_by_tf, timeframe, updated_list)
+    return [dict(p, degree=shifted[p["id"]])
+            if isinstance(p, dict) and p.get("id") in shifted else p
+            for p in patterns]
 
 
 _EVENT_REDUCERS = {
@@ -410,16 +660,23 @@ _EVENT_REDUCERS = {
 }
 
 
-def apply_wave_event(patterns_by_tf, timeframe, event):
-    """Fold a frontend event into the {timeframe: [pattern, ...]} state.
+def apply_wave_event(patterns, event):
+    """Fold a frontend event into the canonical [pattern, ...] state.
 
-    Pure: returns a new mapping on success and the mapping it was given
-    (unchanged) on any malformed input -- a bad event must never break the tab.
+    One list, not one per aggregation: markings are stored at the base
+    timeframe and every aggregation on screen is a projection of that list, so
+    there is no timeframe left for a reducer to have an opinion about. Whatever
+    the client was looking at when the event fired, ``config.wave_projection``
+    has already refined its coordinates down to canonical space by the time it
+    gets here.
+
+    Pure: returns a new list on success and the list it was given (unchanged)
+    on any malformed input -- a bad event must never break the tab.
     """
-    if not isinstance(patterns_by_tf, dict) or not isinstance(event, dict):
-        return patterns_by_tf
+    if not isinstance(patterns, list) or not isinstance(event, dict):
+        return patterns
 
     reducer = _EVENT_REDUCERS.get(event.get("type"))
     if reducer is None:
-        return patterns_by_tf
-    return reducer(patterns_by_tf, timeframe, event)
+        return patterns
+    return reducer(patterns, event)
