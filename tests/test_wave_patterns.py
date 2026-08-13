@@ -817,6 +817,20 @@ def test_move_point_only_touches_the_named_pattern():
     assert after[0]["points"][1]["time"] == 150
 
 
+def test_move_point_does_not_clear_the_legs_stored_values():
+    # A moved pivot can make a stored number stale, but silently deleting the
+    # client's study data is worse than showing a stale one -- he may have typed
+    # a judgement rather than a reading -- so the popup surfaces the difference
+    # instead of the reducer resolving it for him.
+    stored = {"0": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"}}
+    pattern = span_pattern("A", 100, 200)
+    pattern["leg_values"] = copy.deepcopy(stored)
+
+    after = apply_wave_event([pattern], move("A", 1, 150))
+
+    assert after[0]["leg_values"] == stored
+
+
 # -------------------------------------------------------------- delete_pattern
 
 def delete(pattern_id):

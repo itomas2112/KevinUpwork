@@ -49,6 +49,20 @@ PATTERN_COLORS = ("yellow", "red")
 
 POINT_KINDS = ("high", "low")
 
+# Field label -> the payload series it is read from. Adding a field the client
+# asks for later must be one line here and nothing else; he has said explicitly
+# that more boxes are coming.
+LEG_VALUE_FIELDS = [
+    ("CMB", "ci"),
+    ("RSI", "rsi"),
+]
+
+# What a leg's entry may carry besides the fields above. The timeframe is not
+# decoration: CMB read on 1D bars is a different quantity from CMB read on 15m
+# bars, and a number whose meaning depends on an unrecorded aggregation would
+# silently corrupt the study these values exist for.
+LEG_VALUE_TIMEFRAME = "timeframe"
+
 _ROMAN = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V"}
 _LETTERS = set("ABCDEWXYZ")
 
@@ -108,6 +122,11 @@ def wave_defs():
         },
         "degrees": [list(d) for d in DEGREES],
         "default_degree": DEFAULT_DEGREE,
+        # The leg-value popup builds one input per entry, in this order, and
+        # reads each one's pre-fill from the named payload series. Sent down
+        # rather than duplicated in JavaScript, so the table above stays the one
+        # place a new field is added.
+        "leg_value_fields": [list(field) for field in LEG_VALUE_FIELDS],
     }
 
 
@@ -117,6 +136,49 @@ def _is_number(value):
 
 def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def leg_value_labels():
+    """The field labels currently configured, as a set.
+
+    Read out of ``LEG_VALUE_FIELDS`` on every call rather than frozen into a
+    constant at import time, so adding a field really is the one line the table
+    promises -- and so a test can add one without editing this module.
+    """
+    return {label for label, _series in LEG_VALUE_FIELDS}
+
+
+def _is_valid_leg_values(leg_values, leg_count):
+    """True when a pattern's ``leg_values`` is structurally sound.
+
+    Keys are stringified leg indices -- JSON object keys are strings and an int
+    does not survive a round trip through the file -- and each entry is sparse:
+    a leg with no reading has no entry at all, because absent is not zero.
+    """
+    if not isinstance(leg_values, dict):
+        return False
+
+    labels = leg_value_labels()
+    for key, entry in leg_values.items():
+        if not isinstance(key, str):
+            return False
+        try:
+            index = int(key)
+        except ValueError:
+            return False
+        if not 0 <= index < leg_count:
+            return False
+        if not isinstance(entry, dict):
+            return False
+        for field, value in entry.items():
+            if field == LEG_VALUE_TIMEFRAME:
+                if not isinstance(value, str):
+                    return False
+            elif field not in labels:
+                return False
+            elif value is not None and not _is_number(value):
+                return False
+    return True
 
 
 def is_valid_pattern(pattern):
@@ -150,6 +212,13 @@ def is_valid_pattern(pattern):
         if previous_time is not None and point["time"] <= previous_time:
             return False
         previous_time = point["time"]
+
+    # Optional: every marking written before Phase 16 lacks it and must keep
+    # loading unchanged. Present and malformed is a different matter -- a leg
+    # index naming a leg this pattern does not have would read as study data.
+    if "leg_values" in pattern and not _is_valid_leg_values(pattern["leg_values"],
+                                                            len(points) - 1):
+        return False
 
     return True
 
@@ -316,8 +385,9 @@ def child_leg_index(parent, child):
 
     Endpoints match on both time and kind. A pattern is never its own child.
 
-    Mirrored by ``childLegIndex`` in frontend/main.js, which hides a child's
-    origin glyph -- the two must stay in sync.
+    The single source of truth for the relation: the frontend once carried a
+    copy of this to decide whose origin glyph to hide, and since Phase 16 hides
+    every origin glyph unconditionally there is nothing left to keep in sync.
     """
     if not isinstance(parent, dict) or not isinstance(child, dict):
         return None
@@ -610,6 +680,11 @@ def _apply_move_point(patterns, event):
 
     moved_points = list(points)
     moved_points[index] = {"time": time, "price": price, "kind": kind}
+    # Any leg value stored against the moved pivot rides along untouched. A
+    # moved pivot can make a stored number stale, but silently deleting the
+    # client's study data is worse than showing a stale one -- he may have typed
+    # a judgement rather than a reading -- so the popup surfaces the difference
+    # instead of the reducer resolving it for him.
     moved = dict(pattern, points=moved_points)
     if not is_valid_pattern(moved):
         return patterns
@@ -652,11 +727,89 @@ def _apply_shift_degree(patterns, event):
             for p in patterns]
 
 
+def _apply_set_leg_values(patterns, event):
+    """Measured values attached to one leg of one pattern.
+
+    The client is building a study across many marked patterns -- "bullish wave
+    4 has a lower CMB level than wave 2 90% of the time" -- so what is stored
+    here is data he will later count, not decoration. Two consequences:
+
+    * **Merge, never replace.** A submission carrying only CMB leaves an RSI
+      already stored alone. Only a field explicitly set to None is removed, and
+      an entry left holding no reading at all disappears whole, so "absent"
+      keeps meaning "never measured" rather than "measured as nothing".
+    * The **timeframe** is stored with the numbers. CMB on 1D bars is a
+      different quantity from CMB on 15m bars, and a reading whose aggregation
+      is unrecorded is worse than no reading. One timeframe per entry, taken
+      from the submission -- the popup reads and writes every field of a leg
+      together, so a merged entry's fields share the aggregation of the save
+      that last touched any of them.
+    """
+    pattern_id = event.get("id")
+    leg_index = event.get("leg_index")
+    values = event.get("values")
+    timeframe = event.get(LEG_VALUE_TIMEFRAME)
+
+    if not isinstance(pattern_id, str) or not pattern_id or not _is_int(leg_index):
+        return patterns
+    if not isinstance(values, dict) or not isinstance(timeframe, str) or not timeframe:
+        return patterns
+
+    labels = leg_value_labels()
+    for field, value in values.items():
+        if field not in labels:
+            return patterns
+        if value is not None and not _is_number(value):
+            return patterns
+
+    position, pattern = _find(patterns, pattern_id)
+    if pattern is None:
+        return patterns
+
+    points = pattern.get("points")
+    if not isinstance(points, list) or not (0 <= leg_index < len(points) - 1):
+        return patterns
+
+    stored = pattern.get("leg_values")
+    stored = dict(stored) if isinstance(stored, dict) else {}
+    key = str(leg_index)
+    existing = stored.get(key)
+    # The timeframe is dropped and re-stamped rather than merged: it describes
+    # the reading, and the reading is what this event is replacing.
+    entry = {field: value for field, value in existing.items()
+             if field != LEG_VALUE_TIMEFRAME} if isinstance(existing, dict) else {}
+
+    for field, value in values.items():
+        if value is None:
+            entry.pop(field, None)
+        else:
+            entry[field] = value
+
+    if entry:
+        entry[LEG_VALUE_TIMEFRAME] = timeframe
+        stored[key] = entry
+    else:
+        stored.pop(key, None)
+
+    updated = dict(pattern)
+    if stored:
+        updated["leg_values"] = stored
+    else:
+        updated.pop("leg_values", None)
+    if not is_valid_pattern(updated):
+        return patterns
+
+    updated_list = list(patterns)
+    updated_list[position] = updated
+    return updated_list
+
+
 _EVENT_REDUCERS = {
     "pattern_completed": _apply_pattern_completed,
     "delete_pattern": _apply_delete_pattern,
     "move_point": _apply_move_point,
     "shift_degree": _apply_shift_degree,
+    "set_leg_values": _apply_set_leg_values,
 }
 
 

@@ -970,7 +970,64 @@ def test_an_existing_nest_is_untouched_by_this_phase_at_every_aggregation():
         assert {p["color"] for p in shown} == {"yellow"}
 
 
-# --------------------------------------------- 11. whole-pattern selection
+# ------------------------------------------------------ 11. per-leg values
+#
+# The values the client reads off the chart belong to a leg of a canonical
+# pattern, not to the aggregation he happened to be looking at when he typed
+# them. A leg index says the same thing at every aggregation, so the event needs
+# no refinement -- but the values still have to survive the projection back onto
+# whatever is on screen, which is where a field the projection does not know
+# about would quietly vanish.
+
+
+def set_leg_values(pattern_id, leg_index, values, timeframe="1D"):
+    return {"type": "set_leg_values", "id": pattern_id, "leg_index": leg_index,
+            "values": values, "timeframe": timeframe}
+
+
+def test_values_typed_at_1d_land_on_the_canonical_pattern_and_show_at_every_view():
+    df = make_frame(days=4)
+    canonical = settle([pattern_of(
+        [point(bar_time(df, 0 * BARS_PER_DAY + HIGH_BAR), 200.0, "high"),
+         point(bar_time(df, 1 * BARS_PER_DAY + LOW_BAR), 9.0, "low"),
+         point(bar_time(df, 2 * BARS_PER_DAY + HIGH_BAR), 202.0, "high"),
+         point(bar_time(df, 3 * BARS_PER_DAY + LOW_BAR), 7.0, "low")], "p1")])
+
+    state, seq, changed = apply_event_batch(
+        canonical, batch(set_leg_values("p1", 1, {"CMB": 12.34, "RSI": 45.6})),
+        0, period_map(df, "1D", "15m"))
+
+    assert changed is True and seq == 1
+    stored = {"1": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"}}
+    assert state[0]["leg_values"] == stored
+    # settle ran over the batch and left them alone, and so does every
+    # projection the chart is drawn from.
+    for timeframe in ("1H", "4H", "1D"):
+        shown = project_patterns(state, period_map(df, timeframe, "15m"), DISPLAY)
+        assert shown[0]["leg_values"] == stored
+
+
+def test_a_value_saved_at_one_aggregation_is_merged_with_one_saved_at_another():
+    # The timeframe is per entry and records the save that last touched it,
+    # which is the aggregation the popup read the numbers at.
+    df = make_frame(days=4)
+    canonical = settle([pattern_of(
+        [point(bar_time(df, 0 * BARS_PER_DAY + HIGH_BAR), 200.0, "high"),
+         point(bar_time(df, 1 * BARS_PER_DAY + LOW_BAR), 9.0, "low"),
+         point(bar_time(df, 2 * BARS_PER_DAY + HIGH_BAR), 202.0, "high"),
+         point(bar_time(df, 3 * BARS_PER_DAY + LOW_BAR), 7.0, "low")], "p1")])
+
+    state, seq, _changed = apply_event_batch(
+        canonical, batch(set_leg_values("p1", 0, {"CMB": 1.0}, "15m")), 0, None)
+    state, _seq, _changed = apply_event_batch(
+        state, batch_from(seq, set_leg_values("p1", 0, {"RSI": 45.6}, "1D")),
+        seq, period_map(df, "1D", "15m"))
+
+    assert state[0]["leg_values"] == {"0": {"CMB": 1.0, "RSI": 45.6,
+                                            "timeframe": "1D"}}
+
+
+# --------------------------------------------- 12. whole-pattern selection
 #
 # The mirror of section 10, and the direction the client actually works in:
 # "Okay, so I've notated all the sub minuets. Now I can notate the minuet

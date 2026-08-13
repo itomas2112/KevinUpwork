@@ -155,6 +155,66 @@
             color: #FFD700;
         }
 
+        /* Leg-value popup -- opened by right-clicking a leg of the selected
+           pattern. Positioned in JS at the cursor and clamped inside the
+           component, so it is never half off-screen; styled like the toolbar
+           because it is the same kind of overlay control. */
+        .wa-popup {
+            position: absolute;
+            z-index: 7;
+            background: #1e1e1e;
+            border: 1px solid #2a2a2a;
+            border-radius: 2px;
+            padding: 6px 8px;
+            font: 12px Arial, sans-serif;
+            color: #c8c8c8;
+            white-space: nowrap;
+        }
+        .wa-popup-head {
+            margin-bottom: 5px;
+        }
+        .wa-popup-row {
+            margin-bottom: 4px;
+        }
+        .wa-popup-row label {
+            display: inline-block;
+            width: 44px;
+        }
+        .wa-popup-row input {
+            background: #121212;
+            border: 1px solid #2a2a2a;
+            color: #c8c8c8;
+            font: 12px Arial, sans-serif;
+            padding: 2px 4px;
+            width: 90px;
+            border-radius: 2px;
+        }
+        /* The freshly computed reading, shown only when it differs from the
+           stored one -- a value gone stale after a point move. */
+        .wa-popup-hint {
+            margin: 1px 0 0 44px;
+            color: #777777;
+            font-size: 11px;
+        }
+        .wa-popup-actions {
+            margin-top: 6px;
+            display: flex;
+            gap: 4px;
+            justify-content: flex-end;
+        }
+        .wa-popup-actions button {
+            background: #1e1e1e;
+            border: 1px solid #2a2a2a;
+            color: #c8c8c8;
+            font: 12px Arial, sans-serif;
+            padding: 3px 8px;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+        .wa-popup-actions button:hover {
+            background: #2a2a2a;
+        }
+
         /* Fullscreen layout. Native fullscreen puts #wave-root itself on the
            screen; the fallback pins the whole iframe to the parent viewport and
            marks <body>. In both cases the root has to fill the viewport it was
@@ -179,6 +239,6 @@
     </div>
     <!-- ?v= busts browser caches -- bump it whenever either file changes. -->
     <script src="lightweight-charts.standalone.production.js?v=1"></script>
-    <script src="main.js?v=11"></script>
+    <script src="main.js?v=12"></script>
 </body>
 </html>

@@ -424,6 +424,10 @@ def build_wave_json(patterns, dataset_key, base_timeframe):
     patterns, so re-importing it later could rebuild the markings exactly.
     Include the dataset key and base timeframe -- points are meaningless
     without knowing which instrument and resolution they were snapped to.
+
+    Whole patterns means the per-leg study values come along with them, which is
+    what makes this file -- rather than the ``.xlsx`` -- the thing the client
+    counts his "wave 4 versus wave 2" statistics out of.
     """
     return {
         # The same schema number the on-disk markings file carries, so an

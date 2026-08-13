@@ -506,6 +506,64 @@ def test_refining_a_display_pattern_keeps_it_valid(timeframe):
     assert project_pattern(refined, pmap) == display
 
 
+# --------------------------------------------------------------- leg values
+#
+# A field the projection does not carry is silently dropped the moment the
+# client changes aggregation -- the exact class of bug Phase 11b existed to fix,
+# and a far worse one for the per-leg study values, which are typed by hand and
+# cannot be recomputed from the chart.
+
+
+LEG_VALUES = {"0": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"},
+              "2": {"CMB": -5.1, "timeframe": "15m"}}
+
+
+@pytest.mark.parametrize("timeframe", ["1H", "4H", "1D"])
+def test_leg_values_survive_a_projection_in_both_directions(timeframe):
+    df = five_day_frame()
+    pmap = period_map(df, timeframe, "15m")
+    kinds = ["low", "high", "low", "high"]
+    display = make_pattern([
+        {"time": pmap.display_times[i], "kind": kind,
+         "price": pmap.extreme_price[(pmap.display_times[i], kind)]}
+        for i, kind in zip((0, 1, 2, 3), kinds)])
+    display["leg_values"] = copy.deepcopy(LEG_VALUES)
+
+    refined = project_pattern(display, pmap, CANONICAL)
+    coarsened = project_pattern(refined, pmap)
+
+    assert refined["leg_values"] == LEG_VALUES
+    assert coarsened["leg_values"] == LEG_VALUES
+
+
+def test_a_projected_pattern_does_not_share_its_leg_values_with_the_original():
+    df = five_day_frame()
+    pmap = period_map(df, "1D", "15m")
+    wide = spanning_pattern(df, [3, BARS_PER_DAY + 3, 2 * BARS_PER_DAY + 3,
+                                 3 * BARS_PER_DAY + 3])
+    wide["leg_values"] = copy.deepcopy(LEG_VALUES)
+
+    projected = project_pattern(wide, pmap)
+    projected["leg_values"]["0"]["CMB"] = -1.0
+
+    assert wide["leg_values"] == LEG_VALUES
+
+
+def test_refine_passes_set_leg_values_through_untouched():
+    # It carries no chart coordinates: a leg index means the same thing at every
+    # aggregation, so there is nothing to refine.
+    df = five_day_frame()
+    pmap = period_map(df, "1D", "15m")
+    event = {"type": "set_leg_values", "id": "p1", "leg_index": 3,
+             "values": {"CMB": 12.34, "RSI": None}, "timeframe": "1D"}
+    snapshot = copy.deepcopy(event)
+
+    assert refine_event(event, pmap) == snapshot
+    assert refine_event(event, pmap, pivot_magnets([], pmap), []) == snapshot
+    assert refine_event(event, None) is event
+    assert event == snapshot
+
+
 # ------------------------------------------------------------------ magnetism
 #
 # A click lands on a display period, and refinement has to decide which base bar

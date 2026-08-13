@@ -331,16 +331,30 @@ def _project_points(points, pmap, direction):
 def project_pattern(pattern, pmap, direction=DISPLAY):
     """A pattern with its points projected, or None if it cannot be drawn.
 
-    Identity, type, variation, degree and colour ride along untouched -- those
-    live in canonical space and a projection has no opinion about them. Pure:
-    a new dict comes out and the input is never touched.
+    Everything that is not a coordinate rides along untouched -- identity, type,
+    variation, degree, colour and the per-leg study values -- because all of it
+    lives in canonical space and a projection has no opinion about any of it.
+    ``points`` is the one field rewritten, and it is named explicitly rather
+    than the rest being listed, so a field added later cannot go missing the
+    moment the client changes aggregation.
+
+    ``leg_values`` is copied a level deep rather than shared: every other part
+    of the result is a fresh object, and handing back the canonical pattern's
+    own entries would let an edit of a projection reach the stored study data.
+
+    Pure: a new dict comes out and the input is never touched.
     """
     if not isinstance(pattern, dict):
         return None
     projected = _project_points(pattern.get("points"), pmap, direction)
     if projected is None:
         return None
-    return dict(pattern, points=projected)
+    moved = dict(pattern, points=projected)
+    values = moved.get("leg_values")
+    if isinstance(values, dict):
+        moved["leg_values"] = {key: dict(entry) if isinstance(entry, dict) else entry
+                               for key, entry in values.items()}
+    return moved
 
 
 def project_patterns(patterns, pmap, direction=DISPLAY):
@@ -742,7 +756,9 @@ def refine_event(event, pmap, magnets=None, patterns=None):
     display *is* canonical and the event passes through unchanged.
 
     ``pattern_completed`` and ``move_point`` carry coordinates; every other
-    event type is addressed by id alone and passes through untouched.
+    event type passes through untouched. ``set_leg_values`` names its leg by
+    index rather than by a point, which is exactly why it needs no refinement:
+    a leg index means the same thing at every aggregation.
 
     The refined price always comes from the map, never from the event -- but
     not because the event's price is wrong. It is the display bar's extreme,

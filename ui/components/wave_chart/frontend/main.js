@@ -85,7 +85,6 @@
     var degreeNames = [];         // degree names, most senior first
     var patterns = [];            // authoritative list (Python is the source of truth)
     var rendered = [];            // authoritative list + outbox replayed on top
-    var originHidden = {};        // pattern id -> true when its 0 belongs to a parent
     var outbox = [];              // events sent but not yet acked by Python
     var bars = [];                // current bar series data (rows with full OHLC)
     var allTimes = [];            // every payload time -- the time scale's index space
@@ -107,6 +106,11 @@
     var armedButton = null;
     var flashTimer = null;
     var pressStart = null;
+
+    // ---- per-leg study values ---------------------------------------
+    var legSeries = {};           // payload series key -> value array, for pre-fills
+    var displayTimeframe = null;  // the aggregation the held payload was built at
+    var popup = null;             // {el, id, leg, inputs} while the popup is open
 
     // ---- fullscreen state -------------------------------------------
     var fullscreen = false;       // authoritative flag, whichever mechanism ran
@@ -263,6 +267,13 @@
         return null;
     }
 
+    // [[field label, payload series key], ...] -- config/wave_analysis owns the
+    // list and sends it down, so a field the client asks for later is added
+    // there and appears here with no change to this file.
+    function legValueFields() {
+        return (waveDefs && waveDefs.leg_value_fields) || [];
+    }
+
     // -----------------------------------------------------------------
     // Optimistic overlay
     //
@@ -325,48 +336,6 @@
         return list;
     }
 
-    // -----------------------------------------------------------------
-    // Parent/child relation -- mirrors config/wave_analysis.child_leg_index
-    // and find_parent. The two must stay in sync: Python owns the degrees a
-    // child derives, this copy only decides whose origin glyph to hide.
-    //
-    // A child spans exactly one leg of its parent, endpoint for endpoint, and
-    // a pivot is a (time, kind) pair -- a bar's high and its low are two
-    // different pivots. Only yellow patterns take part; a red one is already
-    // flagged invalid and is in no relation.
-    // -----------------------------------------------------------------
-    function pointsMatch(a, b) {
-        return !!a && !!b && a.time === b.time && a.kind === b.kind;
-    }
-
-    function childLegIndex(parent, child) {
-        if (!parent || !child || parent.id === child.id) return null;
-        var pp = parent.points, cp = child.points;
-        if (!pp || pp.length < 2 || !cp || cp.length < 2) return null;
-        for (var k = 0; k < pp.length - 1; k++) {
-            if (pointsMatch(cp[0], pp[k]) && pointsMatch(cp[cp.length - 1], pp[k + 1])) return k;
-        }
-        return null;
-    }
-
-    // Recomputed once per state change rather than inside the draw path:
-    // drawing runs on every pane render, including every frame of a wheel-pan.
-    function refreshOriginHidden() {
-        originHidden = {};
-        for (var c = 0; c < rendered.length; c++) {
-            var child = rendered[c];
-            if (!child || child.color !== "yellow") continue;
-            for (var p = 0; p < rendered.length; p++) {
-                var parent = rendered[p];
-                if (p === c || !parent || parent.color !== "yellow") continue;
-                if (childLegIndex(parent, child) !== null) {
-                    originHidden[child.id] = true;
-                    break;
-                }
-            }
-        }
-    }
-
     function refreshRendered() {
         var list = patterns.slice();
         for (var i = 0; i < outbox.length; i++) list = replayEvent(list, outbox[i]);
@@ -380,8 +349,10 @@
             });
         }
         rendered = list;
-        refreshOriginHidden();
         if (selectedId && !findRendered(selectedId)) selectedId = null;
+        // A popup outlives a rerun, but not the pattern it names -- a delete
+        // arriving from anywhere leaves it pointing at nothing.
+        if (popup && !findRendered(popup.id)) closePopup();
         updateStatus();
         redraw();
     }
@@ -444,11 +415,13 @@
             var deg = degreeMap[pattern.degree];
             var labels = labelsFor(pattern.pattern_type, pattern.variation);
             if (!deg || !labels || !pattern.points) continue;
-            for (var i = 0; i < pattern.points.length && i < labels.length; i++) {
-                // A child's point 0 is its parent's pivot and already carries
-                // the parent's label; only a root shows an origin glyph. The
-                // point keeps everything else -- handle, polyline, annotation.
-                if (i === 0 && originHidden[pattern.id]) continue;
+            // From point 1: the client asked for the 0 to go from every wave
+            // count. Only the *glyph* goes -- point 0 is the origin of wave 1,
+            // it defines the pattern's span, and it is half of the endpoint
+            // match that drives degree derivation, the DRM export and
+            // magnetism. It keeps its handle, its annotation block and its
+            // place in the polyline.
+            for (var i = 1; i < pattern.points.length && i < labels.length; i++) {
                 items.push({
                     patternId: pattern.id,
                     pointIndex: i,
@@ -966,6 +939,13 @@
         // Clicks are detected here rather than via subscribeClick so that the
         // mouse-up ending a drag-pan never places a point.
         container.addEventListener("mousedown", onMouseDown);
+        container.addEventListener("contextmenu", onContextMenu);
+        // Click-away closes the leg-value popup -- on mousedown, so it is gone
+        // before the mouse-up that selects or deselects is acted on, and on the
+        // document, so a click anywhere outside it counts.
+        document.addEventListener("mousedown", function (event) {
+            if (popup && !popup.el.contains(event.target)) closePopup();
+        });
         // Move/up ride on the document so a drag that wanders off the chart
         // still tracks and still releases (leaving panning disabled forever
         // would be far worse than a clamped candidate).
@@ -1037,6 +1017,32 @@
         series.ci.setData(lineData(t, payload.ci));
         series.ci_13.setData(lineData(t, payload.ci_13));
         series.ci_33.setData(lineData(t, payload.ci_33));
+
+        // Last, so a payload that setData refused leaves the previous readings
+        // in place rather than pairing new numbers with the old bars. Only the
+        // series the leg-value popup actually reads are kept: the rest of the
+        // payload is the chart's business and holding a second reference to
+        // tens of megabytes of it would not be.
+        displayTimeframe = payload.timeframe;
+        legSeries = {};
+        var fields = legValueFields();
+        for (var f = 0; f < fields.length; f++) {
+            var key = fields[f][1];
+            if (Array.isArray(payload[key])) legSeries[key] = payload[key];
+        }
+    }
+
+    // A series' value at a payload time, or null. A time inside a leading NaN
+    // window has no reading, and the popup must show that as blank rather than
+    // as a zero the client would later count.
+    function seriesValueAt(key, time) {
+        var values = legSeries[key];
+        if (!values) return null;
+        var slot = timeToSlot[time];
+        if (slot === undefined) return null;
+        var value = values[slot];
+        if (value === null || value === undefined || isNaN(value)) return null;
+        return value;
     }
 
     function showDataError(err) {
@@ -1422,6 +1428,7 @@
         button.classList.add("wa-armed");
         // Marking and selection are mutually exclusive modes.
         if (drag) endDrag();
+        closePopup();
         selectedId = null;
         // The degree is captured now: changing the dropdown mid-marking must
         // not affect the pattern being placed.
@@ -1534,6 +1541,8 @@
     // -----------------------------------------------------------------
     function select(id) {
         if (selectedId === id) { updateStatus(); return; }
+        // The popup belongs to a leg of the pattern that was selected.
+        closePopup();
         selectedId = id;
         updateStatus();
         redraw();
@@ -1587,16 +1596,26 @@
         return Math.sqrt(px * px + py * py);
     }
 
-    // Clicking the connecting line of the selected pattern keeps it selected --
-    // the lines are part of what the user sees as "the selection".
-    function onSelectedSegments(x, y) {
+    // Which leg of the selected pattern a point falls on: the nearest segment
+    // within SEGMENT_HIT, or null. Leg k runs from point k to point k + 1 -- the
+    // same indexing the DRM export and the reducer use -- so the leg is the
+    // earlier handle's own point index.
+    //
+    // Two callers: a left click anywhere along these lines keeps the pattern
+    // selected (the lines are part of what the user sees as "the selection"),
+    // and a right click on one opens that leg's value popup.
+    function selectedSegmentAt(x, y) {
+        var leg = null;
+        var best = SEGMENT_HIT;
         for (var i = 1; i < lastHandles.length; i++) {
             if (lastHandles[i].index !== lastHandles[i - 1].index + 1) continue;
-            if (distanceToSegment(x, y, lastHandles[i - 1], lastHandles[i]) <= SEGMENT_HIT) {
-                return true;
+            var distance = distanceToSegment(x, y, lastHandles[i - 1], lastHandles[i]);
+            if (distance <= best) {
+                best = distance;
+                leg = lastHandles[i - 1].index;
             }
         }
-        return false;
+        return leg;
     }
 
     // Clicking anywhere along a pattern's connecting lines selects it. Those
@@ -1640,6 +1659,209 @@
     function shiftSelectedDegree(delta) {
         if (!selectedId) return;
         sendEvent({ type: "shift_degree", id: selectedId, delta: delta });
+    }
+
+    // -----------------------------------------------------------------
+    // Per-leg study values
+    //
+    // Right-clicking a leg of the selected pattern opens a small form of number
+    // boxes -- one per field in LEG_VALUE_FIELDS -- which Python stores against
+    // that leg. The point of it is a dataset the client can count across many
+    // marked patterns ("bullish wave 4 has a lower CMB level than wave 2 90% of
+    // the time"), so every box is pre-filled with the reading the chart already
+    // holds: he gets a usable dataset without typing hundreds of numbers, and
+    // can still override any of them.
+    // -----------------------------------------------------------------
+    var POPUP_MARGIN = 4;       // px of the component's edge the popup may not enter
+    var POPUP_OFFSET = 2;       // px between the cursor and the popup's corner
+
+    // The wave a leg *is*: leg k runs from points[k] to points[k + 1] and is
+    // therefore the wave labelled by point k + 1. Getting this off by one would
+    // produce plausible-looking but wrong study data.
+    function legWaveLabel(pattern, leg) {
+        var labels = labelsFor(pattern.pattern_type, pattern.variation);
+        if (!labels || leg + 1 >= labels.length) return null;
+        return labels[leg + 1];
+    }
+
+    function storedLegValues(pattern, leg) {
+        var values = pattern.leg_values;
+        if (!values) return {};
+        return values[String(leg)] || {};
+    }
+
+    function roundTwo(value) {
+        return Math.round(value * 100) / 100;
+    }
+
+    function closePopup() {
+        if (!popup) return;
+        if (popup.el.parentNode) popup.el.parentNode.removeChild(popup.el);
+        popup = null;
+    }
+
+    // Inside the component, always: at the right-hand edge of the chart -- or
+    // anywhere near it in fullscreen, where the component fills the viewport --
+    // a popup placed straight at the cursor would hang half off-screen.
+    function positionPopup(el, clientX, clientY) {
+        var rect = rootEl.getBoundingClientRect();
+        var maxLeft = rect.width - el.offsetWidth - POPUP_MARGIN;
+        var maxTop = rect.height - el.offsetHeight - POPUP_MARGIN;
+        var left = clientX - rect.left + POPUP_OFFSET;
+        var top = clientY - rect.top + POPUP_OFFSET;
+        el.style.left = Math.max(POPUP_MARGIN, Math.min(left, maxLeft)) + "px";
+        el.style.top = Math.max(POPUP_MARGIN, Math.min(top, maxTop)) + "px";
+    }
+
+    function savePopup() {
+        if (!popup) return;
+        var values = {};
+        for (var i = 0; i < popup.inputs.length; i++) {
+            var raw = popup.inputs[i].input.value.trim();
+            var number = Number(raw);
+            // Blank clears the field. So does anything unparsable -- a number
+            // input hands back "" for content it could not read, and storing a
+            // nonsense reading would be worse than storing none.
+            values[popup.inputs[i].name] =
+                (raw === "" || !isFinite(number)) ? null : number;
+        }
+        sendEvent({
+            type: "set_leg_values",
+            id: popup.id,
+            leg_index: popup.leg,
+            values: values,
+            // What the numbers were read at. CMB on 1D bars is a different
+            // quantity from CMB on 15m bars, and an unrecorded aggregation
+            // would make the whole study ambiguous.
+            timeframe: displayTimeframe,
+        });
+        closePopup();
+    }
+
+    function onPopupKeyDown(event) {
+        // Both stop here: the document handler would otherwise take Escape as
+        // "deselect the pattern", which is not what the user asked for while a
+        // form is open over it.
+        if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            closePopup();
+        } else if (event.key === "Enter") {
+            event.preventDefault();
+            event.stopPropagation();
+            savePopup();
+        }
+    }
+
+    function popupRow(name, stored, computed) {
+        var row = document.createElement("div");
+        row.className = "wa-popup-row";
+
+        var label = document.createElement("label");
+        label.textContent = name;
+        row.appendChild(label);
+
+        var input = document.createElement("input");
+        input.type = "number";
+        input.step = "any";
+        var have = stored !== undefined && stored !== null;
+        input.value = have ? String(stored)
+                           : (computed === null ? "" : String(roundTwo(computed)));
+        row.appendChild(input);
+
+        // A pivot moved after a value was read leaves a stale number behind.
+        // Deleting it would be worse -- it may be a judgement he typed rather
+        // than a reading -- so the current one is shown underneath instead of
+        // the difference staying invisible.
+        if (have && computed !== null && roundTwo(computed) !== Number(stored)) {
+            var hint = document.createElement("div");
+            hint.className = "wa-popup-hint";
+            hint.textContent = "now " + roundTwo(computed);
+            row.appendChild(hint);
+        }
+        return { row: row, input: input };
+    }
+
+    function popupButton(text, handler) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.textContent = text;
+        button.addEventListener("click", function (event) {
+            event.stopPropagation();
+            handler();
+        });
+        return button;
+    }
+
+    function openPopup(pattern, leg, clientX, clientY) {
+        closePopup();
+        var wave = legWaveLabel(pattern, leg);
+        // The leg's *terminating* bar is where the values are read: the wave is
+        // named by the point it ends on, so that is the bar the reading belongs
+        // to. If the client turns out to want the extreme reached *during* the
+        // leg instead, this one line is where that changes -- the series would
+        // be scanned from points[leg] to points[leg + 1] rather than sampled.
+        var point = pattern.points[leg + 1];
+        if (wave === null || !point) return;
+
+        var el = document.createElement("div");
+        el.className = "wa-popup";
+
+        var head = document.createElement("div");
+        head.className = "wa-popup-head";
+        // Names the wave unambiguously: two patterns can both have a wave 3 and
+        // only the degree tells them apart.
+        head.textContent = "Wave " + wave + " · " + pattern.degree;
+        el.appendChild(head);
+
+        var stored = storedLegValues(pattern, leg);
+        var fields = legValueFields();
+        var inputs = [];
+        for (var i = 0; i < fields.length; i++) {
+            var name = fields[i][0];
+            var built = popupRow(name, stored[name], seriesValueAt(fields[i][1], point.time));
+            el.appendChild(built.row);
+            inputs.push({ name: name, input: built.input });
+        }
+
+        var actions = document.createElement("div");
+        actions.className = "wa-popup-actions";
+        actions.appendChild(popupButton("Save", savePopup));
+        actions.appendChild(popupButton("Cancel", closePopup));
+        el.appendChild(actions);
+
+        // The popup sits outside the chart container, so a wheel over it would
+        // otherwise escape to the Streamlit page behind the iframe.
+        el.addEventListener("wheel", function (event) { event.preventDefault(); },
+                            { passive: false });
+        el.addEventListener("keydown", onPopupKeyDown);
+        el.addEventListener("contextmenu", function (event) { event.preventDefault(); });
+
+        // Appended to #wave-root rather than to <body>: under native fullscreen
+        // the root *is* the element on screen, and anything outside it would
+        // simply not be rendered.
+        rootEl.appendChild(el);
+        popup = { el: el, id: pattern.id, leg: leg, inputs: inputs };
+        // Measured only once it is in the document, which is what the clamp
+        // needs to know how much room the popup actually takes.
+        positionPopup(el, clientX, clientY);
+        if (inputs.length) inputs[0].input.focus();
+    }
+
+    function onContextMenu(event) {
+        // Unconditional: the browser's own menu must never appear over the
+        // chart, whatever the click did or did not land on.
+        event.preventDefault();
+        closePopup();
+        // The client's flow is "once the pattern shows the lines I can right
+        // click the line", so with nothing selected there is no leg to name.
+        if (marking || !selectedId) return;
+        var local = localPoint(event);
+        var leg = selectedSegmentAt(local.x, local.y);
+        if (leg === null) return;
+        var pattern = findRendered(selectedId);
+        if (!pattern || !pattern.points) return;
+        openPopup(pattern, leg, event.clientX, event.clientY);
     }
 
     // -----------------------------------------------------------------
@@ -1717,6 +1939,9 @@
     // Pointer / keyboard
     // -----------------------------------------------------------------
     function onMouseDown(event) {
+        // Left button only. A right-click belongs to onContextMenu, and letting
+        // it through here would start a handle drag the user never asked for.
+        if (event.button) return;
         pressStart = { x: event.clientX, y: event.clientY };
         // Keys only reach this document once something inside the iframe has
         // focus, so Delete / Ctrl+- work right after the click that selects.
@@ -1752,14 +1977,26 @@
         var local = localPoint(event);
         var hit = labelAt(local.x, local.y);
         if (hit) { select(hit.patternId); return; }
-        if (selectedId && onSelectedSegments(local.x, local.y)) return;
+        if (selectedId && selectedSegmentAt(local.x, local.y) !== null) return;
         var segmentId = patternAtSegment(local.x, local.y);
         if (segmentId) { select(segmentId); return; }
         select(null);
     }
 
     function onKeyDown(event) {
+        // A key typed into the popup's form belongs to the form. Without this
+        // the Backspace that clears a value would fall through to the Delete
+        // shortcut below and delete the whole pattern out from under it, and
+        // Ctrl+Z would undo the last marking instead of the last keystroke.
+        // (Escape and Enter never get this far -- the popup's own handler stops
+        // them -- but they are covered by the same rule.)
+        if (popup && popup.el.contains(event.target)) return;
         if (event.key === "Escape") {
+            // First in line: closing a form the user is looking at must not
+            // also cost him his selection. (The popup's own handler catches
+            // this while an input has focus; this is the case where it does
+            // not, e.g. after a click on the chart behind it.)
+            if (popup) { event.preventDefault(); closePopup(); return; }
             if (drag) { event.preventDefault(); endDrag(); return; }
             if (marking) { event.preventDefault(); disarm(); return; }
             if (selectedId) { event.preventDefault(); select(null); return; }
@@ -1956,6 +2193,7 @@
         // that are no longer on the chart.
         if (drag) endDrag();
         if (marking) disarm();
+        closePopup();
         selectedId = null;
         outbox = [];
         chart.timeScale().applyOptions({ timeVisible: intraday(payload.timeframe) });
