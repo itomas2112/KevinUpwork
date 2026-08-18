@@ -8,7 +8,9 @@ import pytest
 from config.wave_analysis import (
     DEFAULT_DEGREE,
     DEGREES,
+    LEG_VALUE_FIELDS,
     PATTERN_DEFS,
+    analysable_legs,
     apply_wave_event,
     child_leg_index,
     children_by_leg,
@@ -248,6 +250,17 @@ def test_wave_defs_is_plain_json_shaped():
     for variations in defs["pattern_defs"].values():
         for entry in variations:
             assert isinstance(entry, list) and isinstance(entry[1], list)
+
+
+def test_wave_defs_carries_the_six_leg_value_field_names():
+    # The popup draws one box per name and mirrors leg_is_complete off the same
+    # list, so this is the whole contract between Python and the frontend for
+    # the per-wave values.
+    fields = wave_defs()["leg_value_fields"]
+
+    assert fields == ["Origin CMB", "Origin RSI", "CMB", "RSI",
+                      "Terminating CMB", "Terminating RSI"]
+    assert fields == list(LEG_VALUE_FIELDS)
 
 
 # ------------------------------------------------------------ apply_wave_event
@@ -946,6 +959,54 @@ def test_validate_tolerates_junk_input():
     assert validate_patterns([]) == []
     assert validate_patterns([{"id": "A", "points": []}]) == [
         {"id": "A", "points": [], "color": "yellow"}]
+
+
+# ---------------------------------------------------- colour vs analysable legs
+#
+# The two rules meet here: validate_patterns decides red, and analysable_legs
+# refuses every leg of a red pattern however well measured it is. The client's
+# words -- "if the symbol is yellow or red it cannot be used in analysis".
+
+
+def measure_leg(pattern, leg):
+    """Fill every configured field on one leg of ``pattern``, in place."""
+    entry = {field: 1.0 + i for i, field in enumerate(LEG_VALUE_FIELDS)}
+    entry["timeframe"] = "1D"
+    pattern.setdefault("leg_values", {})[str(leg)] = entry
+    return pattern
+
+
+def test_a_measured_leg_stops_being_analysable_once_its_pattern_goes_red():
+    measured = measure_leg(span_pattern("A", 0, 100), 1)
+    assert analysable_legs(measured) == [1]
+
+    # An overlapping neighbour at the same degree turns both red.
+    recoloured = validate_patterns([measured, span_pattern("B", 50, 150)])
+
+    assert colors_of(recoloured) == {"A": "red", "B": "red"}
+    assert analysable_legs(recoloured[0]) == []
+
+
+def test_resolving_the_collision_makes_the_leg_analysable_again():
+    # Nothing is re-entered: the values rode along untouched through both
+    # recolourings, so the wave goes back to white on its own.
+    measured = measure_leg(span_pattern("A", 0, 100), 1)
+    red = validate_patterns([measured, span_pattern("B", 50, 150)])[0]
+    assert analysable_legs(red) == []
+
+    healed = validate_patterns([red])
+
+    assert colors_of(healed) == {"A": "yellow"}
+    assert analysable_legs(healed[0]) == [1]
+
+
+def test_settle_keeps_the_values_it_finds_on_a_pattern():
+    measured = measure_leg(span_pattern("A", 0, 100), 0)
+
+    settled = settle([measured])
+
+    assert settled[0]["leg_values"] == measured["leg_values"]
+    assert analysable_legs(settled[0]) == [0]
 
 
 # ------------------------------------------------------- batched event folding

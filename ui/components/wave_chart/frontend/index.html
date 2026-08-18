@@ -173,28 +173,33 @@
         .wa-popup-head {
             margin-bottom: 5px;
         }
+        /* Six boxes, two to a row: CMB on the left and RSI on the right, origin
+           / current / terminating down the rows. Every box carries its own
+           visible label because the client's field names are what the values
+           are stored under, and all six are blank until he types in them. */
         .wa-popup-row {
+            display: flex;
+            gap: 8px;
             margin-bottom: 4px;
         }
-        .wa-popup-row label {
-            display: inline-block;
-            width: 44px;
+        .wa-popup-cell {
+            width: 104px;
         }
-        .wa-popup-row input {
+        .wa-popup-cell label {
+            display: block;
+            margin-bottom: 2px;
+            color: #9e9e9e;
+            font-size: 11px;
+        }
+        .wa-popup-cell input {
             background: #121212;
             border: 1px solid #2a2a2a;
             color: #c8c8c8;
             font: 12px Arial, sans-serif;
             padding: 2px 4px;
-            width: 90px;
+            width: 100%;
+            box-sizing: border-box;
             border-radius: 2px;
-        }
-        /* The freshly computed reading, shown only when it differs from the
-           stored one -- a value gone stale after a point move. */
-        .wa-popup-hint {
-            margin: 1px 0 0 44px;
-            color: #777777;
-            font-size: 11px;
         }
         .wa-popup-actions {
             margin-top: 6px;
@@ -239,6 +244,6 @@
     </div>
     <!-- ?v= busts browser caches -- bump it whenever either file changes. -->
     <script src="lightweight-charts.standalone.production.js?v=1"></script>
-    <script src="main.js?v=12"></script>
+    <script src="main.js?v=14"></script>
 </body>
 </html>

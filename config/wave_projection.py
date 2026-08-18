@@ -44,7 +44,7 @@ from config.wave_analysis import POINT_KINDS
 # than imported so ``config/`` stays a leaf package; the grid-agreement test
 # compares ``display_times`` against ``resample_ohlc`` itself on every
 # timeframe, so the two cannot drift apart unnoticed.
-RESAMPLE_RULES = {"1H": "1h", "4H": "4h", "1D": "1D"}
+RESAMPLE_RULES = {"1H": "1h", "4H": "4h", "1D": "1D", "1W": "W", "1M": "MS"}
 
 DISPLAY = "display"
 CANONICAL = "canonical"
@@ -198,7 +198,12 @@ def period_map(df_base, timeframe, base_timeframe="15m"):
     # Computing bucket boundaries by floor/modulo instead would be a coin toss
     # on pandas' origin handling, and a one-bar offset is invisible in a unit
     # test and catastrophic on the client's chart.
-    grouped = df_base[["high", "low"]].groupby(pd.Grouper(freq=rule))
+    # label/closed carry the same values ``resample_ohlc`` passes, for the same
+    # reason: pandas defaults them per-frequency, so weeks and months would bin
+    # and label the other way round from hours and days if left alone, and the
+    # two grids have to be the same grid.
+    grouped = df_base[["high", "low"]].groupby(
+        pd.Grouper(freq=rule, label="left", closed="left"))
     all_periods = grouped.agg({"high": "max", "low": "min"})
     # ``ngroup`` numbers the bins by their position in that aggregate, empty
     # bins included, which is exactly the index the codes below are used as.

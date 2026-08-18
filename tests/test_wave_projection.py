@@ -122,6 +122,62 @@ def test_an_unsupported_timeframe_is_rejected():
         period_map(flat_frame(), "3W", "15m")
 
 
+# ------------------------------------------------- grid agreement, 1W and 1M
+#
+# Weeks and months are the two timeframes pandas labels and closes on the right
+# by default, so they are the two where the map and the resample could quietly
+# disagree about which bar a marking belongs to. The frames here are hourly and
+# months long, because a three-day frame has nothing to say about a weekly grid.
+
+
+def long_gappy_frame():
+    """Four months of 1H bars with a whole month and a whole week missing.
+
+    March is gone, which empties a 1M bin; so is the week that opens on Sunday
+    2024-01-07, which empties a 1W one. Both gaps are wide enough to bite at
+    4H and 1D as well, so the same frame exercises every coarser timeframe.
+    """
+    index = pd.date_range("2024-01-01", "2024-04-30 23:00", freq="1h")
+    missing_week = ((index >= pd.Timestamp("2024-01-07"))
+                    & (index < pd.Timestamp("2024-01-14")))
+    index = index[(index.month != 3) & ~missing_week]
+    highs = [100.0 + i for i in range(len(index))]
+    lows = [h - 5.0 for h in highs]
+    return pd.DataFrame({"open": highs, "high": highs, "low": lows,
+                         "close": highs, "volume": [1.0] * len(index)},
+                        index=index)
+
+
+@pytest.mark.parametrize("timeframe", ["4H", "1D", "1W", "1M"])
+def test_display_times_match_resample_ohlc_exactly_over_long_periods(timeframe):
+    df = long_gappy_frame()
+    pmap = period_map(df, timeframe, "1H")
+
+    assert pmap.display_times == times_of(resample_ohlc(df, timeframe, "1H"))
+
+
+@pytest.mark.parametrize("timeframe", ["1W", "1M"])
+def test_an_empty_week_or_month_is_absent_from_the_grid(timeframe):
+    # Guards the assertion above against passing vacuously: the missing week and
+    # the missing month have to be visible as a shorter grid than the same span
+    # with nothing removed.
+    df = long_gappy_frame()
+    index = pd.date_range("2024-01-01", "2024-04-30 23:00", freq="1h")
+    ungapped = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 0.0,
+                             "close": 1.0, "volume": 1.0}, index=index)
+
+    assert len(period_map(df, timeframe, "1H").display_times) \
+        < len(period_map(ungapped, timeframe, "1H").display_times)
+
+
+def test_a_weekly_bucket_is_never_a_dropped_period():
+    df = long_gappy_frame()
+    pmap = period_map(df, "1W", "1H")
+
+    assert set(pmap.bucket_of.values()) <= set(pmap.display_times)
+    assert set(pmap.bucket_of) == set(times_of(df))
+
+
 # The invariant that lets the map hold one price table instead of two:
 # ``to_canonical`` reads a refined point's price out of ``extreme_price``, which
 # is only sound because the bar ``extreme_time`` names is the one whose own high
@@ -307,6 +363,69 @@ def test_refining_then_coarsening_returns_the_same_display_point(timeframe, kind
         point = {"time": display, "price": pmap.extreme_price[(display, kind)],
                  "kind": kind}
         assert to_display(to_canonical(point, pmap), pmap) == point
+
+
+@pytest.mark.parametrize("timeframe", ["1W", "1M"])
+@pytest.mark.parametrize("kind", ["high", "low"])
+def test_refining_then_coarsening_returns_the_same_weekly_or_monthly_point(
+        timeframe, kind):
+    df = long_gappy_frame()
+    pmap = period_map(df, timeframe, "1H")
+
+    for display in pmap.display_times:
+        point = {"time": display, "price": pmap.extreme_price[(display, kind)],
+                 "kind": kind}
+        assert to_display(to_canonical(point, pmap), pmap) == point
+
+
+def tied_month_frame():
+    """January 2024 in 1H bars, with the extremes deliberately shared.
+
+    Positions 150 and 200 both carry the month's high, and positions 160 and 210
+    both carry its low. All four sit inside the week that opens on Sunday
+    2024-01-07 (hours 144 to 311 of the month), so the same frame pins the
+    latest-on-a-tie rule at 1W and at 1M at once.
+    """
+    index = pd.date_range("2024-01-01", "2024-01-31 23:00", freq="1h")
+    highs = [100.0] * len(index)
+    lows = [90.0] * len(index)
+    highs[150] = highs[200] = 500.0
+    lows[160] = lows[210] = 1.0
+    return pd.DataFrame({"open": highs, "high": highs, "low": lows,
+                         "close": highs, "volume": [1.0] * len(index)},
+                        index=index)
+
+
+@pytest.mark.parametrize("timeframe", ["1W", "1M"])
+def test_a_tied_weekly_or_monthly_extreme_refines_to_the_later_bar(timeframe):
+    df = tied_month_frame()
+    pmap = period_map(df, timeframe, "1H")
+    # The week holding the spikes is the second weekly bar; at 1M there is only
+    # one bar to look at.
+    period = pmap.display_times[1 if timeframe == "1W" else 0]
+
+    high = to_canonical({"time": period, "price": 500.0, "kind": "high"}, pmap)
+    low = to_canonical({"time": period, "price": 1.0, "kind": "low"}, pmap)
+
+    assert high == {"time": bar_time(df, 200), "price": 500.0, "kind": "high"}
+    assert low == {"time": bar_time(df, 210), "price": 1.0, "kind": "low"}
+
+
+@pytest.mark.parametrize("timeframe", ["1W", "1M"])
+def test_either_tied_bar_coarsens_onto_the_same_weekly_or_monthly_extreme(
+        timeframe):
+    # The other direction of the same tie: both bars carrying the extreme
+    # coarsen to the one display bar, at the one price.
+    df = tied_month_frame()
+    pmap = period_map(df, timeframe, "1H")
+    period = pmap.display_times[1 if timeframe == "1W" else 0]
+
+    for position in (150, 200):
+        assert to_display(point_at(df, position, "high"), pmap) == {
+            "time": period, "price": 500.0, "kind": "high"}
+    for position in (160, 210):
+        assert to_display(point_at(df, position, "low"), pmap) == {
+            "time": period, "price": 1.0, "kind": "low"}
 
 
 def test_coarsening_then_refining_is_deliberately_not_the_identity():
@@ -1674,3 +1793,59 @@ def test_a_period_map_pickles():
     pmap = period_map(df, "4H", "15m")
 
     assert pickle.loads(pickle.dumps(pmap)) == pmap
+
+
+# ------------------------------------------------- one timeframe, four lists
+#
+# The application names its aggregations in four separate places, and a
+# timeframe added to three of them is a bug that shows up as a KeyError in
+# whichever tab the client reaches last. Nothing here is clever -- it exists so
+# the *next* timeframe cannot be added by halves.
+
+
+def test_the_four_timeframe_lists_agree_with_one_another():
+    from ui.sidebar import ALL_AGG
+    from ui.wave_analysis_tab import TIMEFRAME_ORDER
+    from config.wave_projection import RESAMPLE_RULES as RULES
+
+    # The sidebar's selector and the tab's ordering are the same list: the
+    # selector slices it by the base timeframe's position, so an order that
+    # disagreed would offer the client a finer aggregation than he uploaded.
+    assert ALL_AGG == list(TIMEFRAME_ORDER)
+
+    # Everything but the finest is a resample. "15m" is the canonical base, and
+    # a base timeframe is never resampled to itself.
+    assert set(RULES) == set(TIMEFRAME_ORDER) - {"15m"}
+    assert TIMEFRAME_ORDER[0] == "15m"
+
+    # And the loader, whose own map is a local and so is held to account
+    # through its behaviour: it accepts every timeframe the lists name and
+    # refuses anything they do not.
+    df = flat_frame(days=1)
+    for timeframe in TIMEFRAME_ORDER[1:]:
+        assert len(resample_ohlc(df, timeframe, "15m")) >= 1, timeframe
+    for timeframe in ["2H", "6H", "3D", "2W", "1Y", "W", "MS", "ME", "M"]:
+        with pytest.raises(ValueError):
+            resample_ohlc(df, timeframe, "15m")
+
+
+def test_every_named_timeframe_can_carry_a_period_map():
+    from ui.wave_analysis_tab import TIMEFRAME_ORDER
+
+    df = long_gappy_frame()
+    for timeframe in TIMEFRAME_ORDER:
+        if timeframe == "15m":
+            continue
+        pmap = period_map(df, timeframe, "1H")
+        assert pmap.display_times == times_of(resample_ohlc(df, timeframe, "1H"))
+
+
+def test_export_and_coarsening_pick_up_the_new_timeframes_for_free():
+    # Both derive from TIMEFRAME_ORDER, so extending it was supposed to be
+    # enough. Verified rather than assumed.
+    from ui.wave_analysis_tab import _coarser, export_timeframes
+
+    assert _coarser("1W", "1D") and _coarser("1M", "1W")
+    assert not _coarser("1D", "1W") and not _coarser("1W", "1M")
+    assert export_timeframes("15m") == ["15m", "1H", "4H", "1D", "1W", "1M"]
+    assert export_timeframes("1H") == ["1H", "4H", "1D", "1W", "1M"]

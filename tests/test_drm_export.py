@@ -788,8 +788,8 @@ def drm_nest_on(df):
 
 
 def test_the_export_timeframe_list_offers_the_base_and_anything_coarser():
-    assert wave_analysis_tab.export_timeframes("15m") == ["15m", "1H", "4H", "1D"]
-    assert wave_analysis_tab.export_timeframes("1H") == ["1H", "4H", "1D"]
+    assert wave_analysis_tab.export_timeframes("15m") == ["15m", "1H", "4H", "1D", "1W", "1M"]
+    assert wave_analysis_tab.export_timeframes("1H") == ["1H", "4H", "1D", "1W", "1M"]
     assert wave_analysis_tab.export_timeframes("nonsense") == ["nonsense"]
 
 

@@ -49,12 +49,21 @@ PATTERN_COLORS = ("yellow", "red")
 
 POINT_KINDS = ("high", "low")
 
-# Field label -> the payload series it is read from. Adding a field the client
-# asks for later must be one line here and nothing else; he has said explicitly
-# that more boxes are coming.
+# Six values per wave, entered by hand. The names are the client's own and are
+# the keys the values are stored under, so they must not be prettified -- a
+# later analysis screen and any export refer to them by these exact strings.
+#
+# No series mapping any more: nothing is computed. He reads each number off
+# whichever chart he is on, which is the whole point -- the same wave measured
+# at two aggregations gives two different readings and only he knows which one
+# he means.
 LEG_VALUE_FIELDS = [
-    ("CMB", "ci"),
-    ("RSI", "rsi"),
+    "Origin CMB",
+    "Origin RSI",
+    "CMB",
+    "RSI",
+    "Terminating CMB",
+    "Terminating RSI",
 ]
 
 # What a leg's entry may carry besides the fields above. The timeframe is not
@@ -122,11 +131,11 @@ def wave_defs():
         },
         "degrees": [list(d) for d in DEGREES],
         "default_degree": DEFAULT_DEGREE,
-        # The leg-value popup builds one input per entry, in this order, and
-        # reads each one's pre-fill from the named payload series. Sent down
-        # rather than duplicated in JavaScript, so the table above stays the one
-        # place a new field is added.
-        "leg_value_fields": [list(field) for field in LEG_VALUE_FIELDS],
+        # The leg-value popup builds one input per name, in this order, and the
+        # frontend decides whether a wave is complete by checking all of them.
+        # Sent down rather than duplicated in JavaScript, so the table above
+        # stays the one place a field is added or renamed.
+        "leg_value_fields": list(LEG_VALUE_FIELDS),
     }
 
 
@@ -145,7 +154,7 @@ def leg_value_labels():
     constant at import time, so adding a field really is the one line the table
     promises -- and so a test can add one without editing this module.
     """
-    return {label for label, _series in LEG_VALUE_FIELDS}
+    return set(LEG_VALUE_FIELDS)
 
 
 def _is_valid_leg_values(leg_values, leg_count):
@@ -611,6 +620,109 @@ def settle(patterns):
     presumed = [dict(pattern, color="yellow") if isinstance(pattern, dict) else pattern
                 for pattern in patterns]
     return validate_patterns(reconcile_degrees(presumed))
+
+
+# -------------------------------------------------------------- analysable legs
+#
+# The client's rule for what may enter a study: "once the values has been
+# defined for that wave count the symbol turns white and is able to be used in
+# data analysis. If the symbol is yellow or red it cannot be used in analysis."
+#
+# So eligibility is two separate questions -- is the wave measured, and is the
+# marking it sits on uncontested -- and both have to answer yes. They live here
+# rather than in the UI because the analysis table is going to consume them and
+# the frontend only mirrors them to pick a colour.
+
+
+def leg_is_complete(pattern, leg_index):
+    """True when every field in LEG_VALUE_FIELDS has a number on that leg.
+
+    All six, not some: a partially measured wave would enter an analysis as if
+    it were fully measured and quietly weaken whatever it was counted in.
+    """
+    if not isinstance(pattern, dict) or not _is_int(leg_index):
+        return False
+
+    points = pattern.get("points")
+    if not isinstance(points, list) or not (0 <= leg_index < len(points) - 1):
+        return False
+
+    leg_values = pattern.get("leg_values")
+    if not isinstance(leg_values, dict):
+        return False
+    entry = leg_values.get(str(leg_index))
+    if not isinstance(entry, dict):
+        return False
+
+    # A field cleared to None is stored as absent, so "present and a number" is
+    # the only thing worth asking about.
+    return all(_is_number(entry.get(field)) for field in LEG_VALUE_FIELDS)
+
+
+def analysable_legs(pattern):
+    """Leg indices of a pattern that may be used in analysis.
+
+    Empty for a red pattern however complete its values are -- red means the
+    marking itself is contested, and a number measured on a contested wave is
+    not evidence of anything. This is the client's rule: only white counts.
+    """
+    if not isinstance(pattern, dict) or pattern.get("color") == "red":
+        return []
+
+    points = pattern.get("points")
+    if not isinstance(points, list) or len(points) < 2:
+        return []
+
+    return [leg for leg in range(len(points) - 1) if leg_is_complete(pattern, leg)]
+
+
+def analysable_waves(patterns):
+    """One row per wave eligible for analysis, across the whole list.
+
+    A row carries everything a study needs to match and compare without going
+    back to the pattern list: pattern id, pattern_type, variation, degree, the
+    leg index, the wave label that leg is named by, its values, and the
+    timeframe they were read at.
+
+    The list is settled first. Colour is an output of validate_patterns, so a
+    caller handing in unsettled patterns could otherwise be told a wave is
+    white that the very same list would paint red -- and a study built on that
+    would be quietly wrong rather than visibly broken. settle is idempotent, so
+    this costs nothing on the tab's already-settled list.
+    """
+    rows = []
+    for pattern in settle(patterns):
+        if not isinstance(pattern, dict) or not isinstance(pattern.get("id"), str):
+            continue
+        legs = analysable_legs(pattern)
+        if not legs:
+            continue
+        try:
+            labels = point_labels(pattern.get("pattern_type"), pattern.get("variation"))
+        except (ValueError, TypeError):
+            # A shape the definitions do not know names no waves, so it can
+            # contribute none -- analysable_legs only ever looked at the point
+            # count and would happily have offered legs of a nameless pattern.
+            continue
+
+        leg_values = pattern["leg_values"]
+        for leg in legs:
+            entry = leg_values[str(leg)]
+            rows.append({
+                "pattern_id": pattern["id"],
+                "pattern_type": pattern.get("pattern_type"),
+                "variation": pattern.get("variation"),
+                "degree": pattern.get("degree"),
+                "leg": leg,
+                "label": labels[leg + 1],
+                # Copied, and only the configured fields: a row is handed to a
+                # study that must not be able to write back into the markings,
+                # and the timeframe travels beside the numbers rather than
+                # inside them.
+                "values": {field: entry[field] for field in LEG_VALUE_FIELDS},
+                "timeframe": entry.get(LEG_VALUE_TIMEFRAME),
+            })
+    return rows
 
 
 # ------------------------------------------------------------------- reducers

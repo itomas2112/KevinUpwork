@@ -288,3 +288,54 @@ def test_close_column_fallback(df_oscillation_15m):
     assert payload_close["close"] == payload_latest["close"]
     assert payload_close["rsi"] == payload_latest["rsi"]
     assert payload_close["ci_33"] == payload_latest["ci_33"]
+
+
+# ---------------------------------------------------------------------------
+# Weekly and monthly aggregations
+#
+# The two timeframes pandas would otherwise label on the right. The payload is
+# what the chart reads bar-for-bar, so if the grids had parted company it would
+# show up here as a time the period map has never heard of.
+# ---------------------------------------------------------------------------
+
+def _two_years_1h():
+    """Two years of hourly bars -- enough to make 1W and 1M real series."""
+    index = pd.date_range("2023-01-01", "2024-12-31 23:00", freq="1h")
+    position = np.arange(len(index), dtype=float)
+    wave = 150.0 + 30.0 * np.sin(position / 90.0)
+    return pd.DataFrame({
+        "open": wave,
+        "high": wave + 2.0,
+        "low": wave - 2.0,
+        "latest": wave + 0.5,
+        "volume": np.ones(len(index)),
+    }, index=index)
+
+
+@pytest.mark.parametrize("timeframe", ["1W", "1M"])
+def test_a_weekly_or_monthly_payload_is_ordered_and_json_safe(timeframe):
+    display_df = resample_ohlc(_two_years_1h(), timeframe, "1H")
+
+    payload = build_wave_payload(display_df, timeframe, "gold.csv")
+
+    times = payload["time"]
+    assert len(times) > 20                      # a real series, not one bar
+    assert all(isinstance(t, int) for t in times)
+    assert all(times[i] < times[i + 1] for i in range(len(times) - 1))
+    for key in SERIES_KEYS:
+        assert len(payload[key]) == len(display_df), key
+    assert payload["timeframe"] == timeframe
+
+    json.dumps(payload, allow_nan=False)
+
+
+@pytest.mark.parametrize("timeframe", ["1W", "1M"])
+def test_weekly_and_monthly_payload_times_are_the_period_maps_display_bars(
+        timeframe):
+    base_df = dedupe_bars(_two_years_1h())
+    display_df = resample_ohlc(base_df, timeframe, "1H")
+
+    payload = build_wave_payload(display_df, timeframe, "gold.csv")
+    pmap = period_map(base_df, timeframe, "1H")
+
+    assert payload["time"] == pmap.display_times

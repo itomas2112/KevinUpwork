@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from config.wave_analysis import apply_wave_event, settle, wave_defs
+from config.wave_analysis import (LEG_VALUE_FIELDS, PATTERN_DEFS, apply_wave_event,
+                                  settle, wave_defs)
 from config.wave_projection import (CANONICAL, DISPLAY, RESAMPLE_RULES, period_map,
                                     pivot_magnets, project_patterns, refine_event)
 from data.loader import resample_ohlc
@@ -18,6 +19,7 @@ from strategies.drm_export import (PERIOD_FORMAT, build_drm_rows, build_drm_shee
                                    build_drm_workbook, build_wave_json, summary_lines)
 from strategies.wave_marking_manager import (WAVE_MARKINGS_FILE, load_wave_documents,
                                              migrate_document, save_wave_documents)
+from strategies.wave_study import run_study, wave_labels
 from ui.components.wave_chart import wave_chart
 
 # Static for the life of the process -- built once, handed to every render.
@@ -364,7 +366,7 @@ def _display_map(base_df, timeframe, base_timeframe, key):
 # Finest first. Only a *coarser* stored base timeframe can be re-snapped onto the
 # current one: 1H markings land on the 15m bars carrying each hour's extreme, but
 # 15m bars cannot be recovered from an hourly upload -- they were never uploaded.
-TIMEFRAME_ORDER = ("15m", "1H", "4H", "1D")
+TIMEFRAME_ORDER = ("15m", "1H", "4H", "1D", "1W", "1M")
 
 
 def _coarser(timeframe, base_timeframe):
@@ -624,6 +626,185 @@ def render_export(canonical, base_df, dataset_key, base_timeframe, timeframe, pm
                 key="_wa_export_json")
 
 
+# ------------------------------------------------------------------ analysis
+#
+# The screen the whole feature exists for: one comparison, counted across every
+# pattern he has marked, expressed as a percentage. Everything that decides
+# *what* is compared lives in ``strategies.wave_study``; what lives here is the
+# form he fills in and the sentence that reads it back to him.
+
+ALL_VARIATIONS = "All variations"
+
+# His own notation: "+/- 1" beside each wave count, only one of them active.
+SAME_DEGREE = "same"
+DEGREE_CHOICES = (SAME_DEGREE, "+1", "-1")
+DEGREE_OFFSETS = {SAME_DEGREE: 0, "+1": 1, "-1": -1}
+
+
+def study_restatement(spec):
+    """The line that reads a study back in words: how he checks it asked what he meant.
+
+    Worth more than it looks. Every control on the form is a dropdown, and a
+    stale one is invisible -- the restatement is the only place a study he did
+    not intend shows itself before he acts on the number beside it.
+    """
+    field = spec["field"]
+    if spec["offset_a"] == 1 or spec["offset_b"] == -1:
+        relation = (f"Wave {spec['wave_a']}'s pattern is the parent of "
+                    f"Wave {spec['wave_b']}'s")
+    elif spec["offset_a"] == -1 or spec["offset_b"] == 1:
+        relation = (f"Wave {spec['wave_a']}'s pattern is a child of "
+                    f"Wave {spec['wave_b']}'s")
+    else:
+        relation = "same degree"
+    return (f"Wave {spec['wave_a']} {field} {spec['operator']} "
+            f"Wave {spec['wave_b']} {field}, {spec['pattern_type']} "
+            f"({spec['variation'] or 'all variations'}), {relation}")
+
+
+def skip_summary(skipped):
+    """What did not become a sample, in plain language.
+
+    Always drawn, even when nothing was skipped: "90%" means one thing when
+    everything he marked was counted and another when most of it was not, and
+    silence would read as the first.
+    """
+    if not skipped:
+        return "Skipped: nothing"
+    return "Skipped: " + ", ".join(f"{count} {reason}"
+                                   for reason, count in skipped.items())
+
+
+def _dependent_key(prefix, *parts):
+    """A widget key that changes when the thing the widget is populated from does.
+
+    A variation of the old pattern type is not a variation of the new one, and a
+    wave label usually does not survive the change either. Popping the old key
+    out of session state does *not* clear the widget: Streamlit keeps the value
+    the frontend last sent under the widget's own identity, so an Impulse's
+    "Extended Impulse" comes straight back as the selection for a Zigzag, and
+    the study is then run on a label the chosen patterns do not have.
+
+    Changing the key makes it a different widget, which starts at its own first
+    option. Coming back to a combination restores what was chosen there before,
+    which is what a client flicking between two types would expect anyway.
+    """
+    return "_".join([prefix] + [str(part) for part in parts])
+
+
+def _study_key(patterns):
+    """Identity of the markings a stored result was counted from.
+
+    Through the JSON, not the count: a value typed onto a wave changes what the
+    percentage should be without changing how many patterns there are, and
+    serving him the previous answer would be worse than making him press Run.
+    """
+    return json.dumps(patterns, sort_keys=True, default=str)
+
+
+def render_study(canonical):
+    """The Analysis expander: configure one comparison, run it, read the result."""
+    with st.expander("Analysis", expanded=False):
+        col_type, col_variation = st.columns(2)
+        with col_type:
+            pattern_type = st.selectbox("Pattern", list(PATTERN_DEFS),
+                                        key="_wa_study_type")
+        with col_variation:
+            # Not mandatory, in his words: with nothing named the study pools
+            # every variation of the type.
+            names = [ALL_VARIATIONS] + [n for n, _seq in PATTERN_DEFS[pattern_type]]
+            variation_name = st.selectbox(
+                "Variation", names,
+                key=_dependent_key("_wa_study_variation", pattern_type))
+        variation = None if variation_name == ALL_VARIATIONS else variation_name
+
+        labels = wave_labels(pattern_type, variation)
+        wave_key = (pattern_type, variation_name)
+
+        col_a, col_deg_a, col_b, col_deg_b = st.columns([3, 2, 3, 2])
+        with col_a:
+            wave_a = st.selectbox("Wave A", labels,
+                                  key=_dependent_key("_wa_study_wave_a", *wave_key))
+        # Mutually exclusive, and decided before either box is drawn: the value
+        # a disabled selectbox displays is whatever sits in session state, so
+        # the locked side is forced back to "same" rather than merely greyed out
+        # over a stale +1 that would still reach the spec.
+        lock_a = st.session_state.get("_wa_study_deg_b", SAME_DEGREE) != SAME_DEGREE
+        if lock_a:
+            st.session_state["_wa_study_deg_a"] = SAME_DEGREE
+        with col_deg_a:
+            degree_a = st.selectbox("Degree", DEGREE_CHOICES, key="_wa_study_deg_a",
+                                    disabled=lock_a)
+        with col_b:
+            wave_b = st.selectbox("Wave B", labels,
+                                  key=_dependent_key("_wa_study_wave_b", *wave_key))
+        lock_b = degree_a != SAME_DEGREE
+        if lock_b:
+            st.session_state["_wa_study_deg_b"] = SAME_DEGREE
+        with col_deg_b:
+            degree_b = st.selectbox("Degree", DEGREE_CHOICES, key="_wa_study_deg_b",
+                                    disabled=lock_b)
+
+        col_field, col_op, col_run = st.columns([3, 2, 2])
+        with col_field:
+            field = st.selectbox("Value", LEG_VALUE_FIELDS, key="_wa_study_field")
+        with col_op:
+            operator = st.selectbox("Operator", [">", "<"], key="_wa_study_op")
+        with col_run:
+            # Streamlit reruns the whole app on every widget touch anywhere, and
+            # a study walks every pattern and every parent lookup. It runs when
+            # he asks for it, not when he is still choosing.
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            run = st.button("Run", key="_wa_study_run")
+
+        spec = {
+            "pattern_type": pattern_type,
+            "variation": variation,
+            "wave_a": wave_a,
+            "offset_a": DEGREE_OFFSETS[degree_a],
+            "wave_b": wave_b,
+            "offset_b": DEGREE_OFFSETS[degree_b],
+            "field": field,
+            "operator": operator,
+        }
+
+        key = _study_key(canonical)
+        stored = st.session_state.get("_wa_study_result")
+        if not (isinstance(stored, tuple) and len(stored) == 3 and stored[0] == key):
+            # The markings moved: a percentage counted off the previous list is
+            # not an answer about this one.
+            stored = None
+            st.session_state.pop("_wa_study_result", None)
+
+        if run:
+            try:
+                result = run_study(canonical, spec)
+            except ValueError as error:
+                st.error(str(error))
+                return
+            stored = (key, spec, result)
+            st.session_state["_wa_study_result"] = stored
+
+        if stored is None:
+            st.caption("Press **Run** to count this comparison across every "
+                       "marked pattern.")
+            return
+
+        _key, ran_spec, result = stored
+        st.markdown(f"### {result['samples']} samples · "
+                    f"{result['pct_true']:.1f}% true · "
+                    f"{result['pct_false']:.1f}% false")
+        st.caption(study_restatement(ran_spec))
+
+        counts = f"{result['true']} true · {result['false']} false"
+        if result["ties"]:
+            # Surfaced only when they exist: he has not defined "=" yet, and
+            # this is the evidence he asked to see before he does.
+            counts += f" · {result['ties']} tie(s), counted false"
+        st.caption(counts)
+        st.caption(skip_summary(result["skipped"]))
+
+
 def render_wave_analysis_tab(sidebar_config):
     """Render the Wave Analysis tab"""
 
@@ -763,4 +944,7 @@ def render_wave_analysis_tab(sidebar_config):
     st.caption(wave_caption(len(canonical), len(patterns), timeframe, dataset_key,
                             st.session_state.get("_wa_load_note")))
 
+    # Above the export: this is the question the markings were made to answer,
+    # and the export is the older, coarser way of getting at the same list.
+    render_study(canonical)
     render_export(canonical, base_df, dataset_key, base_timeframe, timeframe, pmap)

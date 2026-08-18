@@ -26,8 +26,10 @@
     var COLOR_RED = "#ef5350";
 
     // Wave label palette. "red" marks a same-degree overlap violation; Python
-    // owns the choice and sends it down on the pattern.
-    var LABEL_COLORS = { yellow: "#FFD700", red: COLOR_RED };
+    // owns that choice and sends it down on the pattern. "white" is decided per
+    // *label* rather than per pattern -- it marks a single wave whose six study
+    // values are all filled in, and so the one wave that may enter an analysis.
+    var LABEL_COLORS = { yellow: "#FFD700", red: COLOR_RED, white: "#ffffff" };
     var COLOR_PROVISIONAL = "#9e9e9e";
     var COLOR_SNAP_RING = "#ef5350";
     var COLOR_SNAP_DOT = "#2196f3";
@@ -79,6 +81,15 @@
     var needsInitialScroll = false;
     var wheelTarget = null;
 
+    // ---- crosshair lock ---------------------------------------------
+    // See lockCrosshair(). ``canLock`` is answered off the chart instance once,
+    // ``locked`` remembers whether the last move drove the crosshair ourselves,
+    // and ``locking`` guards the two chart calls against re-entering through
+    // the very listener that made them.
+    var canLockCrosshair = false;
+    var crosshairLocked = false;
+    var lockingCrosshair = false;
+
     // ---- wave state -------------------------------------------------
     var waveDefs = null;          // pattern/degree definitions from Python
     var degreeMap = {};           // degree name -> {index, letter, numeral, decoration, font}
@@ -108,7 +119,9 @@
     var pressStart = null;
 
     // ---- per-leg study values ---------------------------------------
-    var legSeries = {};           // payload series key -> value array, for pre-fills
+    // Nothing is computed for these: every number is typed by hand. The
+    // aggregation is still tracked, because a hand-typed reading is only
+    // interpretable once you know which chart it was read off.
     var displayTimeframe = null;  // the aggregation the held payload was built at
     var popup = null;             // {el, id, leg, inputs} while the popup is open
 
@@ -206,8 +219,10 @@
         return out;
     }
 
+    // Whether the time axis has to show a clock. 1D, 1W and 1M bars are all
+    // labelled at midnight, so a time of day on the axis would be noise.
     function intraday(timeframe) {
-        return timeframe !== "1D";
+        return timeframe !== "1D" && timeframe !== "1W" && timeframe !== "1M";
     }
 
     function lineOptions(color) {
@@ -267,11 +282,40 @@
         return null;
     }
 
-    // [[field label, payload series key], ...] -- config/wave_analysis owns the
-    // list and sends it down, so a field the client asks for later is added
-    // there and appears here with no change to this file.
+    // ["Origin CMB", ...] -- config/wave_analysis owns the list and sends it
+    // down, so a field the client asks for later is added there and appears
+    // here with no change to this file. Both the popup's boxes and the
+    // completeness test below are driven from it.
     function legValueFields() {
         return (waveDefs && waveDefs.leg_value_fields) || [];
+    }
+
+    // Mirrors config.wave_analysis.leg_is_complete -- Python is the authority
+    // and the two must stay in sync; this copy exists so a label can turn white
+    // the instant Save is pressed, off the optimistic overlay, rather than only
+    // after Python's rerun lands.
+    function legIsComplete(pattern, leg) {
+        var fields = legValueFields();
+        if (!fields.length || !pattern || !pattern.points) return false;
+        if (leg < 0 || leg >= pattern.points.length - 1) return false;
+        var entry = pattern.leg_values && pattern.leg_values[String(leg)];
+        if (!entry) return false;
+        for (var i = 0; i < fields.length; i++) {
+            var value = entry[fields[i]];
+            // All six, not some: a half-measured wave must not read as measured.
+            if (typeof value !== "number" || !isFinite(value)) return false;
+        }
+        return true;
+    }
+
+    // The colour of the label drawn at point ``index``. Red beats everything --
+    // a contested marking's numbers are not evidence -- and otherwise the wave
+    // that label names (leg ``index - 1``) decides: white once all six values
+    // are in, yellow until then.
+    function labelColor(pattern, index) {
+        if (pattern.color === "red") return LABEL_COLORS.red;
+        if (legIsComplete(pattern, index - 1)) return LABEL_COLORS.white;
+        return LABEL_COLORS.yellow;
     }
 
     // -----------------------------------------------------------------
@@ -287,9 +331,46 @@
     function withPoint(pattern, index, point) {
         var points = pattern.points.slice();
         points[index] = point;
-        var copy = {}, key;
-        for (key in pattern) if (Object.prototype.hasOwnProperty.call(pattern, key)) copy[key] = pattern[key];
+        var copy = shallowCopy(pattern);
         copy.points = points;
+        return copy;
+    }
+
+    function shallowCopy(source) {
+        var copy = {}, key;
+        for (key in source) {
+            if (Object.prototype.hasOwnProperty.call(source, key)) copy[key] = source[key];
+        }
+        return copy;
+    }
+
+    // Mirrors config.wave_analysis._apply_set_leg_values: merge per field, a
+    // null clears one, an entry left holding nothing disappears whole. Python
+    // is the authority -- this replay only has to survive until its ack lands,
+    // and it is what turns a wave's label white the instant Save is pressed.
+    function withLegValues(pattern, leg, values, timeframe) {
+        var stored = shallowCopy(pattern.leg_values || {});
+        var key = String(leg);
+        var existing = stored[key] ? shallowCopy(stored[key]) : {};
+        delete existing.timeframe;
+        var name;
+        for (name in values) {
+            if (!Object.prototype.hasOwnProperty.call(values, name)) continue;
+            if (values[name] === null) delete existing[name];
+            else existing[name] = values[name];
+        }
+        var empty = true, field;
+        for (field in existing) {
+            if (Object.prototype.hasOwnProperty.call(existing, field)) { empty = false; break; }
+        }
+        if (empty) {
+            delete stored[key];
+        } else {
+            existing.timeframe = timeframe;
+            stored[key] = existing;
+        }
+        var copy = shallowCopy(pattern);
+        copy.leg_values = stored;
         return copy;
     }
 
@@ -327,10 +408,16 @@
                 if (!deg) return p;
                 var name = degreeNames[deg.index - event.delta];
                 if (!name) return p;
-                var copy = {}, key;
-                for (key in p) if (Object.prototype.hasOwnProperty.call(p, key)) copy[key] = p[key];
+                var copy = shallowCopy(p);
                 copy.degree = name;
                 return copy;
+            });
+        }
+        if (event.type === "set_leg_values") {
+            return list.map(function (p) {
+                if (p.id !== event.id || !p.points) return p;
+                if (event.leg_index < 0 || event.leg_index >= p.points.length - 1) return p;
+                return withLegValues(p, event.leg_index, event.values, event.timeframe);
             });
         }
         return list;
@@ -430,7 +517,9 @@
                     kind: pattern.points[i].kind,
                     deg: deg,
                     glyph: glyphFor(labels[i], deg.letter, deg.numeral),
-                    color: LABEL_COLORS[pattern.color] || LABEL_COLORS.yellow,
+                    // Per label, not per pattern: one measured wave of a
+                    // pattern goes white while its siblings stay yellow.
+                    color: labelColor(pattern, i),
                     alpha: 1,
                 });
             }
@@ -867,6 +956,11 @@
                 horzLines: { visible: false },
             },
             crosshair: {
+                // Normal, not the library's default magnet: magnet pulls the
+                // horizontal line onto the bar's *close*, and the client wants
+                // it on the high or the low. lockCrosshair() drives it there.
+                mode: (LWC.CrosshairMode && LWC.CrosshairMode.Normal !== undefined)
+                    ? LWC.CrosshairMode.Normal : 0,
                 vertLine: { color: COLOR_TEXT, width: 1, style: DOTTED, labelBackgroundColor: COLOR_BORDER },
                 horzLine: { color: COLOR_TEXT, width: 1, style: DOTTED, labelBackgroundColor: COLOR_BORDER },
             },
@@ -927,6 +1021,14 @@
         series.ci = chart.addSeries(LWC.LineSeries, lineOptions(COLOR_MAGENTA), 2);
         series.ci_13 = chart.addSeries(LWC.LineSeries, lineOptions(COLOR_CYAN), 2);
         series.ci_33 = chart.addSeries(LWC.LineSeries, lineOptions(COLOR_GREEN), 2);
+
+        // Asked of the instance rather than assumed of the version: a build
+        // without the pair leaves the crosshair on the library's own line,
+        // which is not what the client asked for but is a great deal better
+        // than an exception thrown on every mouse move.
+        canLockCrosshair = typeof chart.setCrosshairPosition === "function" &&
+            typeof chart.clearCrosshairPosition === "function";
+        crosshairLocked = false;
 
         chart.timeScale().subscribeVisibleLogicalRangeChange(function (range) {
             if (range) lastLogicalRange = range;
@@ -1018,31 +1120,10 @@
         series.ci_13.setData(lineData(t, payload.ci_13));
         series.ci_33.setData(lineData(t, payload.ci_33));
 
-        // Last, so a payload that setData refused leaves the previous readings
-        // in place rather than pairing new numbers with the old bars. Only the
-        // series the leg-value popup actually reads are kept: the rest of the
-        // payload is the chart's business and holding a second reference to
-        // tens of megabytes of it would not be.
+        // Last, so a payload that setData refused leaves the previous
+        // aggregation in place rather than stamping new saves with a timeframe
+        // whose bars never landed.
         displayTimeframe = payload.timeframe;
-        legSeries = {};
-        var fields = legValueFields();
-        for (var f = 0; f < fields.length; f++) {
-            var key = fields[f][1];
-            if (Array.isArray(payload[key])) legSeries[key] = payload[key];
-        }
-    }
-
-    // A series' value at a payload time, or null. A time inside a leading NaN
-    // window has no reading, and the popup must show that as blank rather than
-    // as a zero the client would later count.
-    function seriesValueAt(key, time) {
-        var values = legSeries[key];
-        if (!values) return null;
-        var slot = timeToSlot[time];
-        if (slot === undefined) return null;
-        var value = values[slot];
-        if (value === null || value === undefined || isNaN(value)) return null;
-        return value;
     }
 
     function showDataError(err) {
@@ -1468,7 +1549,51 @@
         return hex.slice(0, 32);
     }
 
+    // The crosshair locks to the same point everything else snaps to: whichever
+    // of the hovered bar's high or low the cursor is nearer. candidateAtPoint()
+    // already answers exactly that question for marking and for handle drags,
+    // so it answers it here too -- a second snapping rule computed from its own
+    // coordinates could disagree with the first by a pixel, and a crosshair line
+    // sitting a pixel off the red snap ring would be read as a bug in both.
+    //
+    // Pane 0 only. Pulling the RSI or CMB pane's horizontal line onto a price
+    // pane's high would put an oscillator label on a price, so those panes keep
+    // the library's ordinary behaviour.
+    //
+    // setCrosshairPosition() is used rather than a line drawn in the primitive
+    // because it also moves the price-axis label, which is half of what the
+    // client is reading. Neither it nor clearCrosshairPosition() fires a
+    // crosshair-move event in this build, so the guard below is insurance
+    // against a future one rather than a live recursion.
+    function lockCrosshair(param) {
+        if (!canLockCrosshair || lockingCrosshair || !chart || !series.bars) return;
+        var candidate = (param && param.point && param.paneIndex === 0)
+            ? candidateAtPoint(param.point.x, param.point.y) : null;
+
+        lockingCrosshair = true;
+        try {
+            if (candidate) {
+                chart.setCrosshairPosition(candidate.price, candidate.time, series.bars);
+                crosshairLocked = true;
+            } else if (crosshairLocked) {
+                // Off pane 0, off the chart, or over a stretch with no bar at
+                // all: let go, so the line cannot freeze at the last price it
+                // locked to. Only on the transition out -- clearing on every
+                // move over the RSI pane would wipe the crosshair the library
+                // had just drawn there, which is the behaviour those panes are
+                // supposed to keep.
+                chart.clearCrosshairPosition();
+                crosshairLocked = false;
+            }
+        } finally {
+            lockingCrosshair = false;
+        }
+    }
+
     function onCrosshairMove(param) {
+        // Ahead of everything else: the lock is about where the crosshair is
+        // drawn and holds whether or not a marking or a drag is in progress.
+        lockCrosshair(param);
         // While a handle is being dragged the candidate is driven by the raw
         // mousemove handler instead, so the crosshair must not clear it.
         if (drag) return;
@@ -1668,9 +1793,13 @@
     // boxes -- one per field in LEG_VALUE_FIELDS -- which Python stores against
     // that leg. The point of it is a dataset the client can count across many
     // marked patterns ("bullish wave 4 has a lower CMB level than wave 2 90% of
-    // the time"), so every box is pre-filled with the reading the chart already
-    // holds: he gets a usable dataset without typing hundreds of numbers, and
-    // can still override any of them.
+    // the time").
+    //
+    // Every box is typed by hand and nothing is pre-filled or computed: he
+    // reads each number off whichever chart he is on, and the same wave
+    // measured at two aggregations gives two different readings that only he
+    // can choose between. Which is also why the timeframe of the save is
+    // stamped alongside the numbers.
     // -----------------------------------------------------------------
     var POPUP_MARGIN = 4;       // px of the component's edge the popup may not enter
     var POPUP_OFFSET = 2;       // px between the cursor and the popup's corner
@@ -1688,10 +1817,6 @@
         var values = pattern.leg_values;
         if (!values) return {};
         return values[String(leg)] || {};
-    }
-
-    function roundTwo(value) {
-        return Math.round(value * 100) / 100;
     }
 
     function closePopup() {
@@ -1753,33 +1878,26 @@
         }
     }
 
-    function popupRow(name, stored, computed) {
-        var row = document.createElement("div");
-        row.className = "wa-popup-row";
+    // One labelled box. Blank unless a value is already stored -- never a
+    // computed number, which is the whole of the client's "the inputs needs to
+    // be manual".
+    function popupCell(name, stored) {
+        var cell = document.createElement("div");
+        cell.className = "wa-popup-cell";
 
         var label = document.createElement("label");
+        // The client's own field name, verbatim: it is also the key the value
+        // is stored under, so a prettified label would name the wrong thing.
         label.textContent = name;
-        row.appendChild(label);
+        cell.appendChild(label);
 
         var input = document.createElement("input");
         input.type = "number";
         input.step = "any";
-        var have = stored !== undefined && stored !== null;
-        input.value = have ? String(stored)
-                           : (computed === null ? "" : String(roundTwo(computed)));
-        row.appendChild(input);
+        input.value = (stored === undefined || stored === null) ? "" : String(stored);
+        cell.appendChild(input);
 
-        // A pivot moved after a value was read leaves a stale number behind.
-        // Deleting it would be worse -- it may be a judgement he typed rather
-        // than a reading -- so the current one is shown underneath instead of
-        // the difference staying invisible.
-        if (have && computed !== null && roundTwo(computed) !== Number(stored)) {
-            var hint = document.createElement("div");
-            hint.className = "wa-popup-hint";
-            hint.textContent = "now " + roundTwo(computed);
-            row.appendChild(hint);
-        }
-        return { row: row, input: input };
+        return { cell: cell, input: input };
     }
 
     function popupButton(text, handler) {
@@ -1796,13 +1914,7 @@
     function openPopup(pattern, leg, clientX, clientY) {
         closePopup();
         var wave = legWaveLabel(pattern, leg);
-        // The leg's *terminating* bar is where the values are read: the wave is
-        // named by the point it ends on, so that is the bar the reading belongs
-        // to. If the client turns out to want the extreme reached *during* the
-        // leg instead, this one line is where that changes -- the series would
-        // be scanned from points[leg] to points[leg + 1] rather than sampled.
-        var point = pattern.points[leg + 1];
-        if (wave === null || !point) return;
+        if (wave === null || !pattern.points[leg + 1]) return;
 
         var el = document.createElement("div");
         el.className = "wa-popup";
@@ -1817,10 +1929,20 @@
         var stored = storedLegValues(pattern, leg);
         var fields = legValueFields();
         var inputs = [];
+        // Two boxes per row, in the order the field table gives them: CMB on
+        // the left and RSI on the right, origin / current / terminating down
+        // the rows. Six boxes stacked one per row would run off the bottom of
+        // a short chart.
+        var row = null;
         for (var i = 0; i < fields.length; i++) {
-            var name = fields[i][0];
-            var built = popupRow(name, stored[name], seriesValueAt(fields[i][1], point.time));
-            el.appendChild(built.row);
+            if (i % 2 === 0) {
+                row = document.createElement("div");
+                row.className = "wa-popup-row";
+                el.appendChild(row);
+            }
+            var name = fields[i];
+            var built = popupCell(name, stored[name]);
+            row.appendChild(built.cell);
             inputs.push({ name: name, input: built.input });
         }
 

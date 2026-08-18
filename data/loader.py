@@ -20,7 +20,7 @@ def resample_ohlc(df, timeframe, base_timeframe="15m"):
 
     Args:
         df: DataFrame with OHLC data indexed by datetime (from load_ohlc)
-        timeframe: "15m", "1H", "4H", or "1D"
+        timeframe: "15m", "1H", "4H", "1D", "1W", or "1M"
         base_timeframe: the native timeframe of the uploaded data
 
     Returns:
@@ -29,7 +29,14 @@ def resample_ohlc(df, timeframe, base_timeframe="15m"):
     if timeframe == base_timeframe:
         return df.copy()
 
-    tf_map = {"1H": "1h", "4H": "4h", "1D": "1D"}
+    # "MS" rather than "ME" for the month: pandas 3 dropped the bare "M" alias
+    # outright, and "ME" bins on month *ends*, so with the left-labelling below
+    # a bar would run from the 31st of one month to the 31st of the next and
+    # carry the wrong month's name. "MS" bins on month starts, which is the
+    # calendar month. "W" is Sunday-anchored, which is where the trading week
+    # opens, so a Sunday-evening bar starts its week instead of closing the
+    # previous one.
+    tf_map = {"1H": "1h", "4H": "4h", "1D": "1D", "1W": "W", "1M": "MS"}
     rule = tf_map.get(timeframe)
     if rule is None:
         raise ValueError(f"Unsupported timeframe: {timeframe}")
@@ -53,7 +60,16 @@ def resample_ohlc(df, timeframe, base_timeframe="15m"):
         if col not in agg:
             agg[col] = 'last'
 
-    resampled = df.resample(rule).agg(agg).dropna(subset=['high'])
+    # label/closed spelled out for every rule rather than only the new ones.
+    # pandas defaults them per-frequency -- left for hours and days, right for
+    # weeks and months -- so left alone a weekly bar would be stamped with the
+    # *end* of its period while an hourly one is stamped with the start. Two
+    # labelling conventions in one system do not announce themselves; they just
+    # put wave markings on the wrong bar, because the projection engine matches
+    # base bars to display bars through a pd.Grouper that has to agree with this
+    # index exactly. For hours and days this is a no-op that makes the
+    # assumption explicit; for weeks and months it is what makes them agree.
+    resampled = df.resample(rule, label="left", closed="left").agg(agg).dropna(subset=['high'])
     return resampled
 
 

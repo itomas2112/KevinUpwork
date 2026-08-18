@@ -14,6 +14,13 @@ CHARTING_MODES = [
     "Secondary Across Primaries",
 ]
 
+# Every aggregation the app offers, finest first -- the order is what lets the
+# selector show only the base timeframe and whatever is coarser than it. Module
+# scope rather than a local inside render_sidebar(), so the test that holds this
+# list against the other three (loader's tf_map, wave_projection's
+# RESAMPLE_RULES, wave_analysis_tab's TIMEFRAME_ORDER) can actually read it.
+ALL_AGG = ["15m", "1H", "4H", "1D", "1W", "1M"]
+
 
 def render_sidebar():
     """Render the complete sidebar with all controls"""
@@ -21,7 +28,6 @@ def render_sidebar():
     # Historical Data Aggregation
     base_tf = st.session_state.get("base_timeframe", "15m")
     with st.sidebar.expander("Historical Data Aggregation", expanded=False):
-        ALL_AGG = ["15m", "1H", "4H", "1D"]
         base_idx = ALL_AGG.index(base_tf)
         agg_options = ALL_AGG[base_idx:]
         current_agg = st.session_state.get("_agg_timeframe", base_tf)
