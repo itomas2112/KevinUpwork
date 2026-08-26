@@ -60,8 +60,8 @@ POINT_KINDS = ("high", "low")
 LEG_VALUE_FIELDS = [
     "Origin CMB",
     "Origin RSI",
-    "CMB",
-    "RSI",
+    "Peak CMB",
+    "Peak RSI",
     "Terminating CMB",
     "Terminating RSI",
 ]
@@ -136,7 +136,37 @@ def wave_defs():
         # Sent down rather than duplicated in JavaScript, so the table above
         # stays the one place a field is added or renamed.
         "leg_value_fields": list(LEG_VALUE_FIELDS),
+        # Which oscillator pane each box may be filled from, for the same
+        # reason: derived from the names above rather than restated in JS, so a
+        # later rename cannot leave the two sides disagreeing about which box
+        # belongs to which chart.
+        "leg_value_families": leg_value_families(),
     }
+
+
+def leg_value_families():
+    """Which oscillator pane each field's number is read off.
+
+    The frontend's click-to-fill needs to know that "Origin CMB" takes a value
+    from the CMB pane and nothing else -- clicking an RSI value with a CMB box
+    armed must do nothing. Derived from the field name rather than kept as a
+    second table, so the one place a field is added or renamed stays
+    ``LEG_VALUE_FIELDS``.
+
+    A name that says neither maps to ``None``: every field keeps a key, so the
+    two sides can be checked for agreement, and an unclassifiable box simply
+    matches no pane and can only be typed into.
+    """
+    families = {}
+    for field in LEG_VALUE_FIELDS:
+        upper = field.upper()
+        if "CMB" in upper:
+            families[field] = "cmb"
+        elif "RSI" in upper:
+            families[field] = "rsi"
+        else:
+            families[field] = None
+    return families
 
 
 def _is_number(value):
@@ -155,6 +185,57 @@ def leg_value_labels():
     promises -- and so a test can add one without editing this module.
     """
     return set(LEG_VALUE_FIELDS)
+
+
+# The pre-Phase-21 names of the two middle fields. The client's vocabulary moved
+# on -- his grid-search email calls them "Peak CMB" and "Peak RSI" -- and in this
+# codebase a field name is not a label but the storage key inside every
+# ``leg_values`` entry. So renaming the table alone would leave every number he
+# has already typed sitting under a key the table no longer knows, which
+# ``_is_valid_leg_values`` rejects: the pattern would fail validation and be
+# dropped on load. The rename therefore travels with a migration.
+_RENAMED_LEG_VALUE_FIELDS = {"CMB": "Peak CMB", "RSI": "Peak RSI"}
+
+
+def migrate_leg_value_fields(pattern):
+    """A pattern's ``leg_values`` re-keyed from retired field names to current.
+
+    Exact-key match only. "Origin CMB" and "Terminating CMB" both *contain*
+    "CMB" and neither of them is it, so a substring rule would rewrite them into
+    names nothing recognises and lose two readings to save one.
+
+    When an entry already carries the new name, the old key loses: two keys for
+    one field means the file was written by two versions of the app, and the new
+    name holds the reading the client last saw and edited. Letting a stale "CMB"
+    overwrite a "Peak CMB" he typed since would silently undo his own work.
+
+    Pure: the pattern is returned unchanged -- the very same object -- when
+    there is nothing to rename, and a new dict otherwise.
+    """
+    if not isinstance(pattern, dict):
+        return pattern
+    leg_values = pattern.get("leg_values")
+    if not isinstance(leg_values, dict):
+        return pattern
+
+    migrated = {}
+    changed = False
+    for key, entry in leg_values.items():
+        if not isinstance(entry, dict) or not any(old in entry for old
+                                                  in _RENAMED_LEG_VALUE_FIELDS):
+            migrated[key] = entry
+            continue
+
+        changed = True
+        renamed = {}
+        for field, value in entry.items():
+            current = _RENAMED_LEG_VALUE_FIELDS.get(field, field)
+            if current != field and current in entry:
+                continue                # old key loses to the one already stored
+            renamed[current] = value
+        migrated[key] = renamed
+
+    return dict(pattern, leg_values=migrated) if changed else pattern
 
 
 def _is_valid_leg_values(leg_values, leg_count):
@@ -620,6 +701,110 @@ def settle(patterns):
     presumed = [dict(pattern, color="yellow") if isinstance(pattern, dict) else pattern
                 for pattern in patterns]
     return validate_patterns(reconcile_degrees(presumed))
+
+
+# ------------------------------------------------ actionary / reactionary roles
+#
+# The client's terminology: "Actionary means that the wave is in the same
+# direction of the larger parent wave. Reactionary means that the wave is in the
+# opposite direction of the larger parent wave." He then lists the waves per
+# pattern type -- Impulse/Diagonal 1 3 5 vs 2 4, Zigzag/Flat A C vs B, Triangle
+# A C E vs B D, Double/Triple Zigzag and Double/Triple Three W Y Z vs X -- and
+# every one of those lists collapses to the same rule about the *label alone*.
+# So there is no per-type table here: Double/Triple Zigzag live under type
+# "Zigzag" and Double/Triple Three under "Combination", both labelled W X Y (X
+# Z), and the label rule covers them without caring which type they came from.
+#
+# Point "0" is in neither set. It is the origin click, not a wave.
+
+ACTIONARY_LABELS = frozenset(["1", "3", "5", "A", "C", "E", "W", "Y", "Z"])
+REACTIONARY_LABELS = frozenset(["2", "4", "B", "D", "X"])
+
+
+def role_label(patterns, pattern):
+    """The wave label this pattern occupies in its parent, or None.
+
+    A marked pattern IS a wave of its parent: ``find_parent`` names the leg it
+    spans and the parent's ``point_labels`` name that leg's wave. A root has no
+    parent and therefore no role -- None, never a guess.
+
+    A Triple Zigzag parent labels two of its legs "X", but a child spans exactly
+    one leg, so the leg -- not the label -- is what is looked up and a child's
+    role is never ambiguous.
+    """
+    parent, leg = find_parent(patterns, pattern)
+    if parent is None:
+        return None
+    try:
+        labels = point_labels(parent.get("pattern_type"), parent.get("variation"))
+    except (ValueError, TypeError):
+        return None
+    # Leg k runs points[k] -> points[k + 1] and is the wave labels[k + 1] names.
+    if not 0 <= leg + 1 < len(labels):
+        return None
+    return labels[leg + 1]
+
+
+def pattern_role(patterns, pattern):
+    """"actionary", "reactionary", or None when the pattern occupies no wave.
+
+    Classification only exists for a pattern whose parent is *marked*, and that
+    is by design rather than a limitation: actionary and reactionary are defined
+    relative to the larger wave, and only a marked parent says what that is.
+    """
+    label = role_label(patterns, pattern)
+    if label in ACTIONARY_LABELS:
+        return "actionary"
+    if label in REACTIONARY_LABELS:
+        return "reactionary"
+    return None
+
+
+def pattern_direction(pattern):
+    """"bullish" when the last point's price is above the first's, else "bearish".
+
+    Equal prices give None rather than a coin toss, as does a pattern whose
+    endpoints carry no usable price. A pattern with no net direction cannot
+    agree or disagree with another's, so the analyses that pair on direction
+    simply leave it out.
+    """
+    if not isinstance(pattern, dict):
+        return None
+    points = pattern.get("points")
+    if not isinstance(points, list) or len(points) < 2:
+        return None
+
+    first, last = points[0], points[-1]
+    if not isinstance(first, dict) or not isinstance(last, dict):
+        return None
+    if not _is_number(first.get("price")) or not _is_number(last.get("price")):
+        return None
+
+    if last["price"] > first["price"]:
+        return "bullish"
+    if last["price"] < first["price"]:
+        return "bearish"
+    return None
+
+
+def chained(prev, nxt):
+    """True when ``nxt`` starts exactly where ``prev`` ends.
+
+    Exactly: same time *and* same kind, through ``_points_match``, the same
+    strictness the parent/child relation uses. The client's marking workflow
+    chains counts this way -- the next pattern's point 0 is clicked on the
+    previous pattern's last point -- and it is the adjacency the Inverse
+    Parallel and Adjacent analyses stand on.
+    """
+    if not isinstance(prev, dict) or not isinstance(nxt, dict):
+        return False
+    prev_points = prev.get("points")
+    next_points = nxt.get("points")
+    if not isinstance(prev_points, list) or not prev_points:
+        return False
+    if not isinstance(next_points, list) or not next_points:
+        return False
+    return _points_match(prev_points[-1], next_points[0])
 
 
 # -------------------------------------------------------------- analysable legs

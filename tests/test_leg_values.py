@@ -92,19 +92,23 @@ def test_the_field_table_holds_the_clients_six_names_in_his_order():
     assert LEG_VALUE_FIELDS == [
         "Origin CMB",
         "Origin RSI",
-        "CMB",
-        "RSI",
+        "Peak CMB",
+        "Peak RSI",
         "Terminating CMB",
         "Terminating RSI",
     ]
 
 
-def test_cmb_and_rsi_keep_their_exact_names():
-    # The two original fields are unchanged, which is the whole reason no
-    # migration is needed: everything already on the client's disk is stored
-    # under these two strings and keeps its meaning.
-    assert "CMB" in LEG_VALUE_FIELDS
-    assert "RSI" in LEG_VALUE_FIELDS
+def test_the_two_middle_fields_carry_the_clients_current_names():
+    # He calls them "Peak CMB" and "Peak RSI"; they were stored under the bare
+    # names until Phase 21. Because a field name is the storage key, the rename
+    # is what ``migrate_leg_value_fields`` exists to carry -- and the retired
+    # names must be gone from the table, or an un-migrated entry would keep
+    # validating and the two spellings would drift apart on disk.
+    assert "Peak CMB" in LEG_VALUE_FIELDS
+    assert "Peak RSI" in LEG_VALUE_FIELDS
+    assert "CMB" not in LEG_VALUE_FIELDS
+    assert "RSI" not in LEG_VALUE_FIELDS
 
 
 # ------------------------------------------------------- 1. leg -> wave label
@@ -139,8 +143,8 @@ def test_a_leg_is_named_by_the_point_it_ends_on():
 
 def test_a_pattern_with_valid_leg_values_is_valid():
     assert is_valid_pattern(zigzag(leg_values={
-        "0": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"},
-        "2": {"CMB": -5.1, "timeframe": "15m"},
+        "0": {"Peak CMB": 12.34, "Peak RSI": 45.6, "timeframe": "1D"},
+        "2": {"Peak CMB": -5.1, "timeframe": "15m"},
     }))
 
 
@@ -153,20 +157,20 @@ def test_a_pattern_without_leg_values_stays_valid():
 
 def test_a_leg_value_of_none_is_valid():
     # A field the client cleared reads back as None rather than as a zero.
-    assert is_valid_pattern(zigzag(leg_values={"1": {"CMB": None, "RSI": 30.0,
+    assert is_valid_pattern(zigzag(leg_values={"1": {"Peak CMB": None, "Peak RSI": 30.0,
                                                      "timeframe": "1D"}}))
 
 
 @pytest.mark.parametrize("leg_values", [
     "not a dict",
     [],
-    {"3": {"CMB": 1.0}},                        # only three legs, so 3 is out of range
-    {"-1": {"CMB": 1.0}},
-    {"nope": {"CMB": 1.0}},
-    {0: {"CMB": 1.0}},                          # keys are strings after a round trip
+    {"3": {"Peak CMB": 1.0}},                        # only three legs, so 3 is out of range
+    {"-1": {"Peak CMB": 1.0}},
+    {"nope": {"Peak CMB": 1.0}},
+    {0: {"Peak CMB": 1.0}},                          # keys are strings after a round trip
     {"0": "not a dict"},
-    {"0": {"CMB": "cheap"}},
-    {"0": {"CMB": True}},                       # a bool is not a reading
+    {"0": {"Peak CMB": "cheap"}},
+    {"0": {"Peak CMB": True}},                       # a bool is not a reading
     {"0": {"Elephants": 1.0}},                  # not a configured field
     {"0": {"timeframe": 15}},
 ])
@@ -177,39 +181,40 @@ def test_a_malformed_leg_values_makes_the_pattern_invalid(leg_values):
 def test_the_leg_range_follows_the_pattern_that_carries_it():
     # Leg 4 exists on an impulse and does not on a zigzag; the same entry is
     # therefore valid on one and not on the other.
-    entry = {"4": {"CMB": 1.0, "timeframe": "1D"}}
+    entry = {"4": {"Peak CMB": 1.0, "timeframe": "1D"}}
     assert is_valid_pattern(impulse(leg_values=entry))
     assert not is_valid_pattern(zigzag(leg_values=entry))
 
 
-def test_a_pattern_carrying_only_the_old_two_fields_is_still_valid():
-    # The values the client entered under the two-field popup. Nothing migrates
-    # them and nothing needs to: CMB and RSI are still CMB and RSI.
+def test_a_pattern_carrying_only_the_two_peak_fields_is_still_valid():
+    # The values the client entered under the two-field popup, under the names
+    # they carry today. An entry is sparse: measuring the peak and nothing else
+    # is a real state, not a half-written one.
     assert is_valid_pattern(zigzag(leg_values={
-        "0": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"},
+        "0": {"Peak CMB": 12.34, "Peak RSI": 45.6, "timeframe": "1D"},
     }))
 
 
-def test_the_old_two_fields_survive_a_save_load_round_trip(tmp_path):
+def test_the_two_peak_fields_survive_a_save_load_round_trip(tmp_path):
     path = str(tmp_path / "saved_wave_markings.json")
-    stored = {"1": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"}}
+    stored = {"1": {"Peak CMB": 12.34, "Peak RSI": 45.6, "timeframe": "1D"}}
     save_wave_documents({"gold.csv": {"schema": 2, "base_timeframe": "15m",
                                       "patterns": [zigzag(leg_values=stored)]}}, path)
 
     loaded = load_wave_documents(path)["gold.csv"]["patterns"]
 
     assert loaded[0]["leg_values"] == stored
-    assert loaded[0]["leg_values"]["1"]["CMB"] == 12.34
-    assert loaded[0]["leg_values"]["1"]["RSI"] == 45.6
+    assert loaded[0]["leg_values"]["1"]["Peak CMB"] == 12.34
+    assert loaded[0]["leg_values"]["1"]["Peak RSI"] == 45.6
 
 
 # ------------------------------------------------------ 3. set_leg_values
 
 
 def test_set_leg_values_stores_an_entry_under_the_stringified_leg_index():
-    state = apply_wave_event([zigzag()], set_values("z1", 1, {"CMB": 12.34}))
+    state = apply_wave_event([zigzag()], set_values("z1", 1, {"Peak CMB": 12.34}))
 
-    assert values_of(state) == {"1": {"CMB": 12.34, "timeframe": "1D"}}
+    assert values_of(state) == {"1": {"Peak CMB": 12.34, "timeframe": "1D"}}
 
 
 @pytest.mark.parametrize("field", LEG_VALUE_FIELDS)
@@ -233,12 +238,12 @@ def test_set_leg_values_rejects_a_name_outside_the_table():
 
 
 def test_set_leg_values_merges_rather_than_replacing():
-    state = apply_wave_event([zigzag()], set_values("z1", 0, {"CMB": 12.34,
-                                                              "RSI": 45.6}))
-    state = apply_wave_event(state, set_values("z1", 0, {"CMB": -1.0}))
+    state = apply_wave_event([zigzag()], set_values("z1", 0, {"Peak CMB": 12.34,
+                                                              "Peak RSI": 45.6}))
+    state = apply_wave_event(state, set_values("z1", 0, {"Peak CMB": -1.0}))
 
     # The submission carried no RSI, so the stored one stands.
-    assert values_of(state) == {"0": {"CMB": -1.0, "RSI": 45.6, "timeframe": "1D"}}
+    assert values_of(state) == {"0": {"Peak CMB": -1.0, "Peak RSI": 45.6, "timeframe": "1D"}}
 
 
 def test_the_new_fields_merge_and_clear_like_the_old_ones():
@@ -260,57 +265,57 @@ def test_an_entry_holding_all_six_disappears_once_every_one_is_cleared():
 
 
 def test_a_field_set_to_none_is_removed_from_the_entry():
-    state = apply_wave_event([zigzag()], set_values("z1", 0, {"CMB": 12.34,
-                                                              "RSI": 45.6}))
-    state = apply_wave_event(state, set_values("z1", 0, {"RSI": None}))
+    state = apply_wave_event([zigzag()], set_values("z1", 0, {"Peak CMB": 12.34,
+                                                              "Peak RSI": 45.6}))
+    state = apply_wave_event(state, set_values("z1", 0, {"Peak RSI": None}))
 
-    assert values_of(state) == {"0": {"CMB": 12.34, "timeframe": "1D"}}
+    assert values_of(state) == {"0": {"Peak CMB": 12.34, "timeframe": "1D"}}
 
 
 def test_an_entry_left_with_no_fields_disappears_entirely():
     # Absent has to keep meaning "never measured", so an emptied entry must not
     # linger as a timeframe with nothing attached to it.
-    state = apply_wave_event([zigzag()], set_values("z1", 2, {"CMB": 1.0}))
-    state = apply_wave_event(state, set_values("z1", 2, {"CMB": None}))
+    state = apply_wave_event([zigzag()], set_values("z1", 2, {"Peak CMB": 1.0}))
+    state = apply_wave_event(state, set_values("z1", 2, {"Peak CMB": None}))
 
     assert values_of(state) in (None, {})
     assert "2" not in (values_of(state) or {})
 
 
 def test_clearing_one_leg_leaves_another_alone():
-    state = apply_wave_event([zigzag()], set_values("z1", 0, {"CMB": 1.0}))
-    state = apply_wave_event(state, set_values("z1", 2, {"CMB": 2.0}))
-    state = apply_wave_event(state, set_values("z1", 0, {"CMB": None}))
+    state = apply_wave_event([zigzag()], set_values("z1", 0, {"Peak CMB": 1.0}))
+    state = apply_wave_event(state, set_values("z1", 2, {"Peak CMB": 2.0}))
+    state = apply_wave_event(state, set_values("z1", 0, {"Peak CMB": None}))
 
-    assert values_of(state) == {"2": {"CMB": 2.0, "timeframe": "1D"}}
+    assert values_of(state) == {"2": {"Peak CMB": 2.0, "timeframe": "1D"}}
 
 
 def test_the_timeframe_is_stored_with_the_numbers():
-    state = apply_wave_event([zigzag()], set_values("z1", 1, {"CMB": 1.0}, "15m"))
+    state = apply_wave_event([zigzag()], set_values("z1", 1, {"Peak CMB": 1.0}, "15m"))
 
     assert values_of(state)["1"]["timeframe"] == "15m"
 
 
 def test_set_leg_values_only_touches_the_named_pattern():
     other = zigzag("other")
-    state = apply_wave_event([zigzag(), other], set_values("z1", 1, {"CMB": 1.0}))
+    state = apply_wave_event([zigzag(), other], set_values("z1", 1, {"Peak CMB": 1.0}))
 
     assert state[1] is other
 
 
 @pytest.mark.parametrize("event", [
-    set_values("nosuch", 0, {"CMB": 1.0}),                  # unknown id
-    set_values("z1", 3, {"CMB": 1.0}),                      # only three legs
-    set_values("z1", -1, {"CMB": 1.0}),
-    set_values("z1", "0", {"CMB": 1.0}),                    # index must be an int
-    set_values("z1", True, {"CMB": 1.0}),
+    set_values("nosuch", 0, {"Peak CMB": 1.0}),                  # unknown id
+    set_values("z1", 3, {"Peak CMB": 1.0}),                      # only three legs
+    set_values("z1", -1, {"Peak CMB": 1.0}),
+    set_values("z1", "0", {"Peak CMB": 1.0}),                    # index must be an int
+    set_values("z1", True, {"Peak CMB": 1.0}),
     set_values("z1", 0, {"Elephants": 1.0}),                # unknown field
-    set_values("z1", 0, {"CMB": "cheap"}),                  # not a number
-    set_values("z1", 0, {"CMB": True}),
+    set_values("z1", 0, {"Peak CMB": "cheap"}),                  # not a number
+    set_values("z1", 0, {"Peak CMB": True}),
     set_values("z1", 0, "not a dict"),
-    set_values("z1", 0, {"CMB": 1.0}, ""),                  # timeframe must be named
-    set_values("z1", 0, {"CMB": 1.0}, None),
-    {"type": "set_leg_values", "id": "z1", "leg_index": 0, "values": {"CMB": 1.0}},
+    set_values("z1", 0, {"Peak CMB": 1.0}, ""),                  # timeframe must be named
+    set_values("z1", 0, {"Peak CMB": 1.0}, None),
+    {"type": "set_leg_values", "id": "z1", "leg_index": 0, "values": {"Peak CMB": 1.0}},
 ])
 def test_a_malformed_set_leg_values_leaves_the_state_unchanged(event):
     before = [zigzag()]
@@ -322,17 +327,17 @@ def test_a_rejected_field_does_not_store_the_ones_beside_it():
     # All or nothing: a submission is one reading of one leg, so half of it
     # landing would be worse than none of it.
     before = [zigzag()]
-    state = apply_wave_event(before, set_values("z1", 0, {"CMB": 1.0,
+    state = apply_wave_event(before, set_values("z1", 0, {"Peak CMB": 1.0,
                                                           "Elephants": 2.0}))
 
     assert state is before
 
 
 def test_set_leg_values_does_not_mutate_its_input():
-    before = [zigzag(leg_values={"0": {"CMB": 1.0, "timeframe": "1D"}})]
+    before = [zigzag(leg_values={"0": {"Peak CMB": 1.0, "timeframe": "1D"}})]
     snapshot = json.loads(json.dumps(before))
 
-    apply_wave_event(before, set_values("z1", 0, {"CMB": 99.0}))
+    apply_wave_event(before, set_values("z1", 0, {"Peak CMB": 99.0}))
 
     assert before == snapshot
 
@@ -357,7 +362,7 @@ def test_a_leg_missing_one_of_the_six_is_not_complete():
 def test_the_two_old_fields_alone_are_not_complete():
     # Nothing migrates, and nothing pretends either: a wave measured under the
     # old popup keeps its numbers but is not yet analysable.
-    pattern = zigzag(leg_values={"1": {"CMB": 1.0, "RSI": 2.0, "timeframe": "1D"}})
+    pattern = zigzag(leg_values={"1": {"Peak CMB": 1.0, "Peak RSI": 2.0, "timeframe": "1D"}})
 
     assert not leg_is_complete(pattern, 1)
 
@@ -388,7 +393,7 @@ def test_analysable_legs_lists_the_complete_legs_of_a_yellow_pattern():
 
 def test_analysable_legs_ignores_an_incomplete_leg():
     values = measured(0)
-    values["1"] = {"CMB": 1.0, "RSI": 2.0, "timeframe": "1D"}
+    values["1"] = {"Peak CMB": 1.0, "Peak RSI": 2.0, "timeframe": "1D"}
 
     assert analysable_legs(zigzag(leg_values=values)) == [0]
 
@@ -461,8 +466,8 @@ def test_every_leg_of_a_zigzag_maps_to_its_own_label():
 
 def test_values_survive_save_load_and_settle(tmp_path):
     path = str(tmp_path / "saved_wave_markings.json")
-    stored = {"0": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"},
-              "2": {"CMB": -5.1, "timeframe": "15m"}}
+    stored = {"0": {"Peak CMB": 12.34, "Peak RSI": 45.6, "timeframe": "1D"},
+              "2": {"Peak CMB": -5.1, "timeframe": "15m"}}
     save_wave_documents({"gold.csv": {"schema": 2, "base_timeframe": "15m",
                                       "patterns": [zigzag(leg_values=stored)]}}, path)
 
@@ -478,7 +483,7 @@ def test_a_pattern_whose_values_are_corrupt_on_disk_is_dropped_not_loaded(tmp_pa
     # marking carrying a leg index its own shape cannot have does not come back.
     path = str(tmp_path / "saved_wave_markings.json")
     save_wave_documents({"gold.csv": {"schema": 2, "base_timeframe": "15m",
-                                      "patterns": [zigzag(leg_values={"9": {"CMB": 1.0}})]}},
+                                      "patterns": [zigzag(leg_values={"9": {"Peak CMB": 1.0}})]}},
                         path)
 
     assert load_wave_documents(path)["gold.csv"]["patterns"] == []
@@ -488,7 +493,7 @@ def test_a_pattern_whose_values_are_corrupt_on_disk_is_dropped_not_loaded(tmp_pa
 
 
 def test_build_wave_json_carries_the_leg_values():
-    stored = {"1": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"}}
+    stored = {"1": {"Peak CMB": 12.34, "Peak RSI": 45.6, "timeframe": "1D"}}
     exported = build_wave_json([zigzag(leg_values=stored)], "gold.csv", "15m")
 
     # Through a real dump: this file *is* the client's study data, so what

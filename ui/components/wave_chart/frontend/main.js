@@ -89,6 +89,25 @@
     var canLockCrosshair = false;
     var crosshairLocked = false;
     var lockingCrosshair = false;
+    // What the crosshair is currently snapped to on an oscillator pane --
+    // {family, value, time} -- or null whenever it is not snapped to one
+    // (cursor on the price pane, off the chart, or over indicator warmup with
+    // no value to snap to). Read by the popup's click-to-fill.
+    var oscSnap = null;
+
+    // The three lines each oscillator pane draws, and which family of popup
+    // box may be filled from it. The payload (and the series map) call the CMB
+    // arrays ``ci*``; the client calls the pane CMB, and the popup's field
+    // names say CMB -- hence the two names for the one thing.
+    var OSC_PANES = {
+        1: { family: "rsi", keys: ["rsi", "rsi_13", "rsi_33"] },
+        2: { family: "cmb", keys: ["ci", "ci_13", "ci_33"] },
+    };
+    // The raw payload arrays behind those lines, kept aligned with
+    // ``allTimes`` (index = the slot ``timeToSlot`` gives for a bar's time).
+    // The series' own data is not indexable by bar, and re-deriving a value
+    // from a pixel would answer a different question than "the period's value".
+    var oscValues = {};
 
     // ---- wave state -------------------------------------------------
     var waveDefs = null;          // pattern/degree definitions from Python
@@ -288,6 +307,14 @@
     // completeness test below are driven from it.
     function legValueFields() {
         return (waveDefs && waveDefs.leg_value_fields) || [];
+    }
+
+    // {"Origin CMB": "cmb", "Origin RSI": "rsi", ...} -- which oscillator pane
+    // each box takes its number from. Derived in config/wave_analysis from the
+    // field names and sent down with them, so a renamed field cannot leave this
+    // file matching boxes to the wrong pane.
+    function legValueFamilies() {
+        return (waveDefs && waveDefs.leg_value_families) || {};
     }
 
     // Mirrors config.wave_analysis.leg_is_complete -- Python is the authority
@@ -1044,7 +1071,9 @@
         container.addEventListener("contextmenu", onContextMenu);
         // Click-away closes the leg-value popup -- on mousedown, so it is gone
         // before the mouse-up that selects or deselects is acted on, and on the
-        // document, so a click anywhere outside it counts.
+        // document, so a click anywhere outside it counts. The one exception is
+        // a press onMouseDown consumed to fill a box: that one never reaches
+        // here, because it stops propagating at the chart container.
         document.addEventListener("mousedown", function (event) {
             if (popup && !popup.el.contains(event.target)) closePopup();
         });
@@ -1119,6 +1148,16 @@
         series.ci.setData(lineData(t, payload.ci));
         series.ci_13.setData(lineData(t, payload.ci_13));
         series.ci_33.setData(lineData(t, payload.ci_33));
+
+        // Held for the oscillator crosshair snap. Stale ones would snap the
+        // crosshair to the previous instrument's numbers, so this is set from
+        // the payload every time, and the snap itself is dropped until the
+        // next mouse move re-establishes it.
+        oscValues = {
+            rsi: payload.rsi, rsi_13: payload.rsi_13, rsi_33: payload.rsi_33,
+            ci: payload.ci, ci_13: payload.ci_13, ci_33: payload.ci_33,
+        };
+        oscSnap = null;
 
         // Last, so a payload that setData refused leaves the previous
         // aggregation in place rather than stamping new saves with a timeframe
@@ -1549,16 +1588,19 @@
         return hex.slice(0, 32);
     }
 
-    // The crosshair locks to the same point everything else snaps to: whichever
-    // of the hovered bar's high or low the cursor is nearer. candidateAtPoint()
-    // already answers exactly that question for marking and for handle drags,
-    // so it answers it here too -- a second snapping rule computed from its own
-    // coordinates could disagree with the first by a pixel, and a crosshair line
-    // sitting a pixel off the red snap ring would be read as a bug in both.
+    // On pane 0 the crosshair locks to the same point everything else snaps to:
+    // whichever of the hovered bar's high or low the cursor is nearer.
+    // candidateAtPoint() already answers exactly that question for marking and
+    // for handle drags, so it answers it here too -- a second snapping rule
+    // computed from its own coordinates could disagree with the first by a
+    // pixel, and a crosshair line sitting a pixel off the red snap ring would
+    // be read as a bug in both.
     //
-    // Pane 0 only. Pulling the RSI or CMB pane's horizontal line onto a price
-    // pane's high would put an oscillator label on a price, so those panes keep
-    // the library's ordinary behaviour.
+    // The oscillator panes lock too, by their own rule: onto the value one of
+    // that pane's three lines has at the hovered bar. The client reads six
+    // numbers off these panes per wave, and reading them off a free-floating
+    // crosshair means reading a value that is between two bars and belongs to
+    // neither. oscCandidateAtPoint() answers that question.
     //
     // setCrosshairPosition() is used rather than a line drawn in the primitive
     // because it also moves the price-axis label, which is half of what the
@@ -1567,27 +1609,79 @@
     // against a future one rather than a live recursion.
     function lockCrosshair(param) {
         if (!canLockCrosshair || lockingCrosshair || !chart || !series.bars) return;
-        var candidate = (param && param.point && param.paneIndex === 0)
+        var paneIndex = (param && param.point) ? param.paneIndex : null;
+        var candidate = (paneIndex === 0)
             ? candidateAtPoint(param.point.x, param.point.y) : null;
+        var osc = (paneIndex === 1 || paneIndex === 2)
+            ? oscCandidateAtPoint(paneIndex, param.point.x, param.point.y) : null;
+        // Set on every move, including the moves that find nothing: a stale
+        // snap would let a click fill a box with a number the crosshair is no
+        // longer showing.
+        oscSnap = osc ? { family: osc.family, value: osc.value, time: osc.time } : null;
 
         lockingCrosshair = true;
         try {
             if (candidate) {
                 chart.setCrosshairPosition(candidate.price, candidate.time, series.bars);
                 crosshairLocked = true;
+            } else if (osc) {
+                // Anchored to the line it snapped to, so the label lands on
+                // that pane's own axis and reads in that pane's own units.
+                chart.setCrosshairPosition(osc.value, osc.time, series[osc.key]);
+                crosshairLocked = true;
             } else if (crosshairLocked) {
-                // Off pane 0, off the chart, or over a stretch with no bar at
-                // all: let go, so the line cannot freeze at the last price it
-                // locked to. Only on the transition out -- clearing on every
-                // move over the RSI pane would wipe the crosshair the library
-                // had just drawn there, which is the behaviour those panes are
-                // supposed to keep.
+                // Off the chart, over the axis, or over a stretch with no bar
+                // or no finite indicator value at all: let go, so the line
+                // cannot freeze at the last value it locked to.
                 chart.clearCrosshairPosition();
                 crosshairLocked = false;
             }
         } finally {
             lockingCrosshair = false;
         }
+    }
+
+    // Cursor -> the value one of an oscillator pane's three lines carries at
+    // the hovered bar. Never an interpolation between bars: "the period's
+    // value" is what the client is after, and the whole point of the snap is
+    // that the axis label is a number he can write down.
+    //
+    // Which of the three wins is decided by vertical distance, so every line
+    // is readable and tracking the main line -- where his cursor already sits
+    // -- gives him the main line. Both sides of that comparison are in
+    // pane-local pixels: ``param.point`` is measured from the top of the pane
+    // the crosshair is in (verified against chart.panes() geometry in this
+    // build), and a series' priceToCoordinate() answers in its own pane too.
+    function oscCandidateAtPoint(paneIndex, x, y) {
+        var pane = OSC_PANES[paneIndex];
+        if (!pane || !bars.length) return null;
+        var logical = chart.timeScale().coordinateToLogical(x);
+        if (logical === null || logical === undefined || isNaN(logical)) return null;
+        var bar = barAtLogical(logical);
+        if (!bar) return null;
+        // The same slot map every other snap goes through -- one coordinate
+        // mapping for the whole file.
+        var slot = timeToSlot[bar.time];
+        if (slot === undefined) return null;
+
+        var best = null;
+        for (var i = 0; i < pane.keys.length; i++) {
+            var key = pane.keys[i];
+            var values = oscValues[key];
+            if (!values) continue;
+            var value = values[slot];
+            // Indicator warmup leaves nulls at the left edge, and a 33-period
+            // smoothing leaves a great many of them.
+            if (value === null || value === undefined || !isFinite(value)) continue;
+            var coordinate = series[key].priceToCoordinate(value);
+            if (coordinate === null || coordinate === undefined) continue;
+            var distance = Math.abs(y - coordinate);
+            if (best === null || distance < best.distance) {
+                best = { distance: distance, key: key, value: value };
+            }
+        }
+        if (best === null) return null;
+        return { family: pane.family, key: best.key, value: best.value, time: bar.time };
     }
 
     function onCrosshairMove(param) {
@@ -1958,16 +2052,49 @@
                             { passive: false });
         el.addEventListener("keydown", onPopupKeyDown);
         el.addEventListener("contextmenu", function (event) { event.preventDefault(); });
+        // The box a snapped value would land in is simply the last one he
+        // clicked into -- "I left click the box I want to input the value,
+        // then I left click the value on the chart". focusin rather than focus
+        // because focus does not bubble.
+        el.addEventListener("focusin", function (event) {
+            for (var j = 0; j < inputs.length; j++) {
+                if (inputs[j].input === event.target) { popup.armed = inputs[j]; return; }
+            }
+        });
 
         // Appended to #wave-root rather than to <body>: under native fullscreen
         // the root *is* the element on screen, and anything outside it would
         // simply not be rendered.
         rootEl.appendChild(el);
-        popup = { el: el, id: pattern.id, leg: leg, inputs: inputs };
+        popup = { el: el, id: pattern.id, leg: leg, inputs: inputs, armed: null };
         // Measured only once it is in the document, which is what the clamp
         // needs to know how much room the popup actually takes.
         positionPopup(el, clientX, clientY);
+        // Arms the first box as a side effect, through the listener above.
         if (inputs.length) inputs[0].input.focus();
+    }
+
+    // The armed box takes whatever value the crosshair is snapped to on an
+    // oscillator pane -- but only from its own pane. "If I click on the CMB
+    // boxes then if I click on a RSI value it will not work": a mismatch is a
+    // click that does nothing, not a click that fills the box with a number
+    // from the wrong chart and not one that closes the form.
+    //
+    // Rounded to the two decimals the pane's axis label shows, because the
+    // label is what he is reading: a box that answered with the payload's
+    // fifteen significant digits would read as a bug, not as precision.
+    function fillArmedFromSnap() {
+        if (!popup || !popup.armed || !oscSnap) return;
+        if (legValueFamilies()[popup.armed.name] === oscSnap.family) {
+            popup.armed.input.value = String(Math.round(oscSnap.value * 100) / 100);
+        } else {
+            flashStatus();
+        }
+        // Either way the box he clicked into stays the armed one, and looks it:
+        // a press on the chart blurs it even though the event was cancelled, so
+        // the focus ring has to be put back by hand. He moves to the next box
+        // himself.
+        popup.armed.input.focus();
     }
 
     function onContextMenu(event) {
@@ -2064,6 +2191,24 @@
         // Left button only. A right-click belongs to onContextMenu, and letting
         // it through here would start a handle drag the user never asked for.
         if (event.button) return;
+        // Ahead of everything: with the form open, a press on a value the
+        // crosshair has snapped to on an oscillator pane *is* the gesture that
+        // fills a box, and nothing else. Consumed whole -- stopPropagation
+        // keeps it from the document listener that would close the form, and
+        // leaving pressStart null keeps onMouseUp from acting on it, so the
+        // pattern stays selected and the form stays open for the next reading.
+        // (preventDefault stops the press being treated as a text selection on
+        // the canvas; the armed box's focus ring is restored by hand, because
+        // cancelling the event does not save it.)
+        //
+        // A mismatched family lands here too and is consumed just the same: it
+        // must not close the form either.
+        if (popup && oscSnap) {
+            event.preventDefault();
+            event.stopPropagation();
+            fillArmedFromSnap();
+            return;
+        }
         pressStart = { x: event.clientX, y: event.clientY };
         // Keys only reach this document once something inside the iframe has
         // focus, so Delete / Ctrl+- work right after the click that selects.

@@ -994,11 +994,11 @@ def test_values_typed_at_1d_land_on_the_canonical_pattern_and_show_at_every_view
          point(bar_time(df, 3 * BARS_PER_DAY + LOW_BAR), 7.0, "low")], "p1")])
 
     state, seq, changed = apply_event_batch(
-        canonical, batch(set_leg_values("p1", 1, {"CMB": 12.34, "RSI": 45.6})),
+        canonical, batch(set_leg_values("p1", 1, {"Peak CMB": 12.34, "Peak RSI": 45.6})),
         0, period_map(df, "1D", "15m"))
 
     assert changed is True and seq == 1
-    stored = {"1": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"}}
+    stored = {"1": {"Peak CMB": 12.34, "Peak RSI": 45.6, "timeframe": "1D"}}
     assert state[0]["leg_values"] == stored
     # settle ran over the batch and left them alone, and so does every
     # projection the chart is drawn from.
@@ -1018,12 +1018,12 @@ def test_a_value_saved_at_one_aggregation_is_merged_with_one_saved_at_another():
          point(bar_time(df, 3 * BARS_PER_DAY + LOW_BAR), 7.0, "low")], "p1")])
 
     state, seq, _changed = apply_event_batch(
-        canonical, batch(set_leg_values("p1", 0, {"CMB": 1.0}, "15m")), 0, None)
+        canonical, batch(set_leg_values("p1", 0, {"Peak CMB": 1.0}, "15m")), 0, None)
     state, _seq, _changed = apply_event_batch(
-        state, batch_from(seq, set_leg_values("p1", 0, {"RSI": 45.6}, "1D")),
+        state, batch_from(seq, set_leg_values("p1", 0, {"Peak RSI": 45.6}, "1D")),
         seq, period_map(df, "1D", "15m"))
 
-    assert state[0]["leg_values"] == {"0": {"CMB": 1.0, "RSI": 45.6,
+    assert state[0]["leg_values"] == {"0": {"Peak CMB": 1.0, "Peak RSI": 45.6,
                                             "timeframe": "1D"}}
 
 

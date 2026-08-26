@@ -17,6 +17,7 @@ from config.wave_analysis import (
     degree_component,
     find_children,
     find_parent,
+    leg_value_families,
     pattern_span,
     point_labels,
     reconcile_degrees,
@@ -258,9 +259,36 @@ def test_wave_defs_carries_the_six_leg_value_field_names():
     # the per-wave values.
     fields = wave_defs()["leg_value_fields"]
 
-    assert fields == ["Origin CMB", "Origin RSI", "CMB", "RSI",
+    assert fields == ["Origin CMB", "Origin RSI", "Peak CMB", "Peak RSI",
                       "Terminating CMB", "Terminating RSI"]
     assert fields == list(LEG_VALUE_FIELDS)
+
+
+def test_wave_defs_says_which_pane_each_leg_value_field_is_read_off():
+    # Click-to-fill refuses a value from the other pane, so a box mapped to the
+    # wrong family would quietly let a CMB reading land in an RSI box.
+    families = wave_defs()["leg_value_families"]
+
+    assert families == {
+        "Origin CMB": "cmb",
+        "Origin RSI": "rsi",
+        "Peak CMB": "cmb",
+        "Peak RSI": "rsi",
+        "Terminating CMB": "cmb",
+        "Terminating RSI": "rsi",
+    }
+    assert families == leg_value_families()
+
+
+def test_leg_value_families_covers_exactly_the_leg_value_fields():
+    # The two lists are consumed side by side in the frontend -- a box with no
+    # family could never be filled by a click and would look broken.
+    defs = wave_defs()
+
+    assert set(defs["leg_value_families"]) == set(defs["leg_value_fields"])
+    assert set(leg_value_families()) == set(LEG_VALUE_FIELDS)
+    assert all(family in ("cmb", "rsi")
+               for family in defs["leg_value_families"].values())
 
 
 # ------------------------------------------------------------ apply_wave_event
@@ -835,7 +863,7 @@ def test_move_point_does_not_clear_the_legs_stored_values():
     # client's study data is worse than showing a stale one -- he may have typed
     # a judgement rather than a reading -- so the popup surfaces the difference
     # instead of the reducer resolving it for him.
-    stored = {"0": {"CMB": 12.34, "RSI": 45.6, "timeframe": "1D"}}
+    stored = {"0": {"Peak CMB": 12.34, "Peak RSI": 45.6, "timeframe": "1D"}}
     pattern = span_pattern("A", 100, 200)
     pattern["leg_values"] = copy.deepcopy(stored)
 

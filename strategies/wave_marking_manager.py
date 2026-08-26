@@ -21,7 +21,7 @@ can supply the bar data the projection needs.
 import json
 import os
 
-from config.wave_analysis import is_valid_pattern
+from config.wave_analysis import is_valid_pattern, migrate_leg_value_fields
 
 WAVE_MARKINGS_FILE = "saved_wave_markings.json"
 
@@ -73,10 +73,20 @@ def save_wave_markings(markings, path=WAVE_MARKINGS_FILE):
 
 
 def _clean_patterns(patterns):
-    """The structurally sound entries of a stored pattern list."""
+    """The structurally sound entries of a stored pattern list.
+
+    Field renames are applied *before* validation, not after. A leg-value field
+    name is the storage key the reading lives under, so a pattern written before
+    a rename carries keys the current table does not know -- and
+    ``is_valid_pattern`` rejects exactly that, which would drop the client's
+    measured numbers instead of updating them. Migrating first is what lets a
+    pre-rename file load with no warnings and persist the new names on its next
+    save; the file itself is never rewritten in place.
+    """
     if not isinstance(patterns, list):
         return []
-    return [p for p in patterns if is_valid_pattern(p)]
+    return [migrated for migrated in (migrate_leg_value_fields(p) for p in patterns)
+            if is_valid_pattern(migrated)]
 
 
 def load_wave_documents(path=WAVE_MARKINGS_FILE):

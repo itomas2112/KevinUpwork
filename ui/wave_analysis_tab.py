@@ -19,7 +19,11 @@ from strategies.drm_export import (PERIOD_FORMAT, build_drm_rows, build_drm_shee
                                    build_drm_workbook, build_wave_json, summary_lines)
 from strategies.wave_marking_manager import (WAVE_MARKINGS_FILE, load_wave_documents,
                                              migrate_document, save_wave_documents)
-from strategies.wave_study import run_study, wave_labels
+from strategies.wave_study import (ALL_WAVES, GRID_COMBINATIONS, GRID_DEGREES,
+                                   GRID_VALUE_PAIRS, INTER, OPERATORS,
+                                   PARENT_WAVE_LABELS, SKIP_ORDER, field_family,
+                                   run_grid, run_pair_study, run_study,
+                                   wave_labels)
 from ui.components.wave_chart import wave_chart
 
 # Static for the life of the process -- built once, handed to every render.
@@ -634,11 +638,64 @@ def render_export(canonical, base_df, dataset_key, base_timeframe, timeframe, pm
 # form he fills in and the sentence that reads it back to him.
 
 ALL_VARIATIONS = "All variations"
+ANY_PARENT_WAVE = "Any"
 
 # His own notation: "+/- 1" beside each wave count, only one of them active.
 SAME_DEGREE = "same"
 DEGREE_CHOICES = (SAME_DEGREE, "+1", "-1")
 DEGREE_OFFSETS = {SAME_DEGREE: 0, "+1": 1, "-1": -1}
+
+OPERATOR_CHOICES = [">", "<", "="]
+
+# Every analysis offers both. "Single" is Phase 22's form, unchanged; "Grid
+# search" keeps the same side filters and sweeps his three factors across them.
+GRID_MODES = ["Single", "Grid search"]
+
+# The leading entry that turns a Wave box into a fourth axis of the sweep.
+ALL_WAVES_CHOICE = "All waves"
+
+# (row key, column header), in the order the grid table draws them. "Pairs" is
+# dropped for the Inter-Pattern grid, which discovers no pairs.
+GRID_TABLE_COLUMNS = (
+    ("wave_a", "Wave A"), ("wave_b", "Wave B"),
+    ("field_a", "Value A"), ("field_b", "Value B"),
+    ("operator", "Op"), ("relative_degree", "Rel deg"),
+    ("pairs", "Pairs"), ("samples", "Samples"),
+    ("true", "True"), ("false", "False"), ("ties", "Ties"),
+    ("pct_true", "% True"), ("pct_false", "% False"),
+)
+
+# What a row that was never evaluated must not show. Zeros in these columns
+# would read as "nothing measured yet" rather than "this question has no
+# answer", which is the one confusion the note exists to prevent.
+GRID_COUNT_KEYS = ("pairs", "samples", "true", "false", "ties",
+                   "pct_true", "pct_false")
+
+# One knob, wave A relative to wave B, which is how the client wrote it in his
+# grid-search factors. "-1" reads wave A from the children of its pair member,
+# "+1" does the same to wave B; neither ever climbs up.
+RELATIVE_DEGREE_CHOICES = ["Same degree", "Wave A +1", "Wave A -1"]
+RELATIVE_DEGREES = {"Same degree": 0, "Wave A +1": 1, "Wave A -1": -1}
+
+# The three pair analyses, in the order they appear below the chart:
+# (analysis key, expander title, session/widget prefix, the pairing rule in his
+# own terms). The rule line is drawn above each form so the section still
+# explains itself when he comes back to it in a month.
+PAIR_SECTIONS = (
+    ("parallel", "Parallel Analysis", "_wa_par",
+     "Pairs two same-role waves -- both actionary or both reactionary -- "
+     "inside one marked parent pattern."),
+    ("inverse_parallel", "Inverse Parallel Analysis", "_wa_invpar",
+     "Pairs an actionary wave in one parent pattern with a reactionary wave in "
+     "another, separated by an actionary wave and running the same way."),
+    ("adjacent", "Adjacent Analysis", "_wa_adj",
+     "Pairs two actionary waves in different parent patterns that meet on the "
+     "same pivot and run opposite ways."),
+)
+
+
+def _pattern_phrase(pattern_type, variation):
+    return f"{pattern_type} ({variation or 'all variations'})"
 
 
 def study_restatement(spec):
@@ -646,9 +703,16 @@ def study_restatement(spec):
 
     Worth more than it looks. Every control on the form is a dropdown, and a
     stale one is invisible -- the restatement is the only place a study he did
-    not intend shows itself before he acts on the number beside it.
+    not intend shows itself before he acts on the number beside it. So it names
+    the second value field, and the second pattern filter, whenever they differ
+    from the first -- and stays short when they do not.
     """
-    field = spec["field"]
+    field_a = spec.get("field_a", spec.get("field"))
+    field_b = spec.get("field_b", spec.get("field"))
+    pattern_type, variation = spec["pattern_type"], spec["variation"]
+    pattern_type_b = spec.get("pattern_type_b", pattern_type)
+    variation_b = spec.get("variation_b", variation)
+
     if spec["offset_a"] == 1 or spec["offset_b"] == -1:
         relation = (f"Wave {spec['wave_a']}'s pattern is the parent of "
                     f"Wave {spec['wave_b']}'s")
@@ -657,9 +721,26 @@ def study_restatement(spec):
                     f"Wave {spec['wave_b']}'s")
     else:
         relation = "same degree"
-    return (f"Wave {spec['wave_a']} {field} {spec['operator']} "
-            f"Wave {spec['wave_b']} {field}, {spec['pattern_type']} "
-            f"({spec['variation'] or 'all variations'}), {relation}")
+
+    patterns = _pattern_phrase(pattern_type, variation)
+    if (pattern_type_b, variation_b) != (pattern_type, variation):
+        patterns += f" vs {_pattern_phrase(pattern_type_b, variation_b)}"
+    return (f"Wave {spec['wave_a']} {field_a} {spec['operator']} "
+            f"Wave {spec['wave_b']} {field_b}, {patterns}, {relation}")
+
+
+def pair_restatement(spec, title):
+    """The same service for a pair analysis: the whole form in one sentence."""
+    side_a = (f"{_pattern_phrase(spec['type_a'], spec['variation_a'])} as parent "
+              f"wave {spec['parent_wave_a'] or ANY_PARENT_WAVE}")
+    side_b = (f"{_pattern_phrase(spec['type_b'], spec['variation_b'])} as parent "
+              f"wave {spec['parent_wave_b'] or ANY_PARENT_WAVE}")
+    degree = {0: "same degree",
+              1: "wave A one degree senior",
+              -1: "wave A one degree junior"}[spec["relative_degree"]]
+    return (f"Wave {spec['wave_a']} {spec['field_a']} {spec['operator']} "
+            f"Wave {spec['wave_b']} {spec['field_b']} · {side_a} vs {side_b} · "
+            f"{degree} · {title}")
 
 
 def skip_summary(skipped):
@@ -702,29 +783,378 @@ def _study_key(patterns):
     return json.dumps(patterns, sort_keys=True, default=str)
 
 
+def _variation_box(prefix, pattern_type, label):
+    """A Variation selectbox for a type, returning (display name, spec value).
+
+    Not mandatory, in his words: with nothing named the study pools every
+    variation of the type.
+    """
+    names = [ALL_VARIATIONS] + [n for n, _seq in PATTERN_DEFS[pattern_type]]
+    variation_name = st.selectbox(label, names,
+                                  key=_dependent_key(prefix, pattern_type))
+    return variation_name, (None if variation_name == ALL_VARIATIONS else variation_name)
+
+
+def _value_boxes(prefix, col_a, col_b):
+    """The Value A / Value B pair, B locked to A's family. Returns both fields.
+
+    His rule: a CMB is only ever compared with another CMB. Rather than letting
+    him choose a comparison the engine will refuse, Value B is only ever offered
+    the fields of Value A's family -- and its key hangs off that *family* rather
+    than off the field, so moving Peak CMB to Terminating CMB leaves his choice
+    of B alone while moving to an RSI field resets it. (A popped key would not:
+    Streamlit hands the widget back the value the frontend last sent.)
+    """
+    with col_a:
+        field_a = st.selectbox("Value A", LEG_VALUE_FIELDS, key=f"{prefix}_field_a")
+    family = field_family(field_a)
+    options = [field for field in LEG_VALUE_FIELDS if field_family(field) == family]
+    with col_b:
+        field_b = st.selectbox("Value B", options,
+                               key=_dependent_key(f"{prefix}_field_b", family))
+    return field_a, field_b
+
+
+def _stored_study(session_key, key):
+    """A stored (key, spec, result), or None once the markings moved under it.
+
+    A percentage counted off the previous list is not an answer about this one,
+    so a stale entry is dropped rather than redrawn.
+    """
+    stored = st.session_state.get(session_key)
+    if isinstance(stored, tuple) and len(stored) == 3 and stored[0] == key:
+        return stored
+    st.session_state.pop(session_key, None)
+    return None
+
+
+def _render_result(result, restatement, operator):
+    """The four lines every study answers in: headline, restatement, counts, skips."""
+    # Only a pair study carries a pair count, and it leads: it is the
+    # denominator context that makes the percentage beside it readable.
+    pairs = f"{result['pairs']} pairs · " if "pairs" in result else ""
+    st.markdown(f"### {pairs}{result['samples']} samples · "
+                f"{result['pct_true']:.1f}% true · "
+                f"{result['pct_false']:.1f}% false")
+    st.caption(restatement)
+
+    counts = f"{result['true']} true · {result['false']} false"
+    if result["ties"]:
+        # Surfaced only when they exist. Under ``=`` they *are* the true count,
+        # which is the one operator where he wants to see them.
+        verdict = "true" if operator == "=" else "false"
+        counts += f" · {result['ties']} tie(s), counted {verdict}"
+    st.caption(counts)
+    st.caption(skip_summary(result["skipped"]))
+
+
+# ---------------------------------------------------------------- the grid
+#
+# The same four analyses, asked every way at once. The manual form answers the
+# question he already has; the grid is what he trawls with -- his three factors
+# (operator, value pair, relative degree) crossed, and the wave labels too when
+# he asks for them.
+#
+# Everything below is drawing and reading a table. Which combinations exist and
+# what each one counts is ``strategies.wave_study.run_grid`` and nothing here.
+
+
+def _grid_mode(prefix):
+    """True when this analysis is showing its grid rather than its manual form.
+
+    One radio per analysis, and its state is all that separates the two: the
+    side filters are the same filters, so flicking between the modes keeps them.
+    """
+    key = f"{prefix}_mode"
+    # Mirrored into a plain session key, and the mirror decides the default.
+    # Streamlit discards a widget's state on any run that does not draw it, and
+    # applying a chart event reruns the tab before it reaches these expanders --
+    # so a marking change would drop the mode back to Single while the radio,
+    # which keeps whatever the frontend last sent, went on showing "Grid
+    # search". Every other control in these forms resets for the same reason;
+    # this one had to be held because it decides which form is drawn at all.
+    held = st.session_state.get(f"{key}_held", GRID_MODES[0])
+    if key not in st.session_state and held in GRID_MODES:
+        st.session_state[key] = held
+    chosen = st.radio("Mode", GRID_MODES, horizontal=True, key=key)
+    st.session_state[f"{key}_held"] = chosen
+    return chosen == GRID_MODES[1]
+
+
+def _grid_side(prefix, side, with_parent):
+    """One side of a grid form: the filters, and a Wave box that offers All waves.
+
+    The operator, the value and the degree are absent by design -- those are the
+    grid. What is left is exactly what the sweep does *not* enumerate, which is
+    why it is the manual form's filters and nothing else.
+
+    Its own widget keys, not the manual form's: the Wave box offers an extra
+    option the manual one must never carry, and a shared key would hand
+    ``All waves`` to a single study the engine would then reject.
+    """
+    label = side.upper()
+    boxes = st.columns(4 if with_parent else 3)
+    with boxes[0]:
+        pattern_type = st.selectbox(f"Pattern {label}", list(PATTERN_DEFS),
+                                    key=f"{prefix}_grid_type_{side}")
+    with boxes[1]:
+        variation_name, variation = _variation_box(
+            f"{prefix}_grid_variation_{side}", pattern_type, f"Variation {label}")
+
+    parent_wave = ANY_PARENT_WAVE
+    if with_parent:
+        with boxes[2]:
+            parent_wave = st.selectbox(
+                f"Parent wave {label}", [ANY_PARENT_WAVE] + list(PARENT_WAVE_LABELS),
+                key=f"{prefix}_grid_parent_{side}")
+    with boxes[-1]:
+        wave = st.selectbox(
+            f"Wave {label}", [ALL_WAVES_CHOICE] + wave_labels(pattern_type, variation),
+            key=_dependent_key(f"{prefix}_grid_wave_{side}", pattern_type,
+                               variation_name))
+
+    return {f"type_{side}": pattern_type,
+            f"variation_{side}": variation,
+            f"parent_wave_{side}": (None if parent_wave == ANY_PARENT_WAVE
+                                    else parent_wave),
+            f"wave_{side}": (ALL_WAVES if wave == ALL_WAVES_CHOICE else wave)}
+
+
+def grid_size(spec):
+    """(rows the sweep will produce, labels on side A, labels on side B).
+
+    Quoted back to him before he presses Run: an impulse against an impulse with
+    both sides on All waves is 4,050 rows, and a number that large is worth
+    seeing before it is computed rather than after.
+    """
+    counts = []
+    for side in ("a", "b"):
+        labels = wave_labels(spec[f"type_{side}"], spec[f"variation_{side}"])
+        counts.append(len(labels) if spec[f"wave_{side}"] == ALL_WAVES else 1)
+    return counts[0] * counts[1] * GRID_COMBINATIONS, counts[0], counts[1]
+
+
+def grid_caption(spec):
+    """The sweep, multiplied out in words, before anything is counted."""
+    sweep, count_a, count_b = grid_size(spec)
+    caption = (f"{sweep} combinations — {len(OPERATORS)} operators × "
+               f"{len(GRID_VALUE_PAIRS)} value pairs × "
+               f"{len(GRID_DEGREES)} relative degrees")
+    if count_a * count_b > 1:
+        caption += f" × {count_a} Wave A × {count_b} Wave B labels"
+    return caption
+
+
+def grid_frame(rows):
+    """The sweep as the table he reads: named columns, notes in place of counts.
+
+    Two things the raw rows do not decide. ``Pairs`` is dropped where the
+    analysis discovers none, rather than drawn as a column of blanks. And a row
+    carrying a note shows the note instead of its counts: it was never
+    evaluated, so zeros there would read as "nothing measured yet" instead of
+    "that question has no answer".
+    """
+    if not rows:
+        return pd.DataFrame(columns=[header for _key, header in GRID_TABLE_COLUMNS])
+
+    has_pairs = any("pairs" in row for row in rows)
+    columns = [(key, header) for key, header in GRID_TABLE_COLUMNS
+               if key != "pairs" or has_pairs]
+    noted = any(row.get("note") for row in rows)
+
+    records = []
+    for row in rows:
+        note = row.get("note")
+        record = {}
+        for key, header in columns:
+            if note and key in GRID_COUNT_KEYS:
+                record[header] = None
+            elif key in ("pct_true", "pct_false"):
+                record[header] = round(row[key], 1)
+            else:
+                record[header] = row.get(key)
+        if noted:
+            record["Note"] = note or ""
+        records.append(record)
+
+    frame = pd.DataFrame(records)
+    # Strongest claims on top, and the fuller sample first where two agree.
+    # A stable sort, so anything still tied stays in enumeration order rather
+    # than shuffling between runs of the same sweep.
+    return frame.sort_values(["% True", "Samples"], ascending=False,
+                             kind="mergesort")
+
+
+def grid_view(frame, hide_empty, min_true):
+    """The rows he chose to look at: the table's two view filters, composed.
+
+    Neither filter changes what was computed. The summary's denominators and
+    the CSV stay whole below, so a hidden row is still a counted one.
+
+    The threshold is applied only where it is positive, and that is the whole
+    subtlety of it: ``% True`` is blank on a noted row, ``NaN >= 0`` is False,
+    and a comparison left switched on at zero would therefore delete every note
+    from the table without ever being asked to.
+    """
+    shown = frame
+    if hide_empty:
+        shown = shown[shown["Samples"] > 0]
+    if min_true > 0:
+        shown = shown[shown["% True"] >= min_true]
+    return shown
+
+
+def grid_skips(rows):
+    """The sweep's skip reasons, counted once per evaluation rather than per row.
+
+    The fifty-four rows that share a wave pair and a degree share its skips --
+    neither the value pair nor the operator changes which waves were dropped --
+    so summing every row would multiply the same unmeasured waves by fifty-four
+    and turn the one honest denominator on the screen into a made-up number.
+    """
+    totals = {}
+    seen = set()
+    for row in rows:
+        key = (row["wave_a"], row["wave_b"], row["relative_degree"])
+        if key in seen:
+            continue
+        seen.add(key)
+        for reason, count in row["skipped"].items():
+            totals[reason] = totals.get(reason, 0) + count
+    return {reason: totals[reason] for reason in SKIP_ORDER if totals.get(reason)}
+
+
+def grid_summary(rows, analysis):
+    """The denominator context under the table: what was swept, what was counted.
+
+    A table of percentages with no denominators is exactly what this feature
+    must not hand him, and a sweep hides its denominators better than a single
+    study does -- the strongest-looking row on screen may be one sample out of
+    six hundred combinations that found nothing.
+    """
+    with_samples = sum(1 for row in rows if row["samples"])
+    parts = [f"{len(rows)} combinations · {with_samples} with samples"]
+    if analysis != INTER:
+        # Said outright, because the table invites the opposite reading: a side
+        # shifted a degree reads every matching child of a pair member, so one
+        # pair can yield several samples.
+        parts.append("a ±1 combination reads every matching child of a pair, so "
+                     "Samples can exceed Pairs")
+    parts.append(skip_summary(grid_skips(rows)))
+    return " · ".join(parts)
+
+
+def render_grid(canonical, analysis, prefix):
+    """The grid mode of one analysis: the filters, the sweep, the table.
+
+    Four separate grids, one per analysis, which is the client's own line:
+    "They serve 4 different purposes so I do not want a single Grid Search
+    combining all 4." So this draws one of them and never pools them.
+    """
+    spec = {"analysis": analysis}
+    spec.update(_grid_side(prefix, "a", analysis != INTER))
+    spec.update(_grid_side(prefix, "b", analysis != INTER))
+
+    st.caption(grid_caption(spec))
+    # As everywhere in this tab: nothing is counted until he asks, because
+    # Streamlit reruns the whole app on every widget touch anywhere in it.
+    run = st.button("Run grid", key=f"{prefix}_grid_run")
+
+    session_key = f"_wa_grid_{analysis}_result"
+    key = _study_key(canonical)
+    stored = _stored_study(session_key, key)
+
+    if run:
+        try:
+            rows = run_grid(canonical, spec)
+        except ValueError as error:
+            st.error(str(error))
+            return
+        stored = (key, spec, rows)
+        st.session_state[session_key] = stored
+
+    if stored is None:
+        st.caption("Press **Run grid** to sweep every combination across every "
+                   "marked pattern.")
+        return
+
+    _key, _ran_spec, rows = stored
+    frame = grid_frame(rows)
+    # The two view filters as one toolbar: both narrow what is on screen, and
+    # neither narrows what was counted.
+    col_hide, col_true = st.columns([3, 1])
+    with col_hide:
+        hide = st.checkbox("Hide combinations with no samples", value=True,
+                           key=f"{prefix}_grid_hide")
+    with col_true:
+        min_true = st.number_input(
+            "Min % True", min_value=0, max_value=100, value=0, step=5,
+            key=f"{prefix}_grid_min_true",
+            help="Show only combinations whose % True is at least this. "
+                 "0 shows all.")
+    shown = grid_view(frame, hide, min_true)
+    st.dataframe(shown, hide_index=True)
+    st.caption(grid_summary(rows, analysis))
+    if len(shown) != len(frame):
+        # Said under the denominators, not inside them: the filters change what
+        # he is looking at, never what the sweep found.
+        st.caption(f"Showing {len(shown)} of {len(frame)} combinations")
+    # The whole sweep, including everything the checkbox is hiding: a row with
+    # no samples is a fact about his markings, and one he may want to sort
+    # through outside the app.
+    st.download_button("Download CSV", frame.to_csv(index=False),
+                       file_name=f"wave_grid_{analysis}.csv", mime="text/csv",
+                       key=f"{prefix}_grid_csv")
+
+
 def render_study(canonical):
-    """The Analysis expander: configure one comparison, run it, read the result."""
-    with st.expander("Analysis", expanded=False):
+    """The Inter-Pattern Analysis expander: configure one comparison, run it.
+
+    Named for what it actually does: it compares wave counts within the same
+    parent pattern. The Parallel, Inverse Parallel and Adjacent analyses beside
+    it compare counts across two *different* marked patterns.
+    """
+    with st.expander("Inter-Pattern Analysis", expanded=False):
+        if _grid_mode("_wa_study"):
+            render_grid(canonical, INTER, "_wa_study")
+            return
+
         col_type, col_variation = st.columns(2)
         with col_type:
             pattern_type = st.selectbox("Pattern", list(PATTERN_DEFS),
                                         key="_wa_study_type")
         with col_variation:
-            # Not mandatory, in his words: with nothing named the study pools
-            # every variation of the type.
-            names = [ALL_VARIATIONS] + [n for n, _seq in PATTERN_DEFS[pattern_type]]
-            variation_name = st.selectbox(
-                "Variation", names,
-                key=_dependent_key("_wa_study_variation", pattern_type))
-        variation = None if variation_name == ALL_VARIATIONS else variation_name
+            variation_name, variation = _variation_box(
+                "_wa_study_variation", pattern_type, "Variation")
+
+        # Whether side B needs a pattern filter of its own is decided from what
+        # the two degree boxes hold, before either is drawn: they sit further
+        # down the form, but a widget's value is already in session state by the
+        # time the rerun it caused runs. At the same degree the two sides are
+        # one pattern, so a second filter there is not merely redundant -- the
+        # engine refuses it -- and the boxes are not drawn at all.
+        cross = (st.session_state.get("_wa_study_deg_a", SAME_DEGREE) != SAME_DEGREE
+                 or st.session_state.get("_wa_study_deg_b", SAME_DEGREE) != SAME_DEGREE)
+        if cross:
+            col_type_b, col_variation_b = st.columns(2)
+            with col_type_b:
+                pattern_type_b = st.selectbox("Pattern B", list(PATTERN_DEFS),
+                                              key="_wa_study_type_b")
+            with col_variation_b:
+                variation_name_b, variation_b = _variation_box(
+                    "_wa_study_variation_b", pattern_type_b, "Variation B")
+        else:
+            pattern_type_b = pattern_type
+            variation_name_b, variation_b = variation_name, variation
 
         labels = wave_labels(pattern_type, variation)
-        wave_key = (pattern_type, variation_name)
+        labels_b = wave_labels(pattern_type_b, variation_b)
 
         col_a, col_deg_a, col_b, col_deg_b = st.columns([3, 2, 3, 2])
         with col_a:
-            wave_a = st.selectbox("Wave A", labels,
-                                  key=_dependent_key("_wa_study_wave_a", *wave_key))
+            wave_a = st.selectbox(
+                "Wave A", labels,
+                key=_dependent_key("_wa_study_wave_a", pattern_type, variation_name))
         # Mutually exclusive, and decided before either box is drawn: the value
         # a disabled selectbox displays is whatever sits in session state, so
         # the locked side is forced back to "same" rather than merely greyed out
@@ -736,8 +1166,10 @@ def render_study(canonical):
             degree_a = st.selectbox("Degree", DEGREE_CHOICES, key="_wa_study_deg_a",
                                     disabled=lock_a)
         with col_b:
-            wave_b = st.selectbox("Wave B", labels,
-                                  key=_dependent_key("_wa_study_wave_b", *wave_key))
+            wave_b = st.selectbox(
+                "Wave B", labels_b,
+                key=_dependent_key("_wa_study_wave_b", pattern_type_b,
+                                   variation_name_b))
         lock_b = degree_a != SAME_DEGREE
         if lock_b:
             st.session_state["_wa_study_deg_b"] = SAME_DEGREE
@@ -745,11 +1177,10 @@ def render_study(canonical):
             degree_b = st.selectbox("Degree", DEGREE_CHOICES, key="_wa_study_deg_b",
                                     disabled=lock_b)
 
-        col_field, col_op, col_run = st.columns([3, 2, 2])
-        with col_field:
-            field = st.selectbox("Value", LEG_VALUE_FIELDS, key="_wa_study_field")
+        col_field_a, col_field_b, col_op, col_run = st.columns([3, 3, 2, 2])
+        field_a, field_b = _value_boxes("_wa_study", col_field_a, col_field_b)
         with col_op:
-            operator = st.selectbox("Operator", [">", "<"], key="_wa_study_op")
+            operator = st.selectbox("Operator", OPERATOR_CHOICES, key="_wa_study_op")
         with col_run:
             # Streamlit reruns the whole app on every widget touch anywhere, and
             # a study walks every pattern and every parent lookup. It runs when
@@ -760,21 +1191,19 @@ def render_study(canonical):
         spec = {
             "pattern_type": pattern_type,
             "variation": variation,
+            "pattern_type_b": pattern_type_b,
+            "variation_b": variation_b,
             "wave_a": wave_a,
             "offset_a": DEGREE_OFFSETS[degree_a],
             "wave_b": wave_b,
             "offset_b": DEGREE_OFFSETS[degree_b],
-            "field": field,
+            "field_a": field_a,
+            "field_b": field_b,
             "operator": operator,
         }
 
         key = _study_key(canonical)
-        stored = st.session_state.get("_wa_study_result")
-        if not (isinstance(stored, tuple) and len(stored) == 3 and stored[0] == key):
-            # The markings moved: a percentage counted off the previous list is
-            # not an answer about this one.
-            stored = None
-            st.session_state.pop("_wa_study_result", None)
+        stored = _stored_study("_wa_study_result", key)
 
         if run:
             try:
@@ -791,18 +1220,97 @@ def render_study(canonical):
             return
 
         _key, ran_spec, result = stored
-        st.markdown(f"### {result['samples']} samples · "
-                    f"{result['pct_true']:.1f}% true · "
-                    f"{result['pct_false']:.1f}% false")
-        st.caption(study_restatement(ran_spec))
+        _render_result(result, study_restatement(ran_spec), ran_spec["operator"])
 
-        counts = f"{result['true']} true · {result['false']} false"
-        if result["ties"]:
-            # Surfaced only when they exist: he has not defined "=" yet, and
-            # this is the evidence he asked to see before he does.
-            counts += f" · {result['ties']} tie(s), counted false"
-        st.caption(counts)
-        st.caption(skip_summary(result["skipped"]))
+
+def _side_controls(prefix, side):
+    """One side of a pair analysis: Pattern, Variation, Parent wave, Wave.
+
+    Parent wave is the label the pattern occupies in *its own* parent -- his
+    "Parent wave (1)" -- and defaults to Any, which pools every pair the
+    discovery found rather than making him name a role before he can ask
+    anything at all.
+    """
+    label = side.upper()
+    col_type, col_variation, col_parent, col_wave = st.columns(4)
+    with col_type:
+        pattern_type = st.selectbox(f"Pattern {label}", list(PATTERN_DEFS),
+                                    key=f"{prefix}_type_{side}")
+    with col_variation:
+        variation_name, variation = _variation_box(
+            f"{prefix}_variation_{side}", pattern_type, f"Variation {label}")
+    with col_parent:
+        parent_wave = st.selectbox(
+            f"Parent wave {label}", [ANY_PARENT_WAVE] + list(PARENT_WAVE_LABELS),
+            key=f"{prefix}_parent_{side}")
+    with col_wave:
+        wave = st.selectbox(
+            f"Wave {label}", wave_labels(pattern_type, variation),
+            key=_dependent_key(f"{prefix}_wave_{side}", pattern_type, variation_name))
+
+    return {f"type_{side}": pattern_type,
+            f"variation_{side}": variation,
+            f"parent_wave_{side}": (None if parent_wave == ANY_PARENT_WAVE
+                                    else parent_wave),
+            f"wave_{side}": wave}
+
+
+def render_pair_study(canonical, analysis, title, prefix, rule):
+    """One of the three pair-analysis expanders: configure one comparison, run it.
+
+    All three share this function because they differ in exactly one thing --
+    which discovery backs them -- and three near-identical copies of a form this
+    size would drift apart within a phase.
+    """
+    with st.expander(title, expanded=False):
+        st.caption(rule)
+        if _grid_mode(prefix):
+            render_grid(canonical, analysis, prefix)
+            return
+
+        spec = {"analysis": analysis}
+        spec.update(_side_controls(prefix, "a"))
+        spec.update(_side_controls(prefix, "b"))
+
+        col_degree, col_field_a, col_field_b, col_op, col_run = st.columns(
+            [3, 3, 3, 2, 2])
+        with col_degree:
+            degree_name = st.selectbox("Relative degree", RELATIVE_DEGREE_CHOICES,
+                                       key=f"{prefix}_degree")
+        field_a, field_b = _value_boxes(prefix, col_field_a, col_field_b)
+        with col_op:
+            operator = st.selectbox("Operator", OPERATOR_CHOICES, key=f"{prefix}_op")
+        with col_run:
+            # As with the study above: nothing is counted until he asks, because
+            # the tab reruns on every widget touch anywhere in the app.
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            run = st.button("Run", key=f"{prefix}_run")
+
+        spec.update({"relative_degree": RELATIVE_DEGREES[degree_name],
+                     "field_a": field_a, "field_b": field_b,
+                     "operator": operator})
+
+        session_key = f"{prefix}_result"
+        key = _study_key(canonical)
+        stored = _stored_study(session_key, key)
+
+        if run:
+            try:
+                result = run_pair_study(canonical, spec)
+            except ValueError as error:
+                st.error(str(error))
+                return
+            stored = (key, spec, result)
+            st.session_state[session_key] = stored
+
+        if stored is None:
+            st.caption("Press **Run** to count this comparison across every "
+                       "pair this analysis finds.")
+            return
+
+        _key, ran_spec, result = stored
+        _render_result(result, pair_restatement(ran_spec, title),
+                       ran_spec["operator"])
 
 
 def render_wave_analysis_tab(sidebar_config):
@@ -944,7 +1452,11 @@ def render_wave_analysis_tab(sidebar_config):
     st.caption(wave_caption(len(canonical), len(patterns), timeframe, dataset_key,
                             st.session_state.get("_wa_load_note")))
 
-    # Above the export: this is the question the markings were made to answer,
-    # and the export is the older, coarser way of getting at the same list.
+    # Above the export: these are the questions the markings were made to
+    # answer, and the export is the older, coarser way of getting at the same
+    # list. Four separate sections, in the client's own order -- the
+    # within-a-pattern study first, then the three that pair two patterns.
     render_study(canonical)
+    for analysis, title, prefix, rule in PAIR_SECTIONS:
+        render_pair_study(canonical, analysis, title, prefix, rule)
     render_export(canonical, base_df, dataset_key, base_timeframe, timeframe, pmap)
