@@ -138,9 +138,11 @@
     var pressStart = null;
 
     // ---- per-leg study values ---------------------------------------
-    // Nothing is computed for these: every number is typed by hand. The
-    // aggregation is still tracked, because a hand-typed reading is only
-    // interpretable once you know which chart it was read off.
+    // Typed by hand, filled by clicking a value on a pane, or read off the
+    // panes in one go by Record. The aggregation is tracked whichever way they
+    // arrive, because a reading is only interpretable once you know which
+    // chart it came from -- and Record deliberately reads the aggregation
+    // currently on screen, so the stamp is the answer to "which timeframe".
     var displayTimeframe = null;  // the aggregation the held payload was built at
     var popup = null;             // {el, id, leg, inputs} while the popup is open
 
@@ -1889,11 +1891,16 @@
     // marked patterns ("bullish wave 4 has a lower CMB level than wave 2 90% of
     // the time").
     //
-    // Every box is typed by hand and nothing is pre-filled or computed: he
-    // reads each number off whichever chart he is on, and the same wave
-    // measured at two aggregations gives two different readings that only he
-    // can choose between. Which is also why the timeframe of the save is
-    // stamped alongside the numbers.
+    // Nothing is pre-filled: a box opens blank unless a value is already
+    // stored. Filling one is his move, in one of three ways -- typing, clicking
+    // the value on an oscillator pane, or pressing Record, which reads all six
+    // off the panes for that wave's span at once.
+    //
+    // What none of the three do is choose a timeframe for him. The same wave
+    // measured at two aggregations gives two different readings, and which one
+    // he means is decided by the aggregation he has on screen: Record computes
+    // from the displayed payload, exactly as his eye would read it. Which is
+    // why every save stamps the timeframe alongside the numbers.
     // -----------------------------------------------------------------
     var POPUP_MARGIN = 4;       // px of the component's edge the popup may not enter
     var POPUP_OFFSET = 2;       // px between the cursor and the popup's corner
@@ -1930,6 +1937,129 @@
         var top = clientY - rect.top + POPUP_OFFSET;
         el.style.left = Math.max(POPUP_MARGIN, Math.min(left, maxLeft)) + "px";
         el.style.top = Math.max(POPUP_MARGIN, Math.min(top, maxTop)) + "px";
+    }
+
+    // -----------------------------------------------------------------
+    // Record
+    //
+    // "I determine the time frame on the Historical Data Aggregation on the
+    // left side and then right click wave 1 and left click Record": one press
+    // reads all six values off the oscillator panes for that wave's span, on
+    // whatever aggregation is currently displayed, and saves them through the
+    // ordinary save path so the timeframe stamp travels with them.
+    //
+    // Nothing new is invented about *where* the numbers come from -- they are
+    // the same arrays the crosshair snaps to, read at the same slots.
+    // -----------------------------------------------------------------
+
+    // The unsmoothed line of a family: ``rsi`` and ``ci``, never their 13- and
+    // 33-period smoothings. The client's six values are levels of the line
+    // itself; a smoothing answers a different question. Taken from OSC_PANES,
+    // whose key lists lead with the main line, so the payload's array names
+    // stay named in one place.
+    function mainOscKey(family) {
+        for (var index in OSC_PANES) {
+            if (OSC_PANES[index].family === family) return OSC_PANES[index].keys[0];
+        }
+        return null;
+    }
+
+    // Indicator warmup leaves the left edge of every array non-finite, and a
+    // 33-period smoothing leaves a great many entries so. Anything that is not
+    // a real number is "no reading", never zero.
+    function finiteAt(values, slot) {
+        var value = values[slot];
+        return (value === null || value === undefined || !isFinite(value)) ? null : value;
+    }
+
+    // One box's number, or null when there is none to record. ``position`` is
+    // the field name's first word rather than a table of the six names: the
+    // field list is Python's to define, and a seventh field added there should
+    // work here without a second list to keep in step.
+    //
+    // The client's own definitions: "Origin is start of the wave, peak is
+    // highest value in bullish and lowest value in bearish, and Terminating is
+    // end of wave". Both ends count as part of the span -- the origin and
+    // terminating readings are themselves candidates for the peak.
+    function recordedValue(values, position, startSlot, endSlot, bullish) {
+        if (!values) return null;
+        if (position === "Origin") return finiteAt(values, startSlot);
+        if (position === "Terminating") return finiteAt(values, endSlot);
+        if (position !== "Peak") return null;
+        var best = null;
+        for (var slot = startSlot; slot <= endSlot; slot++) {
+            var value = finiteAt(values, slot);
+            if (value === null) continue;
+            if (best === null || (bullish ? value > best : value < best)) best = value;
+        }
+        return best;
+    }
+
+    // Mirrors savePopup's reading of a box, so "is this box filled" is decided
+    // by the same rule that decides what savePopup would send.
+    function boxHasValue(input) {
+        var raw = input.value.trim();
+        return raw !== "" && isFinite(Number(raw));
+    }
+
+    function recordPopup() {
+        if (!popup) return;
+        // The popup can outlive its pattern -- a rerun may have deleted it out
+        // from under the form. Same defence the rest of this path takes.
+        var pattern = findRendered(popup.id);
+        if (!pattern || !pattern.points ||
+            !pattern.points[popup.leg] || !pattern.points[popup.leg + 1]) {
+            closePopup();
+            return;
+        }
+        var start = pattern.points[popup.leg];
+        var end = pattern.points[popup.leg + 1];
+        // Points are display-space -- the payload's own projection -- so the
+        // slot map answers directly, with no second mapping in between.
+        var startSlot = timeToSlot[start.time];
+        var endSlot = timeToSlot[end.time];
+        // Off the displayed time scale, or running backwards: there is no span
+        // to read. A flash and nothing else, rather than boxes filled from
+        // whatever happened to sit at an undefined index.
+        if (startSlot === undefined || endSlot === undefined || startSlot > endSlot) {
+            flashStatus();
+            return;
+        }
+        // Which extreme "Peak" means. A wave that ends exactly where it began
+        // is degenerate; bullish is the tie-break.
+        var bullish = end.price >= start.price;
+
+        var families = legValueFamilies();
+        var complete = true;
+        for (var i = 0; i < popup.inputs.length; i++) {
+            var entry = popup.inputs[i];
+            var key = mainOscKey(families[entry.name]);
+            var value = key === null ? null : recordedValue(
+                oscValues[key], String(entry.name).split(" ")[0],
+                startSlot, endSlot, bullish);
+            // A box with no reading behind it keeps whatever it held. Blanking
+            // it would throw away a number he had already put there by hand.
+            if (value !== null) {
+                // The two decimals the pane's axis label shows -- the same
+                // rounding click-to-fill uses, so a recorded value and a
+                // clicked one read alike.
+                entry.input.value = String(Math.round(value * 100) / 100);
+            }
+            if (!boxHasValue(entry.input)) complete = false;
+        }
+
+        // Complete means logged: savePopup sends the six up stamped with the
+        // displayed aggregation and closes the form, and the wave's label
+        // turning white is his confirmation it was stored.
+        if (complete) {
+            savePopup();
+            return;
+        }
+        // Incomplete means shown, and nothing sent. A wave reaching back into
+        // indicator warmup has readings that do not exist, and storing five of
+        // six would record it as measured when it is not. The form stays open
+        // on exactly the boxes that came up empty, to fill or to save by hand.
+        flashStatus();
     }
 
     function savePopup() {
@@ -1972,9 +2102,10 @@
         }
     }
 
-    // One labelled box. Blank unless a value is already stored -- never a
-    // computed number, which is the whole of the client's "the inputs needs to
-    // be manual".
+    // One labelled box. Blank unless a value is already stored: opening the
+    // popup never computes anything, which is the whole of the client's "the
+    // inputs needs to be manual". A number only appears here once he asks for
+    // one -- by clicking a pane value, or by pressing Record.
     function popupCell(name, stored) {
         var cell = document.createElement("div");
         cell.className = "wa-popup-cell";
@@ -2042,6 +2173,9 @@
 
         var actions = document.createElement("div");
         actions.className = "wa-popup-actions";
+        // Record first: it is the one-press path, and Save is what he falls
+        // back to when Record could not fill everything.
+        actions.appendChild(popupButton("Record", recordPopup));
         actions.appendChild(popupButton("Save", savePopup));
         actions.appendChild(popupButton("Cancel", closePopup));
         el.appendChild(actions);

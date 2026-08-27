@@ -90,7 +90,7 @@ def impulse(pattern_id, times, degree="Minor", color="yellow", first_kind="low")
     other = "high" if first_kind == "low" else "low"
     kinds = [first_kind if i % 2 == 0 else other for i in range(6)]
     pattern = zigzag(pattern_id, list(zip(times, kinds)), degree=degree, color=color)
-    pattern.update(pattern_type="Impulse", variation="Impulse")
+    pattern.update(pattern_type="Impulse", variation="Impulse no Extension")
     return pattern
 
 
@@ -176,16 +176,16 @@ def test_point_labels_triple_zigzag_keeps_the_repeated_x():
 
 
 def test_point_labels_returns_a_fresh_list():
-    labels = point_labels("Impulse", "Impulse")
+    labels = point_labels("Impulse", "Impulse no Extension")
     labels.append("junk")
-    assert point_labels("Impulse", "Impulse") == ["0", "1", "2", "3", "4", "5"]
+    assert point_labels("Impulse", "Impulse no Extension") == ["0", "1", "2", "3", "4", "5"]
 
 
 def test_point_labels_rejects_unknown_combinations():
     with pytest.raises(ValueError):
         point_labels("Impulse", "Zigzag")
     with pytest.raises(ValueError):
-        point_labels("Nonsense", "Impulse")
+        point_labels("Nonsense", "Impulse no Extension")
 
 
 # ---------------------------------------------------------------- render_glyph
@@ -240,6 +240,35 @@ def test_degree_styles_are_from_the_known_vocabulary():
         assert letter_style in {"upper_sans", "lower_serif"}
         assert numeral_style in {"arabic", "roman_upper", "roman_lower"}
         assert isinstance(font_px, int) and font_px > 0
+
+
+IMPULSE_VARIATIONS = ["Impulse no Extension", "Impulse 1st Extended",
+                     "Impulse 3rd Extended", "Impulse 5th Extended",
+                     "Impulse 3rd and 5th Extended"]
+
+
+def test_the_impulse_offers_five_variations_naming_the_extended_wave():
+    # These strings are the client's own and are stored verbatim as a pattern's
+    # ``variation``, so they are keys, not labels -- and the list order is the
+    # order the marking menu shows. Both are worth pinning: a reordering is a
+    # UI change and a respelling silently orphans every marking already saved.
+    assert [name for name, _seq in PATTERN_DEFS["Impulse"]] == IMPULSE_VARIATIONS
+    assert all(label_seq == ["1", "2", "3", "4", "5"]
+               for _name, label_seq in PATTERN_DEFS["Impulse"])
+
+
+def test_the_retired_extended_impulse_is_no_longer_a_variation_of_anything():
+    # It survives only inside ``migrate_impulse_variation``, which is what turns
+    # a marking carrying it into one of the five above on load.
+    stored = {name for variations in PATTERN_DEFS.values()
+              for name, _seq in variations}
+    offered = {name for variations in wave_defs()["pattern_defs"].values()
+               for name, _seq in variations}
+
+    assert "Extended Impulse" not in stored
+    assert "Extended Impulse" not in offered
+    with pytest.raises(ValueError):
+        point_labels("Impulse", "Extended Impulse")
 
 
 def test_wave_defs_is_plain_json_shaped():
@@ -328,7 +357,7 @@ def test_apply_ignores_a_duplicate_id():
     make_pattern(points=make_pattern()["points"] + [
         {"time": 1719882000, "price": 2390.0, "kind": "high"}]),            # too many points
     make_pattern(degree="Nonexistent"),
-    make_pattern(variation="Impulse"),                                      # not a Zigzag variation
+    make_pattern(variation="Impulse no Extension"),              # not a Zigzag variation
     make_pattern(variation="Triple Zigzag"),                                # wrong point count for it
     make_pattern(pattern_type="Nonsense"),
     make_pattern(color="chartreuse"),

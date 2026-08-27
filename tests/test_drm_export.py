@@ -61,7 +61,8 @@ def alternating(pattern_id, pattern_type, variation, start_time, step,
     return make_pattern(pattern_id, pattern_type, variation, points, color=color)
 
 
-def spanning(pattern_id, host, leg, pattern_type="Impulse", variation="Impulse",
+def spanning(pattern_id, host, leg, pattern_type="Impulse",
+             variation="Impulse no Extension",
              prices=None, color="yellow"):
     """A pattern spanning exactly ``host``'s leg ``leg``, endpoint for endpoint.
 
@@ -93,8 +94,9 @@ def spanning(pattern_id, host, leg, pattern_type="Impulse", variation="Impulse",
 
 
 def simple_nest(prefix, start_time, step=1000, parent_leg=0, child_leg=0,
-                parent_type=("Impulse", "Impulse"), child_type=("Impulse", "Impulse"),
-                grandchild_type=("Impulse", "Impulse")):
+                parent_type=("Impulse", "Impulse no Extension"),
+                child_type=("Impulse", "Impulse no Extension"),
+                grandchild_type=("Impulse", "Impulse no Extension")):
     """The three levels one DRM row needs: grandparent, child, grandchild."""
     parent = alternating(prefix + "P", parent_type[0], parent_type[1],
                          start_time, step)
@@ -123,7 +125,7 @@ def cells(sheet_frame, primary, secondary):
 # ------------------------------------------------------------- leg labelling
 
 
-IMPULSE = ("Impulse", "Impulse")
+IMPULSE = ("Impulse", "Impulse no Extension")
 ZIGZAG = ("Zigzag", "Zigzag")
 
 
@@ -141,9 +143,9 @@ def test_a_child_on_leg_k_names_the_wave_ending_that_leg(leg, expected, child_ty
 
 
 @pytest.mark.parametrize("leg,expected,child_type", [
-    (0, "W.(A)", ("Impulse", "Impulse")),
+    (0, "W.(A)", ("Impulse", "Impulse no Extension")),
     (1, "W.(B)", ("Zigzag", "Zigzag")),
-    (2, "W.(C)", ("Impulse", "Impulse")),
+    (2, "W.(C)", ("Impulse", "Impulse no Extension")),
 ])
 def test_a_zigzag_parents_legs_name_waves_a_b_and_c(leg, expected, child_type):
     patterns = simple_nest("z", 0, step=1000, parent_leg=leg,
@@ -210,7 +212,7 @@ def test_every_name_secondary_name_can_build_for_a_real_leg_is_known_or_dropped(
     ([130.0, 120.0, 125.0, 110.0, 115.0, 100.0], "Bearish"),
 ])
 def test_the_legs_own_direction_decides_the_sheet(prices, sheet):
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0, prices=prices)
     grandchild = spanning("G", child, 0)
     rows, _summary = build_drm_rows([parent, child, grandchild], ints)
@@ -218,7 +220,7 @@ def test_the_legs_own_direction_decides_the_sheet(prices, sheet):
 
 
 def test_a_flat_leg_produces_no_row_and_is_counted():
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0, prices=[100.0] * 6)
     grandchild = spanning("G", child, 0)
     rows, summary = build_drm_rows([parent, child, grandchild], ints)
@@ -233,7 +235,7 @@ def test_a_flat_leg_produces_no_row_and_is_counted():
 
 
 def test_a_three_level_nest_produces_exactly_the_expected_rows():
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 2)                # leg 2 -> wave 3 -> W.(3)
     first = spanning("G1", child, 0)                # leg 0 -> wave 1 -> W.1 Impulse
     second = spanning("G2", child, 2)               # leg 2 -> wave 3 -> W.3 Impulse
@@ -251,7 +253,7 @@ def test_a_three_level_nest_produces_exactly_the_expected_rows():
 
 def test_a_two_level_nest_names_nothing():
     # No grandchild means no secondary, and a DRM row without one is not a row.
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0)
     rows, summary = build_drm_rows([parent, child], ints)
 
@@ -261,7 +263,7 @@ def test_a_two_level_nest_names_nothing():
 
 def test_a_root_with_only_grandchildren_below_it_names_nothing():
     # The child needs a parent of its own -- that parent is what the primary is.
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0)
     grandchild = spanning("G", child, 0)
     rows, _summary = build_drm_rows([child, grandchild], ints)
@@ -306,7 +308,7 @@ def test_a_diagonal_in_a_motive_position_now_produces_a_row():
 
 def test_a_diagonals_period_survives_the_round_trip(tmp_path):
     step = 6 * 3600
-    parent = alternating("P", "Impulse", "Impulse", epoch(1), step)
+    parent = alternating("P", "Impulse", "Impulse no Extension", epoch(1), step)
     child = spanning("C", parent, 0)
     grandchild = spanning("G", child, 0, "Diagonal", "Ending Diagonal")
 
@@ -356,7 +358,7 @@ def use_map(monkeypatch, mapping):
 
 
 def test_a_wave_2_child_leg_is_not_applicable_rather_than_dropped():
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0)                # W.(1)
     grandchild = spanning("G", child, 1)            # leg 1 -> wave 2
     rows, summary = build_drm_rows([parent, child, grandchild], ints)
@@ -379,7 +381,7 @@ def test_a_triangles_d_parent_leg_is_not_applicable_rather_than_dropped():
 def test_a_pair_absent_from_the_map_for_any_other_reason_is_still_dropped():
     # Wave 3 *is* a position the DRM records -- but only as an impulse, and only
     # under a motive primary. A zigzag there is real work the format cannot hold.
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0)                            # W.(1)
     grandchild = spanning("G", child, 2, "Zigzag", "Zigzag")    # 'W.3 Zigzag'
     rows, summary = build_drm_rows([parent, child, grandchild], ints)
@@ -393,7 +395,7 @@ def test_the_classification_follows_the_map_rather_than_a_fixed_list(monkeypatch
     # Pretend the client's format grew a row for the very positions it skips
     # today: the same markings must stop being "not applicable" without a line
     # of classification code changing.
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 1)                # leg 1 -> wave 2 -> W.(2)
     grandchild = spanning("G", child, 1)            # leg 1 -> wave 2
 
@@ -440,7 +442,7 @@ def test_a_pivot_the_frame_no_longer_has_is_dropped_and_counted():
 
 
 def test_two_grandchildren_on_one_leg_keep_the_first_and_count_the_rest():
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0)
     first = spanning("G1", child, 0)
     second = spanning("G2", child, 0, "Zigzag", "Zigzag")
@@ -454,7 +456,7 @@ def test_two_grandchildren_on_one_leg_keep_the_first_and_count_the_rest():
 def test_the_same_period_reached_twice_is_written_once():
     # Two markings over the same span, differing only inside: at an export
     # resolution coarse enough to swallow the difference they are one period.
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     first = spanning("C1", parent, 0)
     second = spanning("C2", parent, 0, "Zigzag", "Zigzag")
     g_first = spanning("G1", first, 0)
@@ -556,7 +558,7 @@ def test_the_workbook_round_trips_through_load_drm_and_parse_drm_periods(tmp_pat
     step = 6 * 3600
     first = simple_nest("a", epoch(1), step=step)
     second = simple_nest("b", epoch(11), step=step)
-    falling = alternating("cP", "Impulse", "Impulse", epoch(21), step,
+    falling = alternating("cP", "Impulse", "Impulse no Extension", epoch(21), step,
                           prices=[130.0, 120.0, 125.0, 110.0, 115.0, 100.0])
     falling_child = spanning("cC", falling, 0,
                              prices=[130.0, 128.0, 129.0, 126.0, 127.0, 120.0])
@@ -659,7 +661,8 @@ def mixed_nest():
     # Under the orphan: one candidate that dies on its primary alone.
     patterns.append(spanning("H1", orphan, 0))
     # A red marking takes no part in the relation at all.
-    patterns.append(alternating("R", "Impulse", "Impulse", 900000, 1000, color="red"))
+    patterns.append(alternating("R", "Impulse", "Impulse no Extension",
+                                900000, 1000, color="red"))
     return patterns
 
 
@@ -746,7 +749,7 @@ def test_the_summary_line_stays_quiet_about_reasons_that_did_not_fire():
 
 def test_a_wholly_untracked_export_reads_as_lossless():
     # Every candidate in a position the DRM skips: not one word about dropping.
-    parent = alternating("P", "Impulse", "Impulse", 0, 1000)
+    parent = alternating("P", "Impulse", "Impulse no Extension", 0, 1000)
     child = spanning("C", parent, 0)
     grandchild = spanning("G", child, 1)                # wave 2
     _rows, summary = build_drm_rows([parent, child, grandchild], ints)
@@ -780,7 +783,7 @@ def drm_nest_on(df):
                    "price": float(df["high" if k == "high" else "low"].iloc[p]),
                    "kind": k}
                   for p, k in zip(positions, kinds)]
-        return make_pattern(pattern_id, "Impulse", "Impulse", points)
+        return make_pattern(pattern_id, "Impulse", "Impulse no Extension", points)
 
     return [impulse("P", [0, 30, 40, 50, 60, 80]),      # leg 0 -> W.(1)
             impulse("C", [0, 6, 12, 18, 24, 30]),       # leg 0 -> W.1

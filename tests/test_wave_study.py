@@ -88,7 +88,7 @@ def marking(pattern_id, pattern_type, variation, times, by_leg=None,
     return pattern
 
 
-def impulse(pattern_id, start, by_leg=None, variation="Impulse",
+def impulse(pattern_id, start, by_leg=None, variation="Impulse no Extension",
             degree="Subminuette", step=900):
     """A five-wave count. Wave 2 is leg 1, wave 4 is leg 3."""
     return marking(pattern_id, "Impulse", variation, spaced(start, 6, step),
@@ -96,7 +96,7 @@ def impulse(pattern_id, start, by_leg=None, variation="Impulse",
 
 
 def leg_child(pattern_id, parent, leg, by_leg=None, pattern_type="Impulse",
-              variation="Impulse", count=6):
+              variation="Impulse no Extension", count=6):
     """A count spanning exactly leg ``leg`` of ``parent``, endpoint for endpoint.
 
     Time and kind both, on the first point and the last -- the only thing this
@@ -223,7 +223,7 @@ def test_no_variation_pools_every_variation_of_the_type():
         impulse("a", BASE, wave_4_vs_2(1.0, 5.0)),
         impulse("b", BASE + DAY, wave_4_vs_2(1.0, 5.0)),
         impulse("c", BASE + 2 * DAY, wave_4_vs_2(1.0, 5.0),
-                variation="Extended Impulse"),
+                variation="Impulse 3rd Extended"),
     ]
 
     assert run_study(patterns, spec())["samples"] == 3
@@ -234,15 +234,39 @@ def test_a_named_variation_counts_only_its_own_patterns():
         impulse("a", BASE, wave_4_vs_2(1.0, 5.0)),
         impulse("b", BASE + DAY, wave_4_vs_2(1.0, 5.0)),
         impulse("c", BASE + 2 * DAY, wave_4_vs_2(1.0, 5.0),
-                variation="Extended Impulse"),
+                variation="Impulse 3rd Extended"),
     ]
 
-    named = run_study(patterns, spec(variation="Impulse"))
+    named = run_study(patterns, spec(variation="Impulse no Extension"))
     assert named["samples"] == 2
     assert named["true"] == 2
 
-    extended = run_study(patterns, spec(variation="Extended Impulse"))
+    extended = run_study(patterns, spec(variation="Impulse 3rd Extended"))
     assert extended["samples"] == 1
+
+
+@pytest.mark.parametrize("variation", ["Impulse no Extension", "Impulse 1st Extended",
+                                       "Impulse 3rd Extended", "Impulse 5th Extended",
+                                       "Impulse 3rd and 5th Extended"])
+def test_every_impulse_variation_is_a_filter_the_study_accepts(variation):
+    # The variation selectbox builds its options straight out of PATTERN_DEFS,
+    # so anything the client can pick has to be a spec the study will run.
+    patterns = [impulse("a", BASE, wave_4_vs_2(1.0, 5.0), variation=variation),
+                impulse("b", BASE + DAY, wave_4_vs_2(1.0, 5.0),
+                        variation="Impulse 3rd and 5th Extended")]
+
+    result = run_study(patterns, spec(variation=variation))
+
+    assert result["samples"] == (2 if variation == "Impulse 3rd and 5th Extended"
+                                 else 1)
+
+
+def test_the_retired_extended_impulse_is_refused_as_a_filter():
+    # A stale saved study or a stale browser tab is the only way it can arrive,
+    # and pooling every variation would be a worse answer than saying so.
+    with pytest.raises(ValueError):
+        run_study([impulse("a", BASE, wave_4_vs_2(1.0, 5.0))],
+                  spec(variation="Extended Impulse"))
 
 
 def test_a_pattern_of_another_type_is_not_a_candidate_at_all():
@@ -339,7 +363,8 @@ def nested_pair():
     parent = impulse("parent", BASE, {3: 10.0, 1: 99.0})
     child_times = [BASE + 2700, BASE + 2850, BASE + 3000,
                    BASE + 3150, BASE + 3300, BASE + 3600]
-    child = marking("child", "Impulse", "Impulse", child_times, {1: 4.0, 3: 1.0},
+    child = marking("child", "Impulse", "Impulse no Extension", child_times,
+                    {1: 4.0, 3: 1.0},
                     kinds=["high", "low", "high", "low", "high", "low"])
     return [parent, child]
 
@@ -402,7 +427,8 @@ def test_a_counterpart_of_another_type_does_not_pair():
                      [BASE, BASE + 900, BASE + 1800, BASE + 2700], {0: 1.0})
     child_times = [BASE + 1800, BASE + 1950, BASE + 2100,
                    BASE + 2250, BASE + 2400, BASE + 2700]
-    child = marking("child", "Impulse", "Impulse", child_times, {1: 4.0, 3: 1.0},
+    child = marking("child", "Impulse", "Impulse no Extension", child_times,
+                    {1: 4.0, 3: 1.0},
                     kinds=["low", "high", "low", "high", "low", "high"])
 
     result = run_study([parent, child],
@@ -517,7 +543,7 @@ def test_an_analysable_wave_carries_its_identity_and_its_values():
     assert rows == [{
         "pattern_id": "solo",
         "pattern_type": "Impulse",
-        "variation": "Impulse",
+        "variation": "Impulse no Extension",
         "degree": "Subminuette",
         "leg": 3,
         "label": "4",
@@ -684,7 +710,7 @@ def test_differing_side_filters_at_the_same_degree_are_refused():
     with pytest.raises(ValueError):
         run_study(five_impulses(), spec(pattern_type_b="Zigzag"))
     with pytest.raises(ValueError):
-        run_study(five_impulses(), spec(variation_b="Extended Impulse"))
+        run_study(five_impulses(), spec(variation_b="Impulse 3rd Extended"))
 
 
 # ------------------------------------------------------- 17. the pair fixtures

@@ -29,6 +29,7 @@ from config.wave_analysis import (
     chained,
     is_valid_pattern,
     leg_is_complete,
+    migrate_impulse_variation,
     migrate_leg_value_fields,
     pattern_direction,
     pattern_role,
@@ -78,7 +79,8 @@ def six_point(pattern_id, pattern_type, variation, start=0, step=100,
 
 
 def impulse(pattern_id="i", start=0, step=100, degree="Minor", prices=None):
-    return six_point(pattern_id, "Impulse", "Impulse", start, step, degree, prices)
+    return six_point(pattern_id, "Impulse", "Impulse no Extension",
+                     start, step, degree, prices)
 
 
 def triple_zigzag(pattern_id="t", start=0, step=100, degree="Minor"):
@@ -604,6 +606,123 @@ def test_a_load_then_save_round_trip_persists_only_the_new_names(tmp_path):
     assert '"CMB":' not in written and '"RSI":' not in written
     assert json.loads(written)["gold.csv"]["patterns"][0]["leg_values"]["1"][
         "Peak CMB"] == 3.0
+
+
+# ------------------------------------------- 8b. the impulse variation rename
+#
+# The Impulse menu used to offer "Impulse" and "Extended Impulse" and now names
+# which wave carries the extension. A variation is the key a pattern's shape is
+# looked up by, so this is the same kind of migration as the rename above: with
+# no migration ``point_labels`` would not know the stored name and the client's
+# counts would be dropped on load, not relabelled.
+
+
+def old_impulse(pattern_id="oi", variation="Impulse", prices=None):
+    """A five-wave count still carrying one of the retired variation names."""
+    return six_point(pattern_id, "Impulse", variation, prices=prices)
+
+
+# Price sets whose longest of waves 1, 3 and 5 (legs 0, 2 and 4) is the wave the
+# name says. Read them as the six pivots of a count: the gaps are what matter.
+EXTENDED_FIRST = [10.0, 100.0, 90.0, 95.0, 92.0, 96.0]      # leg 0 = 90
+EXTENDED_THIRD = [10.0, 20.0, 15.0, 60.0, 55.0, 60.0]       # leg 2 = 45
+EXTENDED_FIFTH = [10.0, 20.0, 15.0, 25.0, 20.0, 90.0]       # leg 4 = 70
+
+
+def test_the_plain_impulse_becomes_the_no_extension_variation():
+    migrated = migrate_impulse_variation(old_impulse())
+
+    assert migrated["variation"] == "Impulse no Extension"
+    assert migrated["points"] == old_impulse()["points"]     # nothing else moved
+
+
+@pytest.mark.parametrize("prices,expected", [
+    (EXTENDED_FIRST, "Impulse 1st Extended"),
+    (EXTENDED_THIRD, "Impulse 3rd Extended"),
+    (EXTENDED_FIFTH, "Impulse 5th Extended"),
+])
+def test_the_longest_of_waves_one_three_and_five_names_the_extension(prices,
+                                                                     expected):
+    # The retired name recorded *that* a wave extended and never which, so the
+    # marked prices are the only evidence left.
+    pattern = old_impulse(variation="Extended Impulse", prices=prices)
+
+    assert migrate_impulse_variation(pattern)["variation"] == expected
+
+
+def test_a_tie_for_longest_falls_back_to_a_third_extension():
+    # Two waves the same length name no winner. Third is the textbook-common
+    # case and the one a re-mark is least likely to have to correct.
+    tied = [10.0, 20.0, 15.0, 35.0, 30.0, 50.0]              # legs 2 and 4 both 20
+    pattern = old_impulse(variation="Extended Impulse", prices=tied)
+
+    assert migrate_impulse_variation(pattern)["variation"] == "Impulse 3rd Extended"
+
+
+@pytest.mark.parametrize("points", [
+    None,
+    [],
+    "rubbish",
+    [{"time": 0, "price": 10.0, "kind": "low"}],             # too few to measure
+    [{"time": index * 100, "price": None, "kind": "low"} for index in range(6)],
+    [{"time": index * 100, "kind": "low"} for index in range(6)],   # no price
+])
+def test_unmeasurable_points_fall_back_without_raising(points):
+    # This runs before validation, so the points are whatever the file held.
+    pattern = {"id": "x", "pattern_type": "Impulse",
+               "variation": "Extended Impulse", "points": points}
+
+    assert migrate_impulse_variation(pattern)["variation"] == "Impulse 3rd Extended"
+
+
+def test_a_pattern_of_another_type_is_never_rewritten():
+    # "Impulse" is a pattern-type name as well as a retired variation name.
+    lookalike = marking("z", "Zigzag", "Impulse",
+                        [(0, 10.0, "low"), (100, 20.0, "high"), (200, 15.0, "low")])
+
+    assert migrate_impulse_variation(lookalike) is lookalike
+
+
+@pytest.mark.parametrize("variation", ["Impulse no Extension", "Impulse 1st Extended",
+                                       "Impulse 3rd and 5th Extended", "nonsense",
+                                       None])
+def test_a_variation_with_nothing_to_rename_comes_back_untouched(variation):
+    pattern = old_impulse(variation=variation)
+
+    assert migrate_impulse_variation(pattern) is pattern
+
+
+def test_the_migration_survives_rubbish_input():
+    assert migrate_impulse_variation(None) is None
+    assert migrate_impulse_variation("not a pattern") == "not a pattern"
+    assert migrate_impulse_variation({}) == {}
+
+
+def test_the_migration_never_touches_the_pattern_it_was_given():
+    pattern = old_impulse()
+
+    migrate_impulse_variation(pattern)
+
+    assert pattern["variation"] == "Impulse"
+
+
+def test_a_pre_rename_file_loads_its_impulses_instead_of_dropping_them(tmp_path):
+    # The bug this migration exists to prevent: an unknown variation fails
+    # ``point_labels`` inside ``is_valid_pattern``, and a failed pattern is
+    # dropped on load in silence -- the client's counts gone, not relabelled.
+    path = str(tmp_path / "saved_wave_markings.json")
+    plain = old_impulse("plain")
+    extended = old_impulse("ext", variation="Extended Impulse",
+                           prices=EXTENDED_FIFTH)
+    assert not is_valid_pattern(plain) and not is_valid_pattern(extended)
+
+    save_wave_documents({"gold.csv": {"schema": 2, "base_timeframe": "15m",
+                                      "patterns": [plain, extended]}}, path)
+    loaded = load_wave_documents(path)["gold.csv"]["patterns"]
+
+    assert [p["id"] for p in loaded] == ["plain", "ext"]
+    assert [p["variation"] for p in loaded] == ["Impulse no Extension",
+                                                "Impulse 5th Extended"]
 
 
 # ---------------------------------------------------------- 9. determinism

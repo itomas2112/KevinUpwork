@@ -51,7 +51,7 @@ def zigzag(pattern_id="z1", leg_values=None):
 def impulse(pattern_id="i1", leg_values=None):
     """A structurally valid Impulse: five legs, waves 1 to 5."""
     pattern = zigzag(pattern_id, leg_values)
-    pattern.update(pattern_type="Impulse", variation="Impulse")
+    pattern.update(pattern_type="Impulse", variation="Impulse no Extension")
     pattern["points"] = [{"time": 1719878400 + 900 * i,
                           "price": 2360.0 + i,
                           "kind": "low" if i % 2 == 0 else "high"}
@@ -121,7 +121,7 @@ def test_leg_zero_of_an_impulse_is_wave_one_and_leg_four_is_wave_five():
     assert wave_label(pattern, 4) == "5"
     # The origin keeps its place in the list even though it is no longer drawn:
     # every leg index below is read off it.
-    assert point_labels("Impulse", "Impulse")[0] == "0"
+    assert point_labels("Impulse", "Impulse no Extension")[0] == "0"
 
 
 def test_leg_zero_of_a_zigzag_is_wave_a():
@@ -445,7 +445,7 @@ def test_the_label_that_turns_white_is_the_one_after_the_complete_leg():
     assert analysable_legs(pattern) == [0]
     assert white_labels(pattern) == ["1"]
 
-    labels = point_labels("Impulse", "Impulse")
+    labels = point_labels("Impulse", "Impulse no Extension")
     assert labels[0 + 1] == "1"
 
 

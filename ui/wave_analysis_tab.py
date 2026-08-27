@@ -763,7 +763,7 @@ def _dependent_key(prefix, *parts):
     wave label usually does not survive the change either. Popping the old key
     out of session state does *not* clear the widget: Streamlit keeps the value
     the frontend last sent under the widget's own identity, so an Impulse's
-    "Extended Impulse" comes straight back as the selection for a Zigzag, and
+    "Impulse 3rd Extended" comes straight back as the selection for a Zigzag, and
     the study is then run on a label the chosen patterns do not have.
 
     Changing the key makes it a different widget, which starts at its own first

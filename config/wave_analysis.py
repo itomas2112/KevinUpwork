@@ -7,7 +7,15 @@ frontend verbatim through the component args (tuples arrive as JSON arrays).
 
 # Elliott Wave pattern hierarchy. label_seq excludes point 0 (always the first click).
 PATTERN_DEFS = {
-    "Impulse":     [("Impulse", ["1", "2", "3", "4", "5"]), ("Extended Impulse", ["1", "2", "3", "4", "5"])],
+    # Five impulse variations, each naming which wave carries the extension.
+    # The names are the client's own and are stored verbatim as
+    # ``pattern["variation"]``, so they are keys, not labels: renaming one
+    # needs a migration (see ``migrate_impulse_variation``), never a prettify.
+    "Impulse":     [("Impulse no Extension", ["1", "2", "3", "4", "5"]),
+                    ("Impulse 1st Extended", ["1", "2", "3", "4", "5"]),
+                    ("Impulse 3rd Extended", ["1", "2", "3", "4", "5"]),
+                    ("Impulse 5th Extended", ["1", "2", "3", "4", "5"]),
+                    ("Impulse 3rd and 5th Extended", ["1", "2", "3", "4", "5"])],
     "Diagonal":    [("Leading Diagonal", ["1", "2", "3", "4", "5"]), ("Ending Diagonal", ["1", "2", "3", "4", "5"])],
     "Zigzag":      [("Zigzag", ["A", "B", "C"]), ("Double Zigzag", ["W", "X", "Y"]), ("Triple Zigzag", ["W", "X", "Y", "X", "Z"])],
     "Flat":        [("Flat", ["A", "B", "C"]), ("Expanded Flat", ["A", "B", "C"]), ("Running Flat", ["A", "B", "C"])],
@@ -53,10 +61,15 @@ POINT_KINDS = ("high", "low")
 # the keys the values are stored under, so they must not be prettified -- a
 # later analysis screen and any export refer to them by these exact strings.
 #
-# No series mapping any more: nothing is computed. He reads each number off
-# whichever chart he is on, which is the whole point -- the same wave measured
-# at two aggregations gives two different readings and only he knows which one
-# he means.
+# No series mapping here: this table names fields, not indicators. A value
+# reaches a field by hand, by clicking it on an oscillator pane, or through the
+# frontend's Record button, which computes all six on demand from the payload
+# currently displayed.
+#
+# Which is still the client choosing the timeframe rather than us: the same wave
+# measured at two aggregations gives two different readings, and the one he
+# means is the one on screen when he records. Hence the stamp below travelling
+# with every save.
 LEG_VALUE_FIELDS = [
     "Origin CMB",
     "Origin RSI",
@@ -236,6 +249,84 @@ def migrate_leg_value_fields(pattern):
         migrated[key] = renamed
 
     return dict(pattern, leg_values=migrated) if changed else pattern
+
+
+# The pre-Phase-25 Impulse variations. The menu used to offer one plain
+# "Impulse" and one "Extended Impulse"; it now names *which* wave carries the
+# extension, and a variation is the storage key inside every marking, so a file
+# written before the rename carries names ``point_labels`` no longer knows --
+# and ``is_valid_pattern`` rejects exactly that, dropping the client's markings
+# on load. Same situation, same answer, as the leg-value field rename above.
+_IMPULSE_EXTENSION_BY_LEG = {0: "Impulse 1st Extended",
+                             2: "Impulse 3rd Extended",
+                             4: "Impulse 5th Extended"}
+_DEFAULT_EXTENDED_IMPULSE = "Impulse 3rd Extended"
+
+
+def _extended_impulse_variation(points):
+    """Which extension variation a legacy "Extended Impulse" was, by its prices.
+
+    The old name recorded *that* a wave was extended and never which one, so the
+    only evidence left is the marking itself: the longest of waves 1, 3 and 5
+    (legs 0, 2 and 4) is the extended one. A tie says the prices do not name a
+    winner, and anything unmeasurable says the same, so both fall back to a 3rd
+    extension -- the textbook-common case, and the one a re-mark is least likely
+    to have to correct.
+
+    Never raises. This runs before validation, so the points are whatever the
+    file happened to hold.
+    """
+    ranges = {}
+    for leg in _IMPULSE_EXTENSION_BY_LEG:
+        try:
+            start, end = points[leg], points[leg + 1]
+            span = abs(end["price"] - start["price"])
+        except (TypeError, KeyError, IndexError):
+            return _DEFAULT_EXTENDED_IMPULSE
+        if not _is_number(span):
+            return _DEFAULT_EXTENDED_IMPULSE
+        ranges[leg] = span
+
+    longest = max(ranges.values())
+    winners = [leg for leg, span in ranges.items() if span == longest]
+    if len(winners) != 1:
+        return _DEFAULT_EXTENDED_IMPULSE       # a tie names no wave
+    return _IMPULSE_EXTENSION_BY_LEG[winners[0]]
+
+
+def migrate_impulse_variation(pattern):
+    """An Impulse pattern's retired ``variation`` name mapped to a current one.
+
+    "Impulse" simply became "Impulse no Extension". "Extended Impulse" has no
+    one successor -- the menu now asks which wave extended -- so the marked
+    prices are read for the answer, as described above.
+
+    Nothing ever migrates to "Impulse 3rd and 5th Extended": one boolean-ish
+    "extended" flag cannot attest to two extended waves, and guessing a double
+    extension from prices alone would put words in the client's mouth. That
+    variation can only be marked fresh.
+
+    Only ``pattern_type == "Impulse"`` is touched: "Impulse" is a pattern-type
+    name as well as a retired variation name, so a pattern of some other type
+    that happens to carry the string is left exactly as it was found. Any other
+    variation value, current name or garbage, is likewise returned as-is for
+    validation to judge, exactly as today.
+
+    Pure: the very same object comes back when there is nothing to rename, a new
+    dict otherwise.
+    """
+    if not isinstance(pattern, dict):
+        return pattern
+    if pattern.get("pattern_type") != "Impulse":
+        return pattern
+
+    variation = pattern.get("variation")
+    if variation == "Impulse":
+        return dict(pattern, variation="Impulse no Extension")
+    if variation == "Extended Impulse":
+        return dict(pattern,
+                    variation=_extended_impulse_variation(pattern.get("points")))
+    return pattern
 
 
 def _is_valid_leg_values(leg_values, leg_count):
