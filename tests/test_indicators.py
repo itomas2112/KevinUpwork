@@ -402,6 +402,16 @@ class TestDonchian:
         assert (valid["dc_upper"] >= valid["dc_mid"]).all()
         assert (valid["dc_mid"] >= valid["dc_lower"]).all()
 
+    def test_donchian_period_one(self):
+        from indicators.donchian import donchian_channel
+        high = pd.Series([10.0, 12.0, 11.0, 15.0, 14.0, 13.0])
+        low = pd.Series([8.0, 9.0, 7.0, 12.0, 11.0, 10.0])
+        dc_upper, dc_mid, dc_lower = donchian_channel(high, low, 1, 1, 1)
+        pd.testing.assert_series_equal(dc_upper, high.shift(1), check_names=False)
+        pd.testing.assert_series_equal(dc_lower, low.shift(1), check_names=False)
+        pd.testing.assert_series_equal(
+            dc_mid, (high.shift(1) + low.shift(1)) / 2, check_names=False)
+
 
 # ---------------------------------------------------------------------------
 # Parabolic SAR
@@ -732,3 +742,59 @@ class TestLinearRegressionChannel:
         slope, intercept = np.polyfit(x, values, 1)
         expected_mid = intercept + slope * (period - 1)
         assert abs(df["lr_mid"].iloc[idx] - expected_mid) < 1e-8
+
+
+# ---------------------------------------------------------------------------
+# Price Channel
+# ---------------------------------------------------------------------------
+
+class TestPriceChannel:
+
+    def test_period_one_is_raw_high_low(self, df_oscillation_15m):
+        from indicators.price_channel import price_channel
+        high, low = df_oscillation_15m["high"], df_oscillation_15m["low"]
+        pc_upper, pc_lower = price_channel(high, low, 1, 1)
+        pd.testing.assert_series_equal(pc_upper, high, check_names=False)
+        pd.testing.assert_series_equal(pc_lower, low, check_names=False)
+
+    def test_period_three_is_sma(self, df_oscillation_15m):
+        from indicators.price_channel import price_channel
+        high, low = df_oscillation_15m["high"], df_oscillation_15m["low"]
+        pc_upper, pc_lower = price_channel(high, low, 3, 3)
+        pd.testing.assert_series_equal(pc_upper, high.rolling(3).mean(), check_names=False)
+        pd.testing.assert_series_equal(pc_lower, low.rolling(3).mean(), check_names=False)
+
+    def test_columns_in_calculate_indicators(self, df_oscillation_15m):
+        df = _calc(df_oscillation_15m)
+        assert "pc_upper" in df.columns
+        assert "pc_lower" in df.columns
+        pd.testing.assert_series_equal(df["pc_upper"], df["high"], check_names=False)
+        pd.testing.assert_series_equal(df["pc_lower"], df["low"], check_names=False)
+
+    def test_recalculate_groups_updates_only_pc(self, df_oscillation_15m):
+        from indicators.calculate_indicators import recalculate_groups
+        base = _calc(df_oscillation_15m)
+        df = base.copy()
+        params = {**DEFAULT_INDICATOR_SETTINGS, "pc_upper_period": 3, "pc_lower_period": 3}
+        recalculate_groups(df, {'pc'}, **params)
+        pd.testing.assert_series_equal(df["pc_upper"], df["high"].rolling(3).mean(),
+                                       check_names=False)
+        pd.testing.assert_series_equal(df["pc_lower"], df["low"].rolling(3).mean(),
+                                       check_names=False)
+        others = [c for c in base.columns if c not in ("pc_upper", "pc_lower")]
+        pd.testing.assert_frame_equal(df[others], base[others])
+
+    def test_param_to_group(self):
+        from indicators.calculate_indicators import PARAM_TO_GROUP
+        assert PARAM_TO_GROUP["pc_upper_period"] == "pc"
+        assert PARAM_TO_GROUP["pc_lower_period"] == "pc"
+
+    def test_strategy_indicator_flags(self):
+        from indicators.calculate_indicators import strategy_indicator_flags
+        from tests.conftest import make_strategy
+        with_pc = make_strategy(entry_element1="Price", entry_compare_type="Indicator",
+                                entry_element2="Price Lower")
+        assert strategy_indicator_flags(with_pc)["show_pc"] is True
+        without = make_strategy(entry_element1="Price", entry_compare_type="Indicator",
+                                entry_element2="Tenkan")
+        assert strategy_indicator_flags(without)["show_pc"] is False

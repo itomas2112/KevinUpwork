@@ -532,7 +532,7 @@ def time_formatter(pmap):
 def export_stem(dataset_key):
     """The download file names' common stem: the dataset without its extension."""
     stem = str(dataset_key or "waves")
-    for suffix in (".csv", ".CSV", ".xlsx", ".XLSX"):
+    for suffix in (".csv", ".CSV", ".txt", ".TXT", ".xlsx", ".XLSX"):
         if stem.endswith(suffix):
             stem = stem[:-len(suffix)]
             break

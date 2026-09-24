@@ -17,10 +17,10 @@ from data.loader import load_ohlc, resample_ohlc, parse_drm_periods
 
 class TestLoadOhlc:
 
-    def _csv_bytes(self, text):
+    def _csv_bytes(self, text, name="test.csv"):
         """Create a file-like object with a .name attribute from CSV text."""
-        f = io.BytesIO(text.encode())
-        f.name = "test.csv"
+        f = io.BytesIO(text.encode("utf-8"))
+        f.name = name
         return f
 
     def test_basic_load(self):
@@ -50,8 +50,82 @@ class TestLoadOhlc:
     def test_rejects_non_csv(self):
         f = io.BytesIO(b"data")
         f.name = "test.xlsx"
-        with pytest.raises(ValueError, match="CSV"):
+        with pytest.raises(ValueError, match="CSV or TXT"):
             load_ohlc(f)
+
+    def test_accepts_txt_extension(self):
+        csv = "time,open,high,low,latest,volume\n2024-01-01 00:00,100,105,95,102,1000\n"
+        df = load_ohlc(self._csv_bytes(csv, name="test.txt"))
+        assert len(df) == 1
+
+    def test_legacy_close_column_renamed_to_latest(self):
+        csv = "time,open,high,low,close,volume\n2024-01-01 00:00,100,105,95,102,1000\n"
+        df = load_ohlc(self._csv_bytes(csv))
+        assert "latest" in df.columns and "close" not in df.columns
+        assert df["latest"].iloc[0] == 102
+
+    # -- Kibot headerless format ------------------------------------------
+
+    KIBOT_ROWS = (
+        "09/27/2009,18:00,1042.25,1044.75,1042.25,1043.75,4905\n"
+        "09/27/2009,18:15,1043.75,1044.00,1042.50,1043.00,1200\n"
+        "09/27/2009,18:30,1043.00,1045.50,1042.75,1045.25,2310\n"
+    )
+
+    def test_kibot_headerless_txt_loads(self):
+        df = load_ohlc(self._csv_bytes(self.KIBOT_ROWS, name="ES.txt"))
+
+        assert df.index.name == "time"
+        assert list(df.columns) == ["open", "high", "low", "latest", "volume"]
+        assert len(df) == 3
+        assert str(df.index.dtype).startswith("datetime64")
+        assert df.index[0] == pd.Timestamp("2009-09-27 18:00")
+        assert df["latest"].iloc[0] == 1043.75
+        assert df["volume"].iloc[0] == 4905
+
+    def test_kibot_dates_are_month_first(self):
+        row = "03/04/2024,09:30,100,105,95,102,1000\n"
+        df = load_ohlc(self._csv_bytes(row, name="ES.txt"))
+        # March 4, not April 3: a day-first parse would give 2024-04-03.
+        assert df.index[0] == pd.Timestamp("2024-03-04 09:30")
+        assert df.index[0] != pd.Timestamp("2024-04-03 09:30")
+        assert df.index[0].month == 3 and df.index[0].day == 4
+
+    def test_kibot_detected_by_content_not_extension(self):
+        df = load_ohlc(self._csv_bytes(self.KIBOT_ROWS, name="ES.csv"))
+        assert "latest" in df.columns
+        assert "date" not in df.columns
+        assert len(df) == 3
+
+    def test_kibot_unsorted_rows_are_sorted(self):
+        rows = (
+            "09/27/2009,18:15,1043.75,1044.00,1042.50,1043.00,1200\n"
+            "09/27/2009,18:00,1042.25,1044.75,1042.25,1043.75,4905\n"
+        )
+        df = load_ohlc(self._csv_bytes(rows, name="ES.txt"))
+        assert df.index.is_monotonic_increasing
+        assert df.index[0] == pd.Timestamp("2009-09-27 18:00")
+
+    def test_kibot_bom_is_tolerated(self):
+        row = "\ufeff09/27/2009,18:00,1042.25,1044.75,1042.25,1043.75,4905\n"
+        df = load_ohlc(self._csv_bytes(row, name="ES.txt"))
+        assert len(df) == 1
+        assert df.index[0] == pd.Timestamp("2009-09-27 18:00")
+
+    def test_kibot_timestamps_unshifted(self):
+        # Kibot stamps are naive US Eastern; the loader must pass them through
+        # untouched, so the Sunday session open stays at 18:00.
+        df = load_ohlc(self._csv_bytes(self.KIBOT_ROWS, name="ES.txt"))
+        assert df.index[0].hour == 18 and df.index[0].minute == 0
+        assert df.index.tz is None
+
+    def test_kibot_nan_high_rows_dropped(self):
+        rows = (
+            "09/27/2009,18:00,1042.25,,1042.25,1043.75,4905\n"
+            "09/27/2009,18:15,1043.75,1044.00,1042.50,1043.00,1200\n"
+        )
+        df = load_ohlc(self._csv_bytes(rows, name="ES.txt"))
+        assert len(df) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +183,33 @@ class TestResampleOhlc:
     def test_invalid_timeframe_raises(self, df_uptrend_15m):
         with pytest.raises(ValueError):
             resample_ohlc(df_uptrend_15m, "2H", base_timeframe="15m")
+
+    def test_kibot_frame_resamples_to_1h(self):
+        # Two full hours of Kibot rows, run through the loader so the renamed
+        # ``latest`` column is proven to flow through resample_ohlc unchanged.
+        rows = "".join(
+            f"09/28/2009,{h:02d}:{m:02d},{100 + i},{110 + i},{90 + i},{105 + i},{10 * (i + 1)}\n"
+            for i, (h, m) in enumerate((h, m) for h in (9, 10) for m in (0, 15, 30, 45))
+        )
+        f = io.BytesIO(rows.encode("utf-8"))
+        f.name = "ES.txt"
+        df = load_ohlc(f)
+        assert len(df) == 8
+
+        result = resample_ohlc(df, "1H", base_timeframe="15m")
+
+        assert len(result) == 2
+        assert list(result.columns) == ["open", "high", "low", "latest", "volume"]
+        assert result.index[0] == pd.Timestamp("2009-09-28 09:00")
+        # First hour: bars i=0..3
+        assert result.iloc[0]["open"] == 100
+        assert result.iloc[0]["high"] == 113
+        assert result.iloc[0]["low"] == 90
+        assert result.iloc[0]["latest"] == df["latest"].iloc[3]
+        assert result.iloc[0]["volume"] == df["volume"].iloc[:4].sum()
+        # Second hour: bars i=4..7
+        assert result.iloc[1]["latest"] == df["latest"].iloc[7]
+        assert result.iloc[1]["volume"] == df["volume"].iloc[4:].sum()
 
 
 # ---------------------------------------------------------------------------

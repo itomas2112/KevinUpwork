@@ -7,6 +7,7 @@ from data.helpers import (
     PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
     expand_selection,
 )
+from config.constants import INSTRUMENTS, instrument_point_value
 
 CHARTING_MODES = [
     "Specified Primary",
@@ -24,6 +25,20 @@ ALL_AGG = ["15m", "1H", "4H", "1D", "1W", "1M"]
 
 def render_sidebar():
     """Render the complete sidebar with all controls"""
+
+    # Instrument — contract specs used by the dollar-based Monte Carlo
+    with st.sidebar.expander("Instrument", expanded=False):
+        symbol = st.selectbox(
+            "Instrument", list(INSTRUMENTS), key="instrument",
+            format_func=lambda s: (f"{s} — tick {INSTRUMENTS[s][0]:g} / "
+                                   f"${INSTRUMENTS[s][1]:g} / margin ${INSTRUMENTS[s][2]:,.0f}"))
+        pv = instrument_point_value(symbol)
+        st.caption(f"Point value ${pv:,.2f} per 1.0 price unit. Loaded price data must be "
+                   f"in the same units as the tick (ES index points, ZC cents, …).")
+        st.number_input("MC starting balance ($)", min_value=1000.0, step=10000.0,
+                        key="mc_starting_balance", format="%.0f")
+        st.number_input("MC trades per simulation", min_value=10, max_value=5000,
+                        step=10, key="mc_trades_per_sim")
 
     # Historical Data Aggregation
     base_tf = st.session_state.get("base_timeframe", "15m")
@@ -207,6 +222,8 @@ def render_sidebar():
             value=st.session_state.get("overlay_ema", False), key="overlay_ema")
         show_donchian = st.checkbox("Show Donchian Channel",
             value=st.session_state.get("overlay_donchian", False), key="overlay_donchian")
+        show_pc = st.checkbox("Show Price Channel",
+            value=st.session_state.get("overlay_pc", False), key="overlay_pc")
         show_psar = st.checkbox("Show Parabolic SAR",
             value=st.session_state.get("overlay_psar", False), key="overlay_psar")
 
@@ -342,6 +359,7 @@ def render_sidebar():
         'show_supertrend': show_supertrend,
         'show_ema': show_ema,
         'show_donchian': show_donchian,
+        'show_pc': show_pc,
         'show_psar': show_psar,
         'show_rsi': show_rsi,
         'show_cmb': show_cmb,
@@ -721,19 +739,19 @@ def render_timeframe_parameters(timeframe, disabled=False):
         st.divider()
         st.caption("**Upper Band**")
         params['dc_upper_period'] = st.number_input(
-            "Upper Period", 5, 200, 20, step=1,
+            "Upper Period", 1, 200, 20, step=1,
             key=f"dc_up_p_{key_prefix}",
             disabled=disabled,
         )
         st.caption("**Middle Band**")
         params['dc_mid_period'] = st.number_input(
-            "Middle Period", 5, 200, 20, step=1,
+            "Middle Period", 1, 200, 20, step=1,
             key=f"dc_mid_p_{key_prefix}",
             disabled=disabled,
         )
         st.caption("**Lower Band**")
         params['dc_lower_period'] = st.number_input(
-            "Lower Period", 5, 200, 20, step=1,
+            "Lower Period", 1, 200, 20, step=1,
             key=f"dc_lo_p_{key_prefix}",
             disabled=disabled,
         )
@@ -741,6 +759,19 @@ def render_timeframe_parameters(timeframe, disabled=False):
         params['dc_offset'] = st.number_input(
             "Offset / Shift", -50, 50, 0, step=1,
             key=f"dc_off_{key_prefix}",
+            disabled=disabled,
+        )
+
+    with st.sidebar.expander("Price Channel"):
+        st.caption("Period 1 = raw bar highs / lows.")
+        params['pc_upper_period'] = st.number_input(
+            "Upper Period (SMA of highs)", 1, 200, 1, step=1,
+            key=f"pc_up_p_{key_prefix}",
+            disabled=disabled,
+        )
+        params['pc_lower_period'] = st.number_input(
+            "Lower Period (SMA of lows)", 1, 200, 1, step=1,
+            key=f"pc_lo_p_{key_prefix}",
             disabled=disabled,
         )
 

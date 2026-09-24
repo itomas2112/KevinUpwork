@@ -66,6 +66,7 @@ def build_main_chart(
     dc_show_upper: bool = True,
     dc_show_middle: bool = True,
     dc_show_lower: bool = True,
+    show_pc: bool = False,
     show_psar: bool = False,
     show_willr: bool = False,
     show_roc: bool = False,
@@ -429,6 +430,17 @@ def build_main_chart(
         if dc_show_lower and "dc_lower" in df_slice.columns:
             fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["dc_lower"], name="DC Lower",
                                      line=dict(color="cyan", width=1), showlegend=False))
+
+    # -------------------------------------------------
+    # Price Channel  (yaxis="y" — Price panel)
+    # -------------------------------------------------
+    if show_pc:
+        if "pc_upper" in df_slice.columns:
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["pc_upper"], name="Price Upper",
+                                     line=dict(color="orange", width=1, dash="dash"), showlegend=False))
+        if "pc_lower" in df_slice.columns:
+            fig.add_trace(go.Scatter(x=df_slice["x"], y=df_slice["pc_lower"], name="Price Lower",
+                                     line=dict(color="orange", width=1, dash="dash"), showlegend=False))
 
     # -------------------------------------------------
     # Parabolic SAR  (yaxis="y" — Price panel)
@@ -855,6 +867,7 @@ def render_charts(
     show_ema=False,
     ema_periods=None,
     show_donchian=False,
+    show_pc=False,
     show_psar=False,
     show_willr=False,
     show_roc=False,
@@ -868,7 +881,7 @@ def render_charts(
         show_adx=show_adx, show_atr=show_atr, show_macd=show_macd,
         show_obv=show_obv, show_accdist=show_accdist,
         show_supertrend=show_supertrend, show_ema=show_ema,
-        show_donchian=show_donchian, show_psar=show_psar,
+        show_donchian=show_donchian, show_pc=show_pc, show_psar=show_psar,
         show_willr=show_willr, show_roc=show_roc, show_cci=show_cci,
     )
 

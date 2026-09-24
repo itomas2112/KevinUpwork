@@ -592,6 +592,7 @@ def _extract_stats(stats_df):
         "lose_pnl": float(stats_df.loc["Losing trades P&L (R)", "value"]),
         "trade_pnls_r": list(stats_df.attrs.get("trade_pnls_r", [])),
         "trade_holding_periods": list(stats_df.attrs.get("trade_holding_periods", [])),
+        "trade_r_distances": list(stats_df.attrs.get("trade_r_distances", [])),
         "total_static_alloc": float(stats_df.attrs.get("total_static_alloc", 0.0)),
         "total_dynamic_alloc": float(stats_df.attrs.get("total_dynamic_alloc", 0.0)),
         "total_target_alloc": float(stats_df.attrs.get("total_target_alloc", 0.0)),
@@ -606,6 +607,7 @@ def aggregate_stats_dicts(all_dicts):
     """
     all_pnls = []
     all_holding_periods = []
+    all_r_dists = []
     win_pnl = lose_pnl = 0.0
     static_alloc = dynamic_alloc = target_alloc = eod_alloc = 0.0
 
@@ -618,6 +620,9 @@ def aggregate_stats_dicts(all_dicts):
         eod_alloc += d.get("total_eod_alloc", 0.0)
         all_pnls.extend(d["trade_pnls_r"])
         all_holding_periods.extend(d.get("trade_holding_periods", []))
+        # Pad to keep r_dists aligned with pnls (0.0 = unusable for MC sizing)
+        r_dists = list(d.get("trade_r_distances", []))
+        all_r_dists.extend((r_dists + [0.0] * len(d["trade_pnls_r"]))[:len(d["trade_pnls_r"])])
 
     n = len(all_pnls)
     if n == 0:
@@ -665,6 +670,8 @@ def aggregate_stats_dicts(all_dicts):
         "max_drawdown": float(max_dd),
         "sqn": float(sqn),
         "avg_holding_period": float(avg_holding_period),
+        "trade_pnls_r": [float(p) for p in all_pnls],
+        "trade_r_distances": [float(r) for r in all_r_dists],
     }
 
 
@@ -675,6 +682,7 @@ def _empty_agg():
         "expected_value": 0.0, "target_exit_pct": 0.0, "static_exit_pct": 0.0,
         "dynamic_exit_pct": 0.0, "eod_exit_pct": 0.0, "rr_ratio": 0.0,
         "max_drawdown": 0.0, "sqn": 0.0, "avg_holding_period": 0.0,
+        "trade_pnls_r": [], "trade_r_distances": [],
     }
 
 

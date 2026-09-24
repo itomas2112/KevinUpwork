@@ -273,6 +273,15 @@ class TestGenerateRunConfigs:
         runs = generate_run_configs(self._base(), "trigger", candidates, ["Cross Above"])
         assert len(runs) == 3  # All three EMA-based candidates must pass
 
+    def test_price_channel_candidates_pass_validation(self):
+        """Price Upper / Price Lower candidates run without any indicator range."""
+        candidates = [
+            {"element1": "Chikou", "compare_type": "Indicator", "element2": "Price Lower"},
+            {"element1": "Price", "compare_type": "Indicator", "element2": "Price Upper"},
+        ]
+        runs = generate_run_configs(self._base(), "trigger", candidates, ["Cross Below"])
+        assert len(runs) == 2
+
     def test_ema_candidates_beyond_config_rejected(self):
         """Candidates referencing an EMA beyond the configured count are still rejected."""
         # Base has 4 EMAs, so "EMA 5" must fail
@@ -798,6 +807,11 @@ class TestCandidateWfoGroups:
              "compare_type": "Indicator", "element2": "EMA 2"}
         assert candidate_wfo_groups(c) == set()
 
+    def test_price_channel_has_no_wfo_group(self):
+        c = {"group": "Price & Indicators", "element1": "Chikou",
+             "compare_type": "Indicator", "element2": "Price Lower"}
+        assert candidate_wfo_groups(c) == set()
+
     def test_r_profit_excluded(self):
         c = {"element1": "R Profit", "compare_type": "Fixed Value", "value": 1}
         assert candidate_wfo_groups(c) == set()
@@ -860,3 +874,35 @@ class TestPrimaryParamMap:
     def test_ema_intentionally_omitted(self):
         # EMA per-instance ranging is out of scope for v1
         assert "ema" not in INDICATOR_PRIMARY_PARAM
+
+
+# ---------------------------------------------------------------------------
+# Group-set editor EMA sizing (from the selected strategy)
+# ---------------------------------------------------------------------------
+
+class TestEmaPeriodsForStrategy:
+    def test_strategy_ema_periods_used(self):
+        from ui.grid_search_helpers import _ema_periods_for_strategy
+        from config.constants import get_group_elements
+        strat = {"indicator_settings": {"ema_periods": [10, 20, 50, 200]}}
+        periods = _ema_periods_for_strategy(strat)
+        assert periods == [10, 20, 50, 200]
+        assert len(periods) == 4
+        elements = get_group_elements("Price & Indicators", len(periods))
+        for i in range(1, 5):
+            assert f"EMA {i}" in elements
+
+    def test_missing_settings_falls_back_to_default(self):
+        from ui.grid_search_helpers import _ema_periods_for_strategy
+        from config.constants import DEFAULT_EMA_PERIODS
+        assert _ema_periods_for_strategy({}) == list(DEFAULT_EMA_PERIODS)
+        assert _ema_periods_for_strategy({"indicator_settings": None}) == list(DEFAULT_EMA_PERIODS)
+        assert _ema_periods_for_strategy({"indicator_settings": {"rsi_window": 14}}) == list(DEFAULT_EMA_PERIODS)
+
+    def test_empty_ema_periods_stays_empty(self):
+        from ui.grid_search_helpers import _ema_periods_for_strategy
+        from config.constants import get_group_elements
+        periods = _ema_periods_for_strategy({"indicator_settings": {"ema_periods": []}})
+        assert periods == []
+        elements = get_group_elements("Price & Indicators", len(periods))
+        assert not any(e.startswith("EMA ") for e in elements)

@@ -328,34 +328,104 @@ def _candidate_to_exit_trigger(candidate, event):
 
 
 # ---------------------------------------------------------------------------
-# Collect gs_ prefixed indicator settings from session state
+# EMA periods for the group-set editor
 # ---------------------------------------------------------------------------
 
-def collect_gs_indicator_settings(ss):
-    """Read gs_ prefixed indicator params from Streamlit session state."""
-    from ui.performance_tab import _DEFAULT_INDICATOR_PARAMS
-    pfx = "gs_"
-    keys = [
-        "rsi_window",
-        "bb_upper_period", "bb_upper_stdev", "bb_mid_period",
-        "bb_lower_period", "bb_lower_stdev",
-        "kc_upper_ema", "kc_mid_ema", "kc_lower_ema",
-        "kc_atr_period", "kc_upper_mult", "kc_lower_mult",
-        "stoch_k_period", "stoch_k_smooth", "stoch_d_smooth",
-        "adx_period", "atr_period",
-        "macd_fast", "macd_slow", "macd_signal",
-        "supertrend_period", "supertrend_multiplier",
-        "ema_periods",
-        "dc_upper_period", "dc_mid_period", "dc_lower_period", "dc_offset",
-        "psar_af_start", "psar_af_increment", "psar_af_max",
-        "willr_period",
-        "cci_period",
-        "roc_period", "roc_signal_period",
-        "lr_period", "lr_multiplier",
-    ]
-    result = dict(_DEFAULT_INDICATOR_PARAMS)
-    for k in keys:
-        val = ss.get(f"{pfx}{k}")
-        if val is not None:
-            result[k] = val
-    return result
+def _ema_periods_for_strategy(strategy):
+    """Return the EMA periods the grid search will run with for `strategy`.
+
+    Mirrors the run-time path: strategy settings are migrated and overlaid on
+    the defaults, so a missing `ema_periods` falls back to DEFAULT_EMA_PERIODS
+    while an explicit empty list stays empty.
+    """
+    from config.constants import DEFAULT_EMA_PERIODS
+    from indicators.calculate_indicators import migrate_indicator_settings
+    settings = migrate_indicator_settings((strategy or {}).get("indicator_settings")) or {}
+    periods = settings.get("ema_periods")
+    if periods is None:
+        periods = DEFAULT_EMA_PERIODS
+    return list(periods)
+
+
+# ---------------------------------------------------------------------------
+# Shortlist (Grid Search) — pure helpers; the tab only wires them to widgets.
+# Entries are snapshots: columns and strategy are deep-copied on creation so
+# later MC re-enrichment / re-aggregation of the live results cannot change them.
+# ---------------------------------------------------------------------------
+
+_SHORTLIST_IDENTITY = ("label", "base_strategy", "search_group", "group_set")
+
+
+def result_strategy_for_variant(strategy, variant_id, variant_groups):
+    """Deep copy of a run-config strategy with the variant's indicator param
+    overrides written into its indicator_settings (variant_id is the
+    ((group, offset), ...) tuple from generate_run_configs; None = default)."""
+    out = copy.deepcopy(strategy)
+    if variant_id and variant_groups:
+        settings = dict(out.get("indicator_settings") or {})
+        for group, offset in variant_id:
+            for var_offset, params in variant_groups.get(group, []):
+                if var_offset == offset:
+                    settings.update(params)
+                    break
+        out["indicator_settings"] = settings
+    return out
+
+
+def make_shortlist_entry(label, all_patterns_agg, columns, strategy, *, base_strategy,
+                         search_group, group_set, scope, mc_settings, now=None):
+    """Build a Shortlist entry (a deep-copied snapshot of one candidate)."""
+    from collections import OrderedDict
+    from datetime import datetime
+    from uuid import uuid4
+
+    now = now or datetime.now()
+    return {
+        "id": uuid4().hex,
+        "added_at": now.isoformat(timespec="seconds"),
+        "label": label,
+        "base_strategy": base_strategy,
+        "search_group": search_group,
+        "group_set": group_set,
+        "scope": scope,
+        "columns": OrderedDict((k, copy.deepcopy(dict(v))) for k, v in columns.items()),
+        "all_patterns_agg": copy.deepcopy(dict(all_patterns_agg)),
+        "strategy": copy.deepcopy(strategy),
+        "mc_settings": dict(mc_settings or {}),
+    }
+
+
+def shortlist_has(shortlist, entry):
+    """True if an entry with the same label/base_strategy/search_group/group_set exists."""
+    key = tuple(entry.get(k) for k in _SHORTLIST_IDENTITY)
+    return any(tuple(e.get(k) for k in _SHORTLIST_IDENTITY) == key for e in shortlist)
+
+
+def shortlist_add(shortlist, entry):
+    """Return a new list with `entry` first (newest first); unchanged copy if duplicate."""
+    if shortlist_has(shortlist, entry):
+        return list(shortlist)
+    return [entry] + list(shortlist)
+
+
+def shortlist_remove(shortlist, entry_id):
+    """Return a new list without the entry `entry_id` (unknown id -> no-op)."""
+    return [e for e in shortlist if e.get("id") != entry_id]
+
+
+def shortlist_strategy_for_save(entry, name, existing_names):
+    """Prepare an entry's strategy for saving as `name`.
+
+    Returns (strategy, []) when valid, else (None, errors)."""
+    name = (name or "").strip()
+    if not name:
+        return None, ["Strategy name is required."]
+    if name in set(existing_names or ()):
+        return None, [f"A strategy named '{name}' already exists."]
+    strategy = copy.deepcopy(entry.get("strategy") or {})
+    strategy["strategy_name"] = name
+    ema_count = len((strategy.get("indicator_settings") or {}).get("ema_periods", []))
+    is_valid, errors = validate_strategy(strategy, ema_count=ema_count)
+    if not is_valid:
+        return None, list(errors)
+    return strategy, []

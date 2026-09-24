@@ -10,6 +10,8 @@ DEFAULT_EMA_PERIODS = [10, 20, 50, 200]
 # Indicator groups for strategy builder
 PRICE_AND_INDICATORS = [
     "Price",
+    "Price Upper",
+    "Price Lower",
     "BB Upper Band",
     "BB Middle Band",
     "BB Lower Band",
@@ -109,12 +111,12 @@ EVENT_TYPES = [
     "Close Below",
 ]
 
-# Default "within last N periods" lookback for events. 1 = current bar only
-# (no lookback). Stored on every trigger/condition/stop dict; the executor
-# treats the event as fired if it was true at any of the last N closed bars.
-DEFAULT_LOOKBACK = 1
-MIN_LOOKBACK = 1
-MAX_LOOKBACK = 100
+# "Within last (periods)" for events, 0-based. 0 = current bar only. Stored as
+# `within_last` on every trigger/condition/stop dict; the executor treats the
+# event as fired if it was true on this bar or any of the previous N bars.
+DEFAULT_WITHIN_LAST = 0
+MIN_WITHIN_LAST = 0
+MAX_WITHIN_LAST = 99
 
 STOP_EVENT_TYPES = [
     "Cross Above",
@@ -218,6 +220,8 @@ INDICATOR_MAP = {
     "DC Upper Band": "dc_upper",
     "DC Middle Band": "dc_mid",
     "DC Lower Band": "dc_lower",
+    "Price Upper": "pc_upper",
+    "Price Lower": "pc_lower",
     "PSAR": "psar",
     "PSAR Upper": "psar_upper",
     "PSAR Lower": "psar_lower",
@@ -339,3 +343,64 @@ WFO_DEFAULT_RANGES = {
         "lr_multiplier": [0.674, 1.0, 1.282, 1.5, 1.645, 1.96, 2.0, 2.58, 2.81],
     },
 }
+
+
+# ── Instruments (sidebar "Instrument" section; used by dollar-based Monte Carlo) ──
+from collections import OrderedDict
+
+# symbol -> (min_tick in price units of the data, tick_value $, margin $ per contract)
+INSTRUMENTS = OrderedDict([
+    ("ES",  (0.25,       12.50,   28000)),
+    ("NQ",  (0.25,        5.00,   46000)),
+    ("YM",  (1.0,         5.00,   17000)),
+    ("RTY", (0.10,        5.00,   12000)),
+    ("GC",  (0.10,       10.00,   22000)),
+    ("SI",  (0.005,      25.00,   36000)),
+    ("HG",  (0.0005,     12.50,   13000)),
+    ("PL",  (0.10,        5.00,    9000)),
+    ("MBT", (5.0,         0.50,    1800)),
+    ("ETH", (0.50,       25.00,   41000)),
+    ("6J",  (0.0000005,   6.25,    3100)),
+    ("6E",  (0.00005,     6.25,    2300)),
+    ("CL",  (0.01,       10.00,    9600)),
+    ("NG",  (0.001,      10.00,    3100)),
+    ("ZN",  (1/64,       15.625,   2100)),
+    ("ZF",  (1/128,       7.8125,  1400)),
+    ("ZC",  (0.25,       12.50,    1200)),   # quoted in cents/bushel; 1/4 cent
+    ("ZS",  (0.25,       12.50,    2300)),
+    ("ZW",  (0.25,       12.50,    2100)),
+    ("SB",  (0.0001,     11.20,    1200)),
+    ("CT",  (0.0001,      5.00,    1900)),
+    ("CC",  (1.0,        10.00,    8300)),
+])
+DEFAULT_INSTRUMENT = "ES"
+MC_DEFAULT_BALANCE = 100_000.0
+MC_DEFAULT_TRADES_PER_SIM = 100
+# Phased risk sizing (strategies/monte_carlo_core.py::simulate_trades_phased):
+# trades 1..MC_INITIAL_TRADES target MC_INITIAL_RISK_PCT (whole contracts must
+# land inside MC_INITIAL_RISK_BAND, else the trade is skipped); thereafter every
+# MC_REASSESS_EVERY trades the risk % is re-derived from the trades so far by an
+# MC_REASSESS_SIMS-sim MC of the next block (capped at the trades remaining)
+# targeting MC_TARGET_DD avg max DD.
+MC_INITIAL_RISK_PCT = 1.0
+MC_INITIAL_RISK_BAND = (0.75, 1.25)
+MC_INITIAL_TRADES = 30
+MC_REASSESS_EVERY = 200
+MC_REASSESS_SIMS = 30
+MC_TARGET_DD = 5.0
+
+
+def instrument_min_tick(symbol):
+    """Minimum price increment in the data's price units."""
+    return INSTRUMENTS[symbol][0]
+
+
+def instrument_point_value(symbol):
+    """Dollars per 1.0 price unit = tick_value / min_tick (ES -> 50, GC -> 100, ZN -> 1000)."""
+    min_tick, tick_value, _margin = INSTRUMENTS[symbol]
+    return tick_value / min_tick
+
+
+def instrument_margin(symbol):
+    """Margin in dollars required per contract."""
+    return float(INSTRUMENTS[symbol][2])

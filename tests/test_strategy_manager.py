@@ -416,3 +416,95 @@ class TestExecutionRoundtripIntegration:
         loaded = _roundtrip_via_json_file(strategy)
         assert loaded["max_positions"] is None
         _assert_execution_identical(df_oscillation_ready, strategy, loaded)
+
+
+# =====================================================================
+# migrate_indicator_settings — Price Channel defaults
+# =====================================================================
+
+def test_migrate_adds_price_channel_defaults():
+    from indicators.calculate_indicators import migrate_indicator_settings
+    old = {k: v for k, v in DEFAULT_INDICATOR_SETTINGS.items()
+           if k not in ("pc_upper_period", "pc_lower_period")}
+    migrated = migrate_indicator_settings(old)
+    assert migrated["pc_upper_period"] == 1
+    assert migrated["pc_lower_period"] == 1
+    assert "pc_upper_period" not in old
+
+
+def test_migrate_keeps_existing_price_channel_periods():
+    from indicators.calculate_indicators import migrate_indicator_settings
+    s = {**DEFAULT_INDICATOR_SETTINGS, "pc_upper_period": 3, "pc_lower_period": 5}
+    migrated = migrate_indicator_settings(s)
+    assert (migrated["pc_upper_period"], migrated["pc_lower_period"]) == (3, 5)
+
+
+# =====================================================================
+# migrate_within_last — 1-based lookback → 0-based within_last
+# =====================================================================
+
+def _old_style_strategy():
+    """A strategy carrying `lookback` at every nesting level migrate_within_last walks."""
+    import copy
+    s = make_strategy(entry_conditions=[{"operator": "Above", "value": 50.0}])
+    s["entry"]["trigger"]["lookback"] = 1
+    s["entry"]["conditions"][0]["lookback"] = 5
+    s["initial_stop"]["lookback"] = 0
+    trig = {"group": "RSI Group", "element1": "RSI", "event": "Cross Below",
+            "compare_type": "Fixed Value", "element2": None, "value": 40.0}
+    cond = {"group": "RSI Group", "element1": "RSI", "operator": "Below",
+            "compare_type": "Fixed Value", "element2": None, "value": 60.0}
+    s["exit_groups"][0]["targets"][0]["trigger"]["lookback"] = 3
+    s["exit_groups"][0]["targets"][0]["conditions"] = [dict(cond, lookback=2)]
+    s["exit_groups"][0]["stops"] = [{"type": "Stop", "trigger": dict(trig, lookback=4),
+                                     "conditions": [dict(cond, lookback=6)]}]
+    s["exit"] = {"trigger": dict(trig, lookback=7), "conditions": [dict(cond, lookback=8)]}
+    return copy.deepcopy(s)
+
+
+def test_migrate_within_last_all_levels():
+    from strategies.strategy_manager import migrate_within_last
+    s = migrate_within_last(_old_style_strategy())
+    eg = s["exit_groups"][0]
+    expected = [
+        (s["entry"]["trigger"], 0),
+        (s["entry"]["conditions"][0], 4),
+        (s["initial_stop"], 0),
+        (eg["targets"][0]["trigger"], 2),
+        (eg["targets"][0]["conditions"][0], 1),
+        (eg["stops"][0]["trigger"], 3),
+        (eg["stops"][0]["conditions"][0], 5),
+        (s["exit"]["trigger"], 6),
+        (s["exit"]["conditions"][0], 7),
+    ]
+    for d, wl in expected:
+        assert d["within_last"] == wl
+        assert "lookback" not in d
+    assert "lookback" not in json.dumps(s)
+
+
+def test_migrate_within_last_idempotent():
+    import copy
+    from strategies.strategy_manager import migrate_within_last
+    once = migrate_within_last(_old_style_strategy())
+    snapshot = copy.deepcopy(once)
+    assert migrate_within_last(once) == snapshot
+
+
+def test_migrate_within_last_leaves_plain_dicts_alone():
+    import copy
+    from strategies.strategy_manager import migrate_within_last
+    s = make_strategy(entry_conditions=[{"operator": "Above", "value": 50.0}])
+    before = copy.deepcopy(s)
+    assert migrate_within_last(s) == before
+    assert "within_last" not in json.dumps(s)
+
+
+def test_migrated_old_strategy_validates():
+    from strategies.strategy_manager import migrate_within_last
+    from strategies.strategy_validator import validate_strategy
+    s = _old_style_strategy()
+    s.pop("exit")  # legacy block is not part of the current schema
+    assert not validate_strategy(s)[0]
+    is_valid, errors = validate_strategy(migrate_within_last(s))
+    assert is_valid, errors

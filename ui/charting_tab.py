@@ -119,7 +119,7 @@ def _build_charting_fingerprint(sidebar_config):
                       if k in sidebar_config['params']}
     display_str = json.dumps(display_params, sort_keys=True, default=str)
 
-    overlay_keys = ('show_ichimoku', 'show_bb', 'show_kc', 'show_donchian', 'show_psar',
+    overlay_keys = ('show_ichimoku', 'show_bb', 'show_kc', 'show_donchian', 'show_pc', 'show_psar',
                     'show_rsi', 'show_cmb', 'show_stoch', 'show_adx', 'show_atr',
                     'show_macd', 'show_obv', 'show_accdist', 'show_supertrend', 'show_ema')
     overlays = tuple((k, sidebar_config.get(k)) for k in overlay_keys)
@@ -259,6 +259,7 @@ def render_charting_tab(sidebar_config):
         show_bb=sidebar_config['show_bb'],
         show_kc=sidebar_config['show_kc'],
         show_donchian=sidebar_config.get('show_donchian', False),
+        show_pc=sidebar_config.get('show_pc', False),
         show_psar=sidebar_config.get('show_psar', False),
     )
     if st.session_state.get('_bt_fingerprint') != bt_fingerprint:
@@ -413,22 +414,26 @@ def render_file_uploaders():
 
     with col_data:
         uploaded_file = st.file_uploader(
-            f"{base_tf} OHLC", type=["csv"], key="ohlc_upload", label_visibility="collapsed"
+            f"{base_tf} OHLC", type=["csv", "txt"], key="ohlc_upload", label_visibility="collapsed"
         )
-        st.caption(f"{base_tf} OHLC (.csv)")
+        st.caption(f"{base_tf} OHLC (.txt Kibot / .csv)")
 
         if uploaded_file is not None:
-            df_raw = load_ohlc(uploaded_file)
-            st.session_state["df_raw"] = df_raw
-            st.session_state["data_file_name"] = uploaded_file.name
-            # Apply current aggregation (default = base timeframe, just a copy)
-            from data.loader import resample_ohlc
-            agg_tf = st.session_state.get("_agg_timeframe", base_tf)
-            st.session_state["df_ohlc"] = resample_ohlc(df_raw, agg_tf, base_timeframe=base_tf)
-            # Clear indicator caches
-            for k in ["df_features", "_indicator_params", "_indicator_params_data_fp"]:
-                st.session_state.pop(k, None)
-            st.success(f"Data loaded ({agg_tf})")
+            try:
+                df_raw = load_ohlc(uploaded_file)
+            except ValueError as e:
+                st.error(str(e))
+            else:
+                st.session_state["df_raw"] = df_raw
+                st.session_state["data_file_name"] = uploaded_file.name
+                # Apply current aggregation (default = base timeframe, just a copy)
+                from data.loader import resample_ohlc
+                agg_tf = st.session_state.get("_agg_timeframe", base_tf)
+                st.session_state["df_ohlc"] = resample_ohlc(df_raw, agg_tf, base_timeframe=base_tf)
+                # Clear indicator caches
+                for k in ["df_features", "_indicator_params", "_indicator_params_data_fp"]:
+                    st.session_state.pop(k, None)
+                st.success(f"Data loaded ({agg_tf})")
 
     with col_drm:
         uploaded_drm = st.file_uploader(
@@ -485,6 +490,7 @@ def render_period(period_num, start_dt, end_dt, df_features,
         show_bb=sidebar_config['show_bb'],
         show_kc=sidebar_config['show_kc'],
         show_donchian=sidebar_config.get('show_donchian', False),
+        show_pc=sidebar_config.get('show_pc', False),
         show_psar=sidebar_config.get('show_psar', False),
     )
 
@@ -529,7 +535,7 @@ def render_period(period_num, start_dt, end_dt, df_features,
     panel_kwargs = {k: sidebar_config[k] for k in
                     ['show_rsi', 'show_cmb', 'show_stoch', 'show_adx', 'show_atr',
                      'show_macd', 'show_obv', 'show_accdist', 'show_supertrend', 'show_ema',
-                     'show_donchian', 'show_psar', 'show_willr', 'show_roc', 'show_cci']}
+                     'show_donchian', 'show_pc', 'show_psar', 'show_willr', 'show_roc', 'show_cci']}
 
     chart_kwargs = dict(
         df_slice=df_slice,
@@ -643,6 +649,7 @@ def _aggregate_stats(all_stats):
     import numpy as np
 
     all_trade_pnls = []
+    all_r_dists = []
     all_holding_periods = []
     total_win_pnl = 0.0
     total_lose_pnl = 0.0
@@ -663,6 +670,9 @@ def _aggregate_stats(all_stats):
 
         trade_pnls = attrs.get('trade_pnls_r', [])
         all_trade_pnls.extend(trade_pnls)
+        # Pad to keep r_dists aligned with pnls (0.0 = unusable for MC sizing)
+        r_dists = list(attrs.get('trade_r_distances', []))
+        all_r_dists.extend((r_dists + [0.0] * len(trade_pnls))[:len(trade_pnls)])
         all_holding_periods.extend(attrs.get('trade_holding_periods', []))
 
     total_trades = len(all_trade_pnls)
@@ -720,6 +730,8 @@ def _aggregate_stats(all_stats):
         'max_drawdown': max_drawdown,
         'sqn': sqn,
         'avg_holding_period': avg_holding_period,
+        'trade_pnls_r': [float(p) for p in all_trade_pnls],
+        'trade_r_distances': [float(r) for r in all_r_dists],
     }
 
 

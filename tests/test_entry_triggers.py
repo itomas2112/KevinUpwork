@@ -104,3 +104,16 @@ def test_entry_trigger_on_v_shape(df_v_shape_ready, group, el1, el2, event, comp
         df_v_shape_ready.copy(), strategy
     )
     _validate_result(df_result, stats_df, "Long")
+
+
+class TestTradeRDistancesAttr:
+    """Every entry trigger run exposes one stop distance per trade."""
+
+    @pytest.mark.parametrize("event,value", [("Cross Above", 30.0), ("Cross Below", 70.0)])
+    def test_r_distances_align_with_pnls(self, df_oscillation_ready, event, value):
+        strategy = make_strategy(direction="Long", entry_event=event, entry_value=value)
+        _, stats_df = execute_custom_strategy(df_oscillation_ready.copy(), strategy)
+        pnls = stats_df.attrs["trade_pnls_r"]
+        dists = stats_df.attrs["trade_r_distances"]
+        assert len(dists) == len(pnls)
+        assert all(d >= 0 for d in dists)

@@ -15,7 +15,8 @@ import pandas as pd
 from data.loader import parse_drm_periods
 from data.helpers import (
     PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
-    expand_selection, selection_label,
+    expand_selection, FIXED_SELECTIONS, build_pattern_columns,
+    filter_combos_by_strategy,
 )
 from indicators.calculate_indicators import (
     slice_for_graph, migrate_indicator_settings, strategy_indicator_flags,
@@ -30,6 +31,7 @@ from strategies.wfo_engine import (
 from ui.performance_tab import (
     _build_metrics_table as _perf_build_metrics_table,
     _empty_agg as _perf_empty_agg,
+    PATTERN_COLUMNS_CAPTION,
 )
 from strategies.wfo_worker import init_wfo_worker, run_wfo_batch
 from strategies.first_strategy_numpy import execute_custom_strategy_numpy
@@ -57,6 +59,7 @@ _DEFAULT_INDICATOR_PARAMS = {
     'supertrend_period': 10, 'supertrend_multiplier': 3.0,
     'ema_periods': [10, 20, 50, 200],
     'dc_upper_period': 20, 'dc_mid_period': 20, 'dc_lower_period': 20, 'dc_offset': 0,
+    'pc_upper_period': 1, 'pc_lower_period': 1,
     'psar_af_start': 0.02, 'psar_af_increment': 0.02, 'psar_af_max': 0.20,
     'willr_period': 14,
     'cci_period': 20,
@@ -120,12 +123,242 @@ def render_strategy_testing_tab(sidebar_config):
         strategy_settings = migrate_indicator_settings(strategy_settings)
         indicator_params.update(strategy_settings)
 
-    # --------------------------------------------------
-    # Pattern Selection UI
-    # --------------------------------------------------
-    st.subheader("Pattern Selections")
+    st.markdown("---")
 
-    selections = st.session_state['testing_selections']
+    # ==================================================
+    # Section A: Walk Forward Optimization (Training Set)
+    # ==================================================
+    st.subheader("Walk Forward Optimization (Training Set)")
+
+    if not sidebar_config.get('date_range_applied', False):
+        st.info("Please set a Training Set date range in the sidebar and click **Apply Training Set** to proceed.")
+    else:
+        train_start = sidebar_config.get('global_start_date')
+        train_end = sidebar_config.get('global_end_date')
+        st.caption(f"Training Set: **{train_start}** → **{train_end}**")
+
+        wfo_selections = _render_pattern_selections("wfo_selections", "wfo")
+        st.caption("All DRM periods of the selected patterns are pooled into one "
+                   "training history for optimisation.")
+        wfo_combos = _expand_and_filter(wfo_selections, strategy_patterns)
+        if not wfo_combos:
+            st.warning("No pattern combos match the strategy's defined patterns. "
+                   "The strategy will have no trades with these selections.")
+
+        # Detect which indicator groups the strategy uses
+        used_groups = detect_used_groups(selected_strategy)
+
+        # ---- Fold configuration ----
+        fc1, fc2, fc3 = st.columns([1, 1, 2])
+        with fc1:
+            wfo_folds = st.number_input("Number of Folds", 2, 20, 5, step=1, key="wfo_folds")
+        with fc2:
+            wfo_ratio = st.number_input("Train % per Fold", 50, 95, 80, step=5, key="wfo_ratio")
+
+        folds = split_folds(train_start, train_end, wfo_folds, wfo_ratio / 100.0)
+        try:
+            fold_dur = pd.Timestamp(train_end) + pd.Timedelta(days=1) - pd.Timestamp(train_start)
+            fold_days = fold_dur.total_seconds() / 86400 / wfo_folds
+            train_days = int(fold_days * wfo_ratio / 100)
+            test_days = int(fold_days * (100 - wfo_ratio) / 100)
+        except Exception:
+            fold_days = train_days = test_days = 0
+        st.caption(f"Fold size: **{int(fold_days)}** days | "
+                   f"Train: **{train_days}** days | "
+                   f"Test: **{test_days}** days")
+
+        # ---- Parameter ranges (only used groups) ----
+        if not used_groups:
+            st.info("Strategy does not reference any optimisable indicators.")
+        else:
+            # Wrapped in @st.fragment so editing param inputs only reruns this
+            # block instead of the entire tab — keeps focus, prevents jumps.
+            _render_wfo_param_section(used_groups, indicator_params, wfo_folds,
+                                      selected_strategy)
+
+            wfo_ranges = st.session_state.get('_wfo_current_ranges', {})
+            grid_size = st.session_state.get('_wfo_current_grid_size', 0)
+            grid_too_large = st.session_state.get('_wfo_grid_too_large', False)
+
+            # ---- Filter & sort ----
+            _render_wfo_filters()
+
+            # ---- Run button ----
+            wfo_fingerprint = json.dumps(
+                {"strategy": selected_strategy, "selections": wfo_selections},
+                sort_keys=True, default=str)
+            wfo_calculate = st.button("Run Walk Forward Optimization", key="wfo_run",
+                                      type="primary", disabled=grid_too_large)
+
+            # Invalidate cache if strategy or this section's patterns changed
+            wfo_cache = st.session_state.get('_wfo_cached_results')
+            if wfo_cache and wfo_cache.get('_strategy_fingerprint') != wfo_fingerprint:
+                st.session_state.pop('_wfo_cached_results', None)
+                wfo_cache = None
+            if wfo_cache and wfo_cache.get('mc_fingerprint') != mc_fingerprint():
+                # Winners were picked with the old MC settings — re-run needed
+                st.session_state.pop('_wfo_cached_results', None)
+                wfo_cache = None
+                st.info("Instrument / MC settings changed since the last Walk Forward "
+                        "run — results cleared. Run it again to use the new settings.")
+
+            if wfo_calculate:
+                _run_wfo(
+                    df_key, indicator_params, selected_strategy, strategy_name,
+                    train_start, train_end, wfo_combos, drm_bullish, drm_bearish,
+                    wfo_folds, wfo_ratio / 100.0, used_groups, wfo_ranges, grid_size,
+                    fingerprint=wfo_fingerprint,
+                )
+            elif wfo_cache:
+                _display_wfo_results(wfo_cache)
+
+    st.markdown("---")
+
+    # ==================================================
+    # Section B: Simple Optimization (80/20 split of training set)
+    # ==================================================
+    st.subheader("Simple Optimization")
+    st.caption("Splits the training set 80% in-sample / 20% out-of-sample. "
+               "Runs every parameter combo on the in-sample period; shows the "
+               "top 10 by your selected sort metric, with both in-sample and "
+               "out-of-sample stats per candidate.")
+
+    if not sidebar_config.get('date_range_applied', False):
+        st.info("Set a Training Set date range in the sidebar and click "
+                "**Apply Training Set** to use Simple Optimization.")
+    else:
+        sopt_train_start = sidebar_config.get('global_start_date')
+        sopt_train_end = sidebar_config.get('global_end_date')
+        # Compute the 80/20 split
+        try:
+            train_ts = pd.Timestamp(sopt_train_start)
+            test_ts = pd.Timestamp(sopt_train_end) + pd.Timedelta(days=1)
+            duration = test_ts - train_ts
+            split_ts = train_ts + duration * 0.8
+            sopt_in_end = split_ts
+            sopt_oos_start = split_ts
+            sopt_in_start = train_ts
+            sopt_oos_end = test_ts
+            st.caption(
+                f"In-sample (80%): **{sopt_in_start.date()}** → **{(sopt_in_end - pd.Timedelta(seconds=1)).date()}** | "
+                f"Out-of-sample (20%): **{sopt_oos_start.date()}** → **{(sopt_oos_end - pd.Timedelta(seconds=1)).date()}**"
+            )
+        except Exception as e:
+            st.error(f"Could not compute 80/20 split: {e}")
+            sopt_in_start = sopt_in_end = sopt_oos_start = sopt_oos_end = None
+
+        sopt_selections = _render_pattern_selections("sopt_selections", "sopt")
+        st.caption("All DRM periods of the selected patterns are pooled into one "
+                   "training history for optimisation.")
+        sopt_combos = _expand_and_filter(sopt_selections, strategy_patterns)
+        if not sopt_combos:
+            st.warning("No pattern combos match the strategy's defined patterns. "
+                   "The strategy will have no trades with these selections.")
+        sopt_fingerprint = json.dumps(
+            {"strategy": selected_strategy, "selections": sopt_selections},
+            sort_keys=True, default=str)
+
+        sopt_used_groups = detect_used_groups(selected_strategy)
+
+        if not sopt_used_groups:
+            st.info("Strategy does not reference any optimisable indicators or values.")
+        elif sopt_in_start is not None:
+            # Param ranges (fragment, independent prefix from WFO)
+            _render_wfo_param_section(sopt_used_groups, indicator_params, 1,
+                                      selected_strategy, key_prefix="sopt")
+
+            sopt_ranges = st.session_state.get('_sopt_current_ranges', {})
+            sopt_grid_size = st.session_state.get('_sopt_current_grid_size', 0)
+            sopt_grid_too_large = st.session_state.get('_sopt_grid_too_large', False)
+
+            # Filter & sort UI (same metric set as WFO/Grid Search)
+            _render_wfo_filters(key_prefix="sopt")
+
+            sopt_calc = st.button("Run Simple Optimization", key="sopt_run",
+                                   type="primary", disabled=sopt_grid_too_large)
+
+            sopt_cache = st.session_state.get('_sopt_cached_results')
+            if sopt_cache and sopt_cache.get('_strategy_fingerprint') != sopt_fingerprint:
+                st.session_state.pop('_sopt_cached_results', None)
+                sopt_cache = None
+            if sopt_cache and sopt_cache.get('mc_fingerprint') != mc_fingerprint():
+                # Top-N was picked with the old MC settings — re-run needed
+                st.session_state.pop('_sopt_cached_results', None)
+                sopt_cache = None
+                st.info("Instrument / MC settings changed since the last Simple "
+                        "Optimization run — results cleared. Run it again to use the new settings.")
+
+            if sopt_calc:
+                _run_simple_opt(
+                    df_key, indicator_params, selected_strategy, strategy_name,
+                    sopt_in_start, sopt_in_end, sopt_oos_start, sopt_oos_end,
+                    sopt_combos, drm_bullish, drm_bearish,
+                    sopt_used_groups, sopt_ranges, sopt_grid_size,
+                    fingerprint=sopt_fingerprint,
+                )
+            elif sopt_cache:
+                _display_simple_opt_results(sopt_cache)
+
+    st.markdown("---")
+
+    # ==================================================
+    # Section C: Test Set (one-shot)
+    # ==================================================
+    st.subheader("Test Set")
+
+    if not sidebar_config.get('test_set_applied', False):
+        st.info("Please set a Test Set date range in the sidebar and click **Apply Test Set** to proceed.")
+    else:
+        test_start = sidebar_config.get('test_start_date')
+        test_end = sidebar_config.get('test_end_date')
+        st.caption(f"Test Set: **{test_start}** → **{test_end}**")
+
+        st.caption("All Patterns, All Bullish, All Bearish and Global are always shown; "
+                   "the rows below add one column each (Global aggregates them).")
+        test_selections = _render_pattern_selections("test_selections", "test")
+        # The Test Set always runs every pattern combo (filtered by the
+        # strategy's own patterns); the rows only add columns.
+        test_combos = _expand_and_filter([FIXED_SELECTIONS["All Patterns"]], strategy_patterns)
+        if not test_combos:
+            st.warning("No pattern combos match the strategy's defined patterns. "
+                       "The strategy will have no trades.")
+        test_fingerprint = json.dumps(
+            {"strategy": selected_strategy, "selections": test_selections},
+            sort_keys=True, default=str)
+
+        test_calculate = st.button("Calculate", key="test_calculate", type="primary")
+
+        # Invalidate cache if strategy or this section's patterns changed
+        test_cache = st.session_state.get('_test_cached_results')
+        if test_cache and (test_cache.get('_strategy_fingerprint') != test_fingerprint
+                           or 'columns' not in test_cache):
+            st.session_state.pop('_test_cached_results', None)
+            test_cache = None
+
+        if test_calculate:
+            _run_test_set(
+                df_key, indicator_params, selected_strategy, strategy_name,
+                test_start, test_end, test_combos, test_selections,
+                strategy_patterns, drm_bullish, drm_bearish,
+                fingerprint=test_fingerprint,
+            )
+        elif test_cache:
+            _display_test_set_results(test_cache)
+        else:
+            st.info("Click **Calculate** to run the strategy on the Test Set.")
+
+
+# ------------------------------------------------------------------
+# Pattern selection UI (one block per section)
+# ------------------------------------------------------------------
+
+def _render_pattern_selections(state_key, key_prefix, title="Pattern Selections"):
+    """Render the selection rows stored in st.session_state[state_key].
+    Widget keys are namespaced by key_prefix. Returns the (mutated) list."""
+    st.markdown(f"**{title}**")
+
+    gen_key = f"_{key_prefix}_sel_gen"
+    selections = st.session_state[state_key]
 
     # Column headers
     h_mode, h_ptype, h_primary, h_secondary, h_del = st.columns([2, 2, 2, 2, 0.5])
@@ -135,13 +368,13 @@ def render_strategy_testing_tab(sidebar_config):
     h_secondary.markdown("**Secondary**")
 
     # Generation counter to guarantee fresh widget keys after deletions
-    gen = st.session_state.get("_testing_sel_gen", 0)
+    gen = st.session_state.get(gen_key, 0)
 
     rows_to_remove = []
     for idx, sel in enumerate(selections):
         c_mode, c_ptype, c_primary, c_secondary, c_delete = st.columns([2, 2, 2, 2, 0.5])
 
-        kp = f"testing_sel_g{gen}_{idx}"
+        kp = f"{key_prefix}_sel_g{gen}_{idx}"
 
         with c_mode:
             current_mode = sel.get("mode", "All Patterns")
@@ -211,21 +444,21 @@ def render_strategy_testing_tab(sidebar_config):
     # Remove rows
     if rows_to_remove:
         for idx in sorted(rows_to_remove, reverse=True):
-            st.session_state['testing_selections'].pop(idx)
-        if not st.session_state['testing_selections']:
-            st.session_state['testing_selections'] = [{
+            st.session_state[state_key].pop(idx)
+        if not st.session_state[state_key]:
+            st.session_state[state_key] = [{
                 "mode": "All Patterns",
                 "pattern_type": "Bullish",
                 "primary": None,
                 "secondary": None,
             }]
         # Bump generation so all widget keys are fresh on next render
-        st.session_state["_testing_sel_gen"] = gen + 1
+        st.session_state[gen_key] = gen + 1
         st.rerun()
 
     # Add selection button
-    if st.button("+ Add Selection", key="testing_add_selection"):
-        st.session_state['testing_selections'].append({
+    if st.button("+ Add Selection", key=f"{key_prefix}_add_selection"):
+        st.session_state[state_key].append({
             "mode": "All Patterns",
             "pattern_type": "Bullish",
             "primary": None,
@@ -233,187 +466,7 @@ def render_strategy_testing_tab(sidebar_config):
         })
         st.rerun()
 
-    # --------------------------------------------------
-    # Expand selections and apply strategy pattern filter
-    # --------------------------------------------------
-    all_combos = _expand_and_filter(selections, strategy_patterns)
-
-    if not all_combos:
-        st.warning("No pattern combos match the strategy's defined patterns. "
-                    "The strategy will have no trades with these selections.")
-
-    st.markdown("---")
-
-    # ==================================================
-    # Section A: Walk Forward Optimization (Training Set)
-    # ==================================================
-    st.subheader("Walk Forward Optimization (Training Set)")
-
-    if not sidebar_config.get('date_range_applied', False):
-        st.info("Please set a Training Set date range in the sidebar and click **Apply Training Set** to proceed.")
-    else:
-        train_start = sidebar_config.get('global_start_date')
-        train_end = sidebar_config.get('global_end_date')
-        st.caption(f"Training Set: **{train_start}** → **{train_end}**")
-
-        # Detect which indicator groups the strategy uses
-        used_groups = detect_used_groups(selected_strategy)
-
-        # ---- Fold configuration ----
-        fc1, fc2, fc3 = st.columns([1, 1, 2])
-        with fc1:
-            wfo_folds = st.number_input("Number of Folds", 2, 20, 5, step=1, key="wfo_folds")
-        with fc2:
-            wfo_ratio = st.number_input("Train % per Fold", 50, 95, 80, step=5, key="wfo_ratio")
-
-        folds = split_folds(train_start, train_end, wfo_folds, wfo_ratio / 100.0)
-        try:
-            fold_dur = pd.Timestamp(train_end) + pd.Timedelta(days=1) - pd.Timestamp(train_start)
-            fold_days = fold_dur.total_seconds() / 86400 / wfo_folds
-            train_days = int(fold_days * wfo_ratio / 100)
-            test_days = int(fold_days * (100 - wfo_ratio) / 100)
-        except Exception:
-            fold_days = train_days = test_days = 0
-        st.caption(f"Fold size: **{int(fold_days)}** days | "
-                   f"Train: **{train_days}** days | "
-                   f"Test: **{test_days}** days")
-
-        # ---- Parameter ranges (only used groups) ----
-        if not used_groups:
-            st.info("Strategy does not reference any optimisable indicators.")
-        else:
-            # Wrapped in @st.fragment so editing param inputs only reruns this
-            # block instead of the entire tab — keeps focus, prevents jumps.
-            _render_wfo_param_section(used_groups, indicator_params, wfo_folds,
-                                      selected_strategy)
-
-            wfo_ranges = st.session_state.get('_wfo_current_ranges', {})
-            grid_size = st.session_state.get('_wfo_current_grid_size', 0)
-            grid_too_large = st.session_state.get('_wfo_grid_too_large', False)
-
-            # ---- Filter & sort ----
-            _render_wfo_filters()
-
-            # ---- Run button ----
-            strategy_fingerprint = json.dumps(selected_strategy, sort_keys=True, default=str)
-            wfo_calculate = st.button("Run Walk Forward Optimization", key="wfo_run",
-                                      type="primary", disabled=grid_too_large)
-
-            # Invalidate cache if strategy changed
-            wfo_cache = st.session_state.get('_wfo_cached_results')
-            if wfo_cache and wfo_cache.get('_strategy_fingerprint') != strategy_fingerprint:
-                st.session_state.pop('_wfo_cached_results', None)
-                wfo_cache = None
-
-            if wfo_calculate:
-                _run_wfo(
-                    df_key, indicator_params, selected_strategy, strategy_name,
-                    train_start, train_end, all_combos, drm_bullish, drm_bearish,
-                    wfo_folds, wfo_ratio / 100.0, used_groups, wfo_ranges, grid_size,
-                )
-            elif wfo_cache:
-                _display_wfo_results(wfo_cache)
-
-    st.markdown("---")
-
-    # ==================================================
-    # Section B: Simple Optimization (80/20 split of training set)
-    # ==================================================
-    st.subheader("Simple Optimization")
-    st.caption("Splits the training set 80% in-sample / 20% out-of-sample. "
-               "Runs every parameter combo on the in-sample period; shows the "
-               "top 10 by your selected sort metric, with both in-sample and "
-               "out-of-sample stats per candidate.")
-
-    if not sidebar_config.get('date_range_applied', False):
-        st.info("Set a Training Set date range in the sidebar and click "
-                "**Apply Training Set** to use Simple Optimization.")
-    else:
-        sopt_train_start = sidebar_config.get('global_start_date')
-        sopt_train_end = sidebar_config.get('global_end_date')
-        # Compute the 80/20 split
-        try:
-            train_ts = pd.Timestamp(sopt_train_start)
-            test_ts = pd.Timestamp(sopt_train_end) + pd.Timedelta(days=1)
-            duration = test_ts - train_ts
-            split_ts = train_ts + duration * 0.8
-            sopt_in_end = split_ts
-            sopt_oos_start = split_ts
-            sopt_in_start = train_ts
-            sopt_oos_end = test_ts
-            st.caption(
-                f"In-sample (80%): **{sopt_in_start.date()}** → **{(sopt_in_end - pd.Timedelta(seconds=1)).date()}** | "
-                f"Out-of-sample (20%): **{sopt_oos_start.date()}** → **{(sopt_oos_end - pd.Timedelta(seconds=1)).date()}**"
-            )
-        except Exception as e:
-            st.error(f"Could not compute 80/20 split: {e}")
-            sopt_in_start = sopt_in_end = sopt_oos_start = sopt_oos_end = None
-
-        sopt_used_groups = detect_used_groups(selected_strategy)
-
-        if not sopt_used_groups:
-            st.info("Strategy does not reference any optimisable indicators or values.")
-        elif sopt_in_start is not None:
-            # Param ranges (fragment, independent prefix from WFO)
-            _render_wfo_param_section(sopt_used_groups, indicator_params, 1,
-                                      selected_strategy, key_prefix="sopt")
-
-            sopt_ranges = st.session_state.get('_sopt_current_ranges', {})
-            sopt_grid_size = st.session_state.get('_sopt_current_grid_size', 0)
-            sopt_grid_too_large = st.session_state.get('_sopt_grid_too_large', False)
-
-            # Filter & sort UI (same metric set as WFO/Grid Search)
-            _render_wfo_filters(key_prefix="sopt")
-
-            sopt_calc = st.button("Run Simple Optimization", key="sopt_run",
-                                   type="primary", disabled=sopt_grid_too_large)
-
-            sopt_cache = st.session_state.get('_sopt_cached_results')
-            if sopt_cache and sopt_cache.get('_strategy_fingerprint') != strategy_fingerprint:
-                st.session_state.pop('_sopt_cached_results', None)
-                sopt_cache = None
-
-            if sopt_calc:
-                _run_simple_opt(
-                    df_key, indicator_params, selected_strategy, strategy_name,
-                    sopt_in_start, sopt_in_end, sopt_oos_start, sopt_oos_end,
-                    all_combos, drm_bullish, drm_bearish,
-                    sopt_used_groups, sopt_ranges, sopt_grid_size,
-                )
-            elif sopt_cache:
-                _display_simple_opt_results(sopt_cache)
-
-    st.markdown("---")
-
-    # ==================================================
-    # Section C: Test Set (one-shot)
-    # ==================================================
-    st.subheader("Test Set")
-
-    if not sidebar_config.get('test_set_applied', False):
-        st.info("Please set a Test Set date range in the sidebar and click **Apply Test Set** to proceed.")
-    else:
-        test_start = sidebar_config.get('test_start_date')
-        test_end = sidebar_config.get('test_end_date')
-        st.caption(f"Test Set: **{test_start}** → **{test_end}**")
-
-        test_calculate = st.button("Calculate", key="test_calculate", type="primary")
-
-        # Invalidate cache if strategy changed
-        test_cache = st.session_state.get('_test_cached_results')
-        if test_cache and test_cache.get('_strategy_fingerprint') != strategy_fingerprint:
-            st.session_state.pop('_test_cached_results', None)
-            test_cache = None
-
-        if test_calculate:
-            _run_test_set(
-                df_key, indicator_params, selected_strategy, strategy_name,
-                test_start, test_end, all_combos, drm_bullish, drm_bearish,
-            )
-        elif test_cache:
-            _display_test_set_results(test_cache)
-        else:
-            st.info("Click **Calculate** to run the strategy on the Test Set.")
+    return selections
 
 
 # ------------------------------------------------------------------
@@ -438,21 +491,9 @@ def _expand_and_filter(selections, strategy_patterns):
                 seen.add(combo)
                 all_combos.append(combo)
 
-    # If strategy has no pattern filter, return all combos
-    if not strategy_patterns:
-        return all_combos
-
-    # Build set of allowed "primary → secondary" strings from strategy
-    allowed = set(strategy_patterns)
-
-    # Filter: only keep combos whose "primary → secondary" is in allowed set
-    filtered = [
-        (ptype, primary, secondary)
-        for ptype, primary, secondary in all_combos
-        if f"{primary} \u2192 {secondary}" in allowed
-    ]
-
-    return filtered
+    # Keep only combos whose "primary → secondary" the strategy defines
+    # (no strategy patterns -> all combos pass)
+    return filter_combos_by_strategy(all_combos, strategy_patterns)
 
 
 # ------------------------------------------------------------------
@@ -465,7 +506,7 @@ def _expand_and_filter(selections, strategy_patterns):
 from ui.grid_search_tab import (
     SORT_METRICS as _GS_SORT_METRICS,
     GS_MC_N_SIMULATIONS, filter_props, passes_thresholds,
-    enrich_aggs_with_mc,
+    enrich_aggs_with_mc, mc_settings, mc_fingerprint, mc_caption_short,
 )
 SORT_METRICS = [m for m in _GS_SORT_METRICS if m[0] != "abs_correlation"]
 _DEFAULT_SORT_KEY = "mc_avg_profit"
@@ -807,7 +848,8 @@ def _render_wfo_filters(key_prefix="wfo"):
 
 def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
              train_start, train_end, all_combos, drm_bullish, drm_bearish,
-             n_folds, train_ratio, used_groups, param_ranges, grid_size):
+             n_folds, train_ratio, used_groups, param_ranges, grid_size,
+             fingerprint=None):
     """Run the full Walk Forward Optimization.
 
     Performance: indicators are calculated ONCE with base params.  Workers
@@ -854,8 +896,8 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     sort_key = next((k for k, l in SORT_METRICS if l == sort_label), _DEFAULT_SORT_KEY)
     sort_desc = st.session_state.get("wfo_sort_order", "Highest to Lowest") == "Highest to Lowest"
 
-    # MC enrichment uses the same balance as Grid Search
-    mc_balance = st.session_state.get('mc_starting_balance', 10000.0)
+    # MC enrichment uses the same instrument / balance / horizon as Grid Search
+    mc_cfg = mc_settings()
 
     # Pre-compute indicators ONCE with the base strategy params
     progress = st.progress(0, text="Calculating base indicators...")
@@ -866,7 +908,7 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     batch_size = max(1, math.ceil(len(param_grid) / (n_workers * 4)))
 
     total_steps = n_folds + 1  # optimisation steps + final evaluation
-    strategy_fingerprint = json.dumps(selected_strategy, sort_keys=True, default=str)
+    strategy_fingerprint = fingerprint or json.dumps(selected_strategy, sort_keys=True, default=str)
 
     winning_params = []  # one per OOS step
 
@@ -914,7 +956,9 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
         if valid:
             enrich_aggs_with_mc(
                 [agg for _, _, agg in valid],
-                mc_balance, GS_MC_N_SIMULATIONS, target_dd=5.0,
+                mc_cfg['balance'], GS_MC_N_SIMULATIONS, target_dd=5.0,
+                point_value=mc_cfg['point_value'], margin=mc_cfg['margin'],
+                trades_per_sim=mc_cfg['trades_per_sim'],
                 progress_label=f"OOS {oos_idx+1}/{n_folds}: Computing MC stats")
 
         # Apply filters using grid-search threshold semantics (Min/Max per metric)
@@ -999,6 +1043,7 @@ def _run_wfo(df_key, indicator_params, selected_strategy, strategy_name,
     cache = {
         "strategy_name": strategy_name,
         "_strategy_fingerprint": strategy_fingerprint,
+        "mc_fingerprint": mc_fingerprint(),
         "n_folds": n_folds,
         "winning_params": winning_params,
         "final_results": final_results,
@@ -1095,6 +1140,7 @@ def _display_wfo_results(cache):
 
     perf_table = _build_metrics_table(results_dict)
     st.table(perf_table)
+    st.caption(mc_caption_short())
     _copy_to_clipboard(perf_table.to_csv(sep='\t', header=False, index=False), key="wfo_copy")
 
 
@@ -1108,7 +1154,7 @@ SIMPLE_OPT_TOP_N = 10
 def _run_simple_opt(df_key, indicator_params, selected_strategy, strategy_name,
                     in_start, in_end, oos_start, oos_end,
                     all_combos, drm_bullish, drm_bearish,
-                    used_groups, param_ranges, grid_size):
+                    used_groups, param_ranges, grid_size, fingerprint=None):
     """Single 80/20 optimisation: every combo runs on in-sample, top N by
     sort metric runs additionally on out-of-sample. Caches both result sets.
     """
@@ -1145,14 +1191,14 @@ def _run_simple_opt(df_key, indicator_params, selected_strategy, strategy_name,
     sort_key = next((k for k, l in SORT_METRICS if l == sort_label), _DEFAULT_SORT_KEY)
     sort_desc = st.session_state.get("sopt_sort_order", "Highest to Lowest") == "Highest to Lowest"
 
-    mc_balance = st.session_state.get('mc_starting_balance', 10000.0)
+    mc_cfg = mc_settings()
 
     progress = st.progress(0, text="Calculating base indicators...")
     df_featured = calculate_indicators(df_ohlc, **indicator_params)
 
     n_workers = max(1, multiprocessing.cpu_count() - 1)
     batch_size = max(1, math.ceil(len(param_grid) / (n_workers * 4)))
-    strategy_fingerprint = json.dumps(selected_strategy, sort_keys=True, default=str)
+    strategy_fingerprint = fingerprint or json.dumps(selected_strategy, sort_keys=True, default=str)
 
     # ---- In-sample run ----
     in_ranges = [(in_start, in_end)]
@@ -1188,7 +1234,9 @@ def _run_simple_opt(df_key, indicator_params, selected_strategy, strategy_name,
     progress.progress(0.5, text=f"Computing MC stats for {len(valid):,} candidates...")
     enrich_aggs_with_mc(
         [agg for _, _, agg in valid],
-        mc_balance, GS_MC_N_SIMULATIONS, target_dd=5.0,
+        mc_cfg['balance'], GS_MC_N_SIMULATIONS, target_dd=5.0,
+        point_value=mc_cfg['point_value'], margin=mc_cfg['margin'],
+        trades_per_sim=mc_cfg['trades_per_sim'],
         progress_label="Simple Opt: in-sample MC")
 
     # Filter + sort + take top N
@@ -1225,7 +1273,9 @@ def _run_simple_opt(df_key, indicator_params, selected_strategy, strategy_name,
         if oos_by_idx:
             enrich_aggs_with_mc(
                 list(oos_by_idx.values()),
-                mc_balance, GS_MC_N_SIMULATIONS, target_dd=5.0,
+                mc_cfg['balance'], GS_MC_N_SIMULATIONS, target_dd=5.0,
+                point_value=mc_cfg['point_value'], margin=mc_cfg['margin'],
+                trades_per_sim=mc_cfg['trades_per_sim'],
                 progress_label="Simple Opt: OOS MC")
     else:
         oos_by_idx = {}
@@ -1240,6 +1290,7 @@ def _run_simple_opt(df_key, indicator_params, selected_strategy, strategy_name,
     cache = {
         "strategy_name": strategy_name,
         "_strategy_fingerprint": strategy_fingerprint,
+        "mc_fingerprint": mc_fingerprint(),
         "in_start": in_start, "in_end": in_end,
         "oos_start": oos_start, "oos_end": oos_end,
         "total_combos": len(param_grid),
@@ -1293,6 +1344,7 @@ def _display_simple_opt_results(cache):
 
     perf_table = _build_metrics_table(results_dict)
     st.table(perf_table)
+    st.caption(mc_caption_short())
     _copy_to_clipboard(perf_table.to_csv(sep='\t', header=False, index=False),
                        key="sopt_perf_copy")
 
@@ -1361,9 +1413,33 @@ def _display_simple_opt_results(cache):
 # Test Set (one-shot)
 # ------------------------------------------------------------------
 
+def build_selection_results(selections, strategy_patterns, stats_by_combo,
+                            aggregate_fn, empty_fn):
+    """Thin wrapper around data.helpers.build_pattern_columns.
+
+    Returns (global_agg, sel_results): the "Global" column (union of the
+    selections' combos, each unique combo counted once) and an OrderedDict of
+    the per-selection columns only (the fixed All Patterns / All Bullish /
+    All Bearish columns are stripped). Labels are de-duplicated against the
+    fixed column names and each other ("X", "X (2)", ...). A selection whose
+    combos are all filtered out by strategy_patterns gets empty_fn()."""
+    columns = build_pattern_columns(selections, strategy_patterns, stats_by_combo,
+                                    aggregate_fn, empty_fn)
+    sel_results = OrderedDict(
+        (label, agg) for label, agg in columns.items()
+        if label not in FIXED_SELECTIONS and label != "Global")
+    return columns["Global"], sel_results
+
+
 def _run_test_set(df_key, indicator_params, selected_strategy, strategy_name,
-                  date_start, date_end, all_combos, drm_bullish, drm_bearish):
-    """Run strategy once on the full test set date range (no folds)."""
+                  date_start, date_end, all_combos, selections, strategy_patterns,
+                  drm_bullish, drm_bearish, fingerprint=None):
+    """Run strategy once on the full test set date range (no folds).
+
+    all_combos is every pattern combo (filtered by the strategy's patterns);
+    each combo runs once, then the results are aggregated into the fixed
+    columns (All Patterns / All Bullish / All Bearish / Global) plus one
+    column per selection row."""
 
     df_full = _get_or_calculate(
         df_key, '_test_features', '_test_params', indicator_params,
@@ -1376,7 +1452,7 @@ def _run_test_set(df_key, indicator_params, selected_strategy, strategy_name,
 
     progress_bar = st.progress(0)
 
-    all_stats = _run_on_date_range(
+    stats_by_combo = _run_on_date_range(
         df_full, selected_strategy, all_combos,
         drm_bullish, drm_bearish,
         pd.Timestamp(date_start),
@@ -1386,29 +1462,33 @@ def _run_test_set(df_key, indicator_params, selected_strategy, strategy_name,
 
     progress_bar.empty()
 
-    if all_stats:
-        agg = _aggregate_stats(all_stats)
-    else:
-        agg = _empty_agg()
+    columns = build_pattern_columns(
+        selections, strategy_patterns, stats_by_combo, _aggregate_stats, _empty_agg,
+    )
 
     cache = {
         'strategy_name': strategy_name,
-        '_strategy_fingerprint': json.dumps(selected_strategy, sort_keys=True, default=str),
-        'agg': agg,
+        '_strategy_fingerprint': fingerprint or json.dumps(selected_strategy, sort_keys=True, default=str),
+        'columns': columns,
+        'labels': list(columns.keys()),
     }
     st.session_state['_test_cached_results'] = cache
     _display_test_set_results(cache)
 
 
 def _display_test_set_results(cache):
-    """Display test set results (single result, no folds)."""
+    """Display test set results: the fixed pattern columns plus one column
+    per selection row."""
     strategy_name = cache['strategy_name']
-    agg = cache['agg']
+    columns = cache['columns']
+    labels = cache.get('labels', list(columns.keys()))
 
-    st.caption(f"Strategy: **{strategy_name}**")
+    st.caption(f"Strategy: **{strategy_name}** | Columns: {', '.join(labels)}")
 
-    table = _build_metrics_table({"Result": agg})
+    table = _build_metrics_table(columns)
     st.table(table)
+    st.caption(PATTERN_COLUMNS_CAPTION)
+    st.caption(mc_caption_short())
 
     _copy_to_clipboard(table.to_csv(sep='\t', header=False, index=False), key="test_download")
 
@@ -1438,13 +1518,14 @@ def _run_on_date_range(df_full, selected_strategy, all_combos,
                        progress_callback=None):
     """
     Run strategy on all DRM periods whose start date falls within [range_start, range_end).
-    Returns list of stats dicts for aggregation.
+    Returns OrderedDict combo_key -> list of stats dicts (one per period).
     """
-    all_stats = []
+    stats_by_combo = OrderedDict()
     total = len(all_combos)
     ind_flags = strategy_indicator_flags(selected_strategy)
 
     for idx, (pattern_type, primary, secondary) in enumerate(all_combos):
+        combo_stats = stats_by_combo.setdefault((pattern_type, primary, secondary), [])
         drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
         if drm_df is None:
             if progress_callback and total > 0:
@@ -1466,12 +1547,12 @@ def _run_on_date_range(df_full, selected_strategy, all_combos,
                 continue
 
             _, stats = execute_custom_strategy(df_slice, selected_strategy, period_start, period_end)
-            all_stats.append(stats)
+            combo_stats.append(stats)
 
         if progress_callback and total > 0:
             progress_callback((idx + 1) / total)
 
-    return all_stats
+    return stats_by_combo
 
 
 # Share the metrics table + empty-agg definitions with Grid Search and the

@@ -13,7 +13,9 @@ from collections import OrderedDict
 
 from data.loader import parse_drm_periods
 from data.helpers import (PRIMARY_SECONDARY_MAP, PRIMARY_LIST,
-                          ALL_UNIQUE_SECONDARIES, expand_selection, selection_label)
+                          ALL_UNIQUE_SECONDARIES, selection_label,
+                          FIXED_COLUMNS, FIXED_SELECTIONS, all_combos,
+                          build_pattern_columns, unique_label)
 from indicators.calculate_indicators import slice_for_graph, migrate_indicator_settings
 from strategies.group_set_manager import (
     load_group_sets, save_group_set, update_group_set, delete_group_set,
@@ -24,17 +26,20 @@ from strategies.group_set_manager import (
     candidate_groups,
     candidate_wfo_groups, group_variant_combos, offset_label,
     INDICATOR_PRIMARY_PARAM,
+    generate_candidates, validate_generator, count_candidates,
 )
 from ui.charting_tab import _get_or_calculate
 from ui.performance_tab import (_DEFAULT_INDICATOR_PARAMS, SELECTION_MODES,
-                                 _build_metrics_table, _copy_to_clipboard, _empty_agg)
+                                 _build_metrics_table, _copy_to_clipboard, _empty_agg,
+                                 _new_user_selection, PATTERN_COLUMNS_CAPTION)
 from ui.grid_search_helpers import (
     format_candidate_label, format_run_label, generate_run_configs,
-    collect_gs_indicator_settings,
+    _ema_periods_for_strategy, result_strategy_for_variant,
+    make_shortlist_entry, shortlist_has, shortlist_add, shortlist_remove,
+    shortlist_strategy_for_save,
 )
 from config.constants import (GROUP_NAMES, EVENT_TYPES, STOP_EVENT_TYPES,
-                               CONDITION_OPERATORS, get_group_elements,
-                               R_PROFIT_LOSS_ELEMENTS, ATR_TARGET_ELEMENTS)
+                               CONDITION_OPERATORS, get_group_elements)
 
 # Search component types (what part of the strategy to swap)
 SEARCH_COMPONENTS = [
@@ -113,26 +118,172 @@ def passes_thresholds(agg, thresholds):
     return True
 
 
-def enrich_aggs_with_mc(agg_dicts, balance, n_sims, target_dd=5.0,
-                        progress_label="Computing Monte Carlo stats"):
-    """Enrich a flat list of agg dicts with `mc_avg_profit` (in-place).
+def selection_labels_for(selections):
+    """Unique, ordered labels for the user-added pattern-selection rows.
 
-    Uses each agg's own `num_trades` as trades/sim. Spawns a multiprocessing
-    pool; falls back to serial execution if pool setup fails. Aggs with
-    num_trades == 0 are filled with 0.0 without entering the pool.
+    Mirrors the user-column labels produced by build_pattern_columns: labels
+    are de-duplicated against the fixed columns and each other
+    ("X", "X (2)", ...)."""
+    labels = []
+    for sel in selections:
+        labels.append(unique_label(selection_label(sel), set(FIXED_COLUMNS) | set(labels)))
+    return labels
+
+
+def scope_agg(all_patterns_agg, columns, scope):
+    """Return the agg dict that filters/sort/table should use for `scope`.
+
+    `columns` is the build_pattern_columns OrderedDict (All Patterns, All
+    Bullish, All Bearish, Global, user rows). An unknown scope (e.g. stale
+    cache) -> all_patterns_agg. Otherwise the column's agg, with correlation
+    copied from All Patterns because correlation is only computed there.
+    """
+    agg = (columns or {}).get(scope, all_patterns_agg)
+    if agg is all_patterns_agg:
+        return all_patterns_agg
+    agg = dict(agg)
+    agg.setdefault("correlation", all_patterns_agg.get("correlation"))
+    agg.setdefault("abs_correlation", all_patterns_agg.get("abs_correlation"))
+    return agg
+
+
+def filter_and_sort_results(results, thresholds, sort_key, sort_descending,
+                            scope="All Patterns"):
+    """Filter and sort grid search results on the metrics of `scope`.
+
+    results: list of (label, all_patterns_agg, columns, strategy).
+    Returns a list of (label, metric_agg, all_patterns_agg, columns, strategy)
+    where metric_agg is scope_agg(all_patterns_agg, columns, scope). None sort
+    values go to the bottom regardless of direction.
+    """
+    filtered = []
+    for label, all_patterns_agg, columns, strategy in results:
+        metric_agg = scope_agg(all_patterns_agg, columns, scope)
+        if passes_thresholds(metric_agg, thresholds):
+            filtered.append((label, metric_agg, all_patterns_agg, columns, strategy))
+
+    def _sort_val(x):
+        v = x[1].get(sort_key)
+        if v is None:
+            return float('inf') if not sort_descending else float('-inf')
+        return v
+    filtered.sort(key=_sort_val, reverse=sort_descending)
+    return filtered
+
+
+def mc_settings():
+    """Current MC sizing settings from the sidebar Instrument section."""
+    from config.constants import (DEFAULT_INSTRUMENT, MC_DEFAULT_BALANCE,
+                                  MC_DEFAULT_TRADES_PER_SIM, INSTRUMENTS,
+                                  instrument_point_value, instrument_margin)
+    symbol = st.session_state.get('instrument', DEFAULT_INSTRUMENT)
+    if symbol not in INSTRUMENTS:
+        symbol = DEFAULT_INSTRUMENT
+    return {
+        'instrument': symbol,
+        'point_value': instrument_point_value(symbol),
+        'margin': instrument_margin(symbol),
+        'balance': float(st.session_state.get('mc_starting_balance', MC_DEFAULT_BALANCE)),
+        'trades_per_sim': int(st.session_state.get('mc_trades_per_sim', MC_DEFAULT_TRADES_PER_SIM)),
+    }
+
+
+def mc_fingerprint():
+    """(instrument, balance, trades_per_sim) — MC results are stale when this changes."""
+    cfg = mc_settings()
+    return (cfg['instrument'], cfg['balance'], cfg['trades_per_sim'])
+
+
+def mc_caption(n_sims=None):
+    """Caption describing how 'MC Avg Profit @ 5% DD' is computed."""
+    cfg = mc_settings()
+    n_sims = GS_MC_N_SIMULATIONS if n_sims is None else n_sims
+    return (f"MC Avg Profit @ 5% Avg Max DD: {cfg['instrument']}, ${cfg['balance']:,.0f} start, "
+            f"{cfg['trades_per_sim']} trades/sim bootstrapped from each candidate's trades, "
+            f"{n_sims:,} sims. Trades 1–30 risk 1% (0.75–1.25% after whole-contract rounding, "
+            f"trade skipped if no size fits); every 200 trades thereafter the risk % is "
+            f"re-assessed from the trades so far (30-sim MC of the next block) to target 5% "
+            f"avg max DD. "
+            f"Contracts capped by margin (balance ÷ ${cfg['margin']:,.0f}) and re-sized after "
+            f"every trade. '(cap)' = most re-assessed blocks ran at full margin.")
+
+
+def mc_caption_short():
+    """One-line version of mc_caption for the Strategy Testing / Performance tabs."""
+    cfg = mc_settings()
+    return (f"MC Avg Profit @ 5% Avg Max DD ({cfg['instrument']}, ${cfg['balance']:,.0f}, "
+            f"{cfg['trades_per_sim']} trades): trades 1–30 risk 1% (0.75–1.25%, else skipped), "
+            f"then every 200 trades the risk % is re-assessed (30-sim MC of the next block) "
+            f"to target 5% avg max DD; margin-capped. "
+            f"'(cap)' = mostly full margin, '(skip x%)' = share of first-30 trades skipped.")
+
+
+def format_mc_value(agg):
+    """'$12,345' with ' (cap)' when most re-assessed blocks ran at full margin,
+    and ' (skip x%)' when more than 10% of the 1%-phase trades were skipped
+    because no whole-contract size fit the 0.75–1.25% band."""
+    text = f"${agg.get('mc_avg_profit', 0) or 0:,.0f}"
+    if agg.get('mc_margin_capped'):
+        text += " (cap)"
+    skipped = agg.get('mc_initial_skipped') or 0.0
+    if skipped > 0.10:
+        text += f" (skip {skipped:.0%})"
+    return text
+
+
+def _mc_tasks(agg_dicts):
+    """Fill trade-less aggs with 0.0 / False; return (idx, pnls_r, r_dists) tasks."""
+    tasks = []
+    for idx, agg in enumerate(agg_dicts):
+        pnls = list(agg.get('trade_pnls_r') or [])
+        if not pnls:
+            agg['mc_avg_profit'] = 0.0
+            agg['mc_margin_capped'] = False
+            agg['mc_initial_skipped'] = 0.0
+            continue
+        tasks.append((idx, pnls, list(agg.get('trade_r_distances') or [])))
+    return tasks
+
+
+def _enrich_mc_serial(agg_dicts, balance, n_sims, target_dd, point_value, margin,
+                      trades_per_sim, tasks=None):
+    """Serial MC enrichment (no pool, no streamlit). Mutates agg_dicts in place."""
+    from strategies.monte_carlo_core import mc_phased_profit
+    if tasks is None:
+        tasks = _mc_tasks(agg_dicts)
+    for idx, pnls, r_dists in tasks:
+        res = mc_phased_profit(
+            pnls, r_dists, balance, point_value, margin,
+            trades_per_sim=trades_per_sim, n_sims=n_sims)
+        agg_dicts[idx]['mc_avg_profit'] = res['avg_profit']
+        agg_dicts[idx]['mc_margin_capped'] = res['margin_capped']
+        agg_dicts[idx]['mc_initial_skipped'] = res['initial_skipped_fraction']
+
+
+def enrich_aggs_with_mc(agg_dicts, balance, n_sims, target_dd=5.0,
+                        point_value=None, margin=None, trades_per_sim=None,
+                        progress_label="Computing Monte Carlo stats"):
+    """Enrich a flat list of agg dicts with `mc_avg_profit`,
+    `mc_margin_capped` and `mc_initial_skipped` (in-place).
+
+    Bootstraps each agg's own `trade_pnls_r` / `trade_r_distances` into a
+    dollar-based simulation of `trades_per_sim` trades, sized in whole
+    contracts from each trade's stop distance and capped by margin, with
+    phased risk (mc_phased_profit: 1% for trades 1–30, re-assessed every 200 trades thereafter).
+    point_value / margin / trades_per_sim default to the sidebar Instrument
+    settings. Spawns a multiprocessing pool; falls back to serial execution
+    if pool setup fails. Aggs without trades get 0.0 / False without
+    entering the pool.
     """
     from strategies.mc_enrichment_worker import init_worker as mc_init, enrich_one
-    from strategies.monte_carlo_core import compute_mc_avg_profit_at_target_dd
 
-    tasks = []  # (idx, win_pct, rr_ratio, num_trades)
-    for idx, agg in enumerate(agg_dicts):
-        n_trades = agg.get('num_trades', 0)
-        if n_trades == 0:
-            agg['mc_avg_profit'] = 0.0
-            continue
-        tasks.append((idx, agg.get('win_pct', 0),
-                      agg.get('rr_ratio', 0), n_trades))
+    if point_value is None or margin is None or trades_per_sim is None:
+        cfg = mc_settings()
+        point_value = cfg['point_value'] if point_value is None else point_value
+        margin = cfg['margin'] if margin is None else margin
+        trades_per_sim = cfg['trades_per_sim'] if trades_per_sim is None else trades_per_sim
 
+    tasks = _mc_tasks(agg_dicts)
     if not tasks:
         return
 
@@ -143,20 +294,21 @@ def enrich_aggs_with_mc(agg_dicts, balance, n_sims, target_dd=5.0,
         with multiprocessing.Pool(
             processes=n_workers,
             initializer=mc_init,
-            initargs=(balance, n_sims, target_dd),
+            initargs=(balance, n_sims, target_dd, point_value, margin, trades_per_sim),
         ) as pool:
             completed = 0
-            for idx, value in pool.imap_unordered(enrich_one, tasks, chunksize=4):
+            for idx, value, capped, skipped in pool.imap_unordered(enrich_one, tasks,
+                                                                   chunksize=4):
                 agg_dicts[idx]['mc_avg_profit'] = value
+                agg_dicts[idx]['mc_margin_capped'] = capped
+                agg_dicts[idx]['mc_initial_skipped'] = skipped
                 completed += 1
                 progress.progress(completed / len(tasks),
                                   text=f"{progress_label} {completed}/{len(tasks)}")
     except Exception as e:
         st.warning(f"MC parallel enrichment failed ({e}); falling back to serial.")
-        for idx, win_pct, rr_ratio, num_trades in tasks:
-            agg_dicts[idx]['mc_avg_profit'] = compute_mc_avg_profit_at_target_dd(
-                win_pct, rr_ratio, balance, target_dd=target_dd,
-                trades_per_sim=num_trades, n_sims=n_sims)
+        _enrich_mc_serial(agg_dicts, balance, n_sims, target_dd, point_value,
+                          margin, trades_per_sim, tasks=tasks)
 
     progress.empty()
 
@@ -208,7 +360,7 @@ def render_grid_search_tab(sidebar_config):
 
     # ── Section B: Group Set Management ─────────────────
     with st.expander("Group Set Management", expanded=False):
-        _render_group_set_management()
+        _render_group_set_management(_ema_periods_for_strategy(selected_strategy))
 
     st.markdown("---")
 
@@ -332,6 +484,11 @@ def render_grid_search_tab(sidebar_config):
 
     # ── Section G: Filters & Sort ───────────────────────
     st.markdown("**Performance Filters**")
+    scope_options = FIXED_COLUMNS + selection_labels_for(st.session_state.get("gs_selections", []))
+    if st.session_state.get("gs_filter_scope") not in scope_options:
+        st.session_state["gs_filter_scope"] = "All Patterns"
+    filter_scope = st.selectbox("Apply filters to", scope_options, key="gs_filter_scope")
+    st.caption("Filters, sorting and the results table use this column's metrics.")
     # Build threshold inputs for every metric in SORT_METRICS
     thresholds = {}
 
@@ -386,18 +543,22 @@ def render_grid_search_tab(sidebar_config):
     calculate_clicked = st.button("Calculate", key="gs_calculate", type="primary")
     st.caption("To stop a running calculation, click the **Stop** button (top-right corner) or refresh the page.")
 
-    # Cache invalidation
+    # Cache invalidation (pattern rows are NOT part of the fingerprint: they
+    # only change how the cached per-combo results are aggregated)
     cached = st.session_state.get("_gs_cached_results")
     if cached:
         fp = _build_cache_fingerprint(selected_strategy, search_group,
                                        search_set, selected_events, condition_candidates,
                                        view_state)
-        if cached.get("fingerprint") != fp:
+        if cached.get("fingerprint") != fp or "combo_results" not in cached:
             st.session_state.pop("_gs_cached_results", None)
             cached = None
 
+    user_selections = st.session_state.get("gs_selections", [])
+    selections_json = _selections_json(user_selections)
+
     if calculate_clicked:
-        results = _run_grid_search(
+        results, combo_results_list = _run_grid_search(
             selected_strategy, search_group, search_set, selected_events,
             condition_candidates, condition_event, sidebar_config,
             effective_candidates=effective_candidates,
@@ -405,20 +566,50 @@ def render_grid_search_tab(sidebar_config):
         fp = _build_cache_fingerprint(selected_strategy, search_group,
                                        search_set, selected_events, condition_candidates,
                                        view_state)
-        sel_labels = [selection_label(s) for s in st.session_state.get("gs_selections", [])]
         st.session_state["_gs_cached_results"] = {
             "fingerprint": fp,
+            "mc_fingerprint": mc_fingerprint(),
             "results": results,
+            "combo_results": combo_results_list,
+            "selections_json": selections_json,
             "strategy_name": selected_strategy.get("strategy_name", "Custom"),
-            "selection_labels": sel_labels,
+            "search_group": search_group,
+            "group_set": search_set.get("name", ""),
         }
         cached = st.session_state["_gs_cached_results"]
 
+    if cached and cached.get("results") and cached.get("selections_json") != selections_json:
+        # User pattern rows changed — re-aggregate the pattern columns from
+        # the cached per-combo stats (no re-run), MC-enrich only the new aggs.
+        new_results, changed_aggs = reaggregate_results(
+            cached["results"], cached["combo_results"], user_selections)
+        if changed_aggs:
+            mc_cfg = mc_settings()
+            enrich_aggs_with_mc(changed_aggs, mc_cfg['balance'], GS_MC_N_SIMULATIONS,
+                                target_dd=5.0, point_value=mc_cfg['point_value'],
+                                margin=mc_cfg['margin'], trades_per_sim=mc_cfg['trades_per_sim'])
+        cached["results"] = new_results
+        cached["selections_json"] = selections_json
+        st.caption("Pattern columns re-aggregated from the last run.")
+
+    if cached and cached.get("results") and cached.get("mc_fingerprint") != mc_fingerprint():
+        # Instrument / MC balance / trades-per-sim changed — trades are still
+        # valid, only the MC column is stale. Re-enrich the cached aggs.
+        mc_cfg = mc_settings()
+        _enrich_mc_parallel(cached["results"], mc_cfg['balance'], GS_MC_N_SIMULATIONS,
+                            target_dd=5.0, point_value=mc_cfg['point_value'],
+                            margin=mc_cfg['margin'], trades_per_sim=mc_cfg['trades_per_sim'])
+        cached["mc_fingerprint"] = mc_fingerprint()
+
     if cached and cached.get("results"):
         _display_results(cached["results"], cached["strategy_name"],
-                         thresholds, sort_key, sort_descending)
+                         thresholds, sort_key, sort_descending, scope=filter_scope,
+                         search_group=cached.get("search_group", search_group),
+                         group_set=cached.get("group_set", search_set.get("name", "")))
     elif not calculate_clicked:
         st.info("Configure search and click **Calculate** to run.")
+
+    _render_shortlist()
 
 
 # ======================================================================
@@ -561,9 +752,48 @@ def _render_set_view_filter(search_set, set_idx):
 # Group Set Management UI
 # ======================================================================
 
-def _render_group_set_management():
-    """Render the universal group set create/edit/delete/import/export UI."""
+_GEN_EDIT_PREFIX = "gs_gen_edit"
+_GEN_NEW_PREFIX = "gs_gen_new"
+_GS_MGMT_MSG_KEY = "_gs_mgmt_msg"
+
+# Above this many candidates the preview warns (search time grows linearly).
+GENERATOR_WARN_CANDIDATES = 2000
+
+
+def _clear_prefixed_keys(prefix):
+    """Drop every session-state key under `prefix_` (generator form widgets)."""
+    for k in [k for k in st.session_state.keys()
+              if isinstance(k, str) and k.startswith(prefix + "_")]:
+        del st.session_state[k]
+
+
+def _render_legacy_set_summary(group_set):
+    """Read-only view of a set built with the old line editor (no generator)."""
+    cands = group_set.get("candidates", [])
+    st.caption("Created with the old line editor — export it to keep a copy, "
+               "or create a new set with the generator.")
+    st.markdown(f"{len(cands)} candidates")
+    for i, c in enumerate(cands[:20]):
+        lbl = format_candidate_label(c)
+        if get_mode(group_set) == MODE_PER_CANDIDATE and c.get("event"):
+            lbl += f"  [{c['event']}]"
+        st.text(f"{i + 1}. {lbl}")
+    if len(cands) > 20:
+        st.caption(f"… and {len(cands) - 20} more.")
+
+
+def _render_group_set_management(ema_periods):
+    """Render the universal group set create/edit/delete/import/export UI.
+
+    `ema_periods` comes from the selected strategy and sizes the EMA elements
+    offered in the generator form (and the EMA limit when regenerating).
+    """
     all_sets = st.session_state.get("saved_group_sets", [])
+    ema_count = len(ema_periods)
+
+    msg = st.session_state.pop(_GS_MGMT_MSG_KEY, None)
+    if msg:
+        st.success(msg)
 
     if all_sets:
         gs_names = [gs["name"] for gs in all_sets]
@@ -593,6 +823,7 @@ def _render_group_set_management():
         with bc1:
             if st.button("Delete", key="gs_mgmt_del", type="secondary"):
                 delete_group_set(sel)
+                st.session_state.pop("gs_editing", None)
                 st.rerun()
         with bc2:
             json_data = export_group_set(selected_gs)
@@ -603,6 +834,7 @@ def _render_group_set_management():
         with bc3:
             if st.button("Edit", key="gs_mgmt_edit_btn"):
                 st.session_state["gs_editing"] = sel
+                _clear_prefixed_keys(_GEN_EDIT_PREFIX)
                 st.rerun()
 
         # Edit mode
@@ -610,33 +842,54 @@ def _render_group_set_management():
             edit_idx = st.session_state["gs_editing"]
             if edit_idx < len(all_sets):
                 edit_gs = all_sets[edit_idx]
-                edit_mode = get_mode(edit_gs)
                 st.markdown("---")
-                mode_lbl = ("Cross-product (event chosen at search time)"
-                            if edit_mode == MODE_RUNTIME
-                            else "Per-candidate event (event chosen per row)")
-                st.markdown(f"**Editing: {edit_gs['name']}**  \n*Logic: {mode_lbl}*")
-                edited_candidates = _render_candidate_editor(
-                    list(edit_gs.get("candidates", [])), "gs_edit", mode=edit_mode)
-                edited_ranges = _render_indicator_ranges_editor(
-                    edited_candidates, edit_gs.get("indicator_ranges") or {}, "gs_edit")
-                ec1, ec2 = st.columns(2)
-                with ec1:
-                    if st.button("Save Changes", key="gs_edit_save", type="primary"):
-                        edit_gs["candidates"] = _strip_uids(edited_candidates)
-                        edit_gs["mode"] = edit_mode
-                        edit_gs["indicator_ranges"] = edited_ranges
-                        dupes = update_group_set(edit_idx, edit_gs)
-                        if dupes:
-                            st.warning(f"{dupes} duplicate candidate(s) removed.")
+                st.markdown(f"**Editing: {edit_gs['name']}**")
+                if edit_gs.get("generator") is None:
+                    _render_legacy_set_summary(edit_gs)
+                    if st.button("Close", key="gs_edit_cancel"):
                         st.session_state.pop("gs_editing", None)
-                        st.session_state.pop("gs_edit_candidates", None)
                         st.rerun()
-                with ec2:
-                    if st.button("Cancel", key="gs_edit_cancel"):
-                        st.session_state.pop("gs_editing", None)
-                        st.session_state.pop("gs_edit_candidates", None)
-                        st.rerun()
+                else:
+                    name_key = f"{_GEN_EDIT_PREFIX}_name"
+                    if name_key not in st.session_state:
+                        st.session_state[name_key] = edit_gs["name"]
+                    edit_name = st.text_input("Name", key=name_key)
+                    generator, errors, gen_cands = _render_generator_form(
+                        edit_gs["generator"], _GEN_EDIT_PREFIX, ema_periods)
+                    edited_ranges = _render_indicator_ranges_editor(
+                        gen_cands, edit_gs.get("indicator_ranges") or {}, _GEN_EDIT_PREFIX)
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        if st.button("Save Changes", key="gs_edit_save", type="primary"):
+                            if errors:
+                                st.error("Fix the problems above before saving.")
+                            elif not edit_name.strip():
+                                st.error("Please provide a name.")
+                            else:
+                                # Keep the saved filter view (active_groups / value_filters)
+                                new_gs = dict(edit_gs)
+                                new_gs.update({
+                                    "name": edit_name.strip(),
+                                    "mode": MODE_RUNTIME,
+                                    "generator": generator,
+                                    "indicator_ranges": edited_ranges,
+                                })
+                                try:
+                                    update_group_set(edit_idx, new_gs, ema_count)
+                                except ValueError as e:
+                                    st.error(str(e))
+                                else:
+                                    st.session_state.pop("gs_editing", None)
+                                    _clear_prefixed_keys(_GEN_EDIT_PREFIX)
+                                    st.session_state[_GS_MGMT_MSG_KEY] = (
+                                        f"Saved **{new_gs['name']}** with "
+                                        f"{len(new_gs['candidates'])} candidates.")
+                                    st.rerun()
+                    with ec2:
+                        if st.button("Cancel", key="gs_edit_cancel"):
+                            st.session_state.pop("gs_editing", None)
+                            _clear_prefixed_keys(_GEN_EDIT_PREFIX)
+                            st.rerun()
     else:
         st.caption("No group sets saved yet.")
 
@@ -647,17 +900,25 @@ def _render_group_set_management():
                                 type=["json"], key="gs_import")
     if uploaded:
         import_id = f"{uploaded.name}_{uploaded.size}"
-        last_import_key = "_gs_last_import"
+        # No "_gs_" prefix on purpose: the sidebar's timeframe-change sweep
+        # clears every "_gs_*" key, which would re-import the still-loaded
+        # file on the next rerun (seen as a duplicated group set).
+        last_import_key = "gs_last_import"
         if st.session_state.get(last_import_key) != import_id:
             try:
-                data = import_group_set(uploaded.read().decode("utf-8"))
+                data = import_group_set(uploaded.read().decode("utf-8"),
+                                        ema_count=ema_count)
                 dupes_removed = data.pop("_duplicates_removed", 0)
-                save_group_set(data)
+                regenerated = data.pop("_regenerated", None)
+                save_group_set(data, ema_count)
                 st.session_state[last_import_key] = import_id
                 msg = f"Imported **{data['name']}** with {len(data['candidates'])} candidates."
+                if regenerated is not None:
+                    msg += (f" Regenerated {regenerated} candidates from the "
+                            f"generator block (candidates in the file were ignored).")
                 if dupes_removed:
                     msg += f" ({dupes_removed} duplicate(s) removed.)"
-                st.success(msg)
+                st.session_state[_GS_MGMT_MSG_KEY] = msg
                 st.rerun()
             except (ValueError, Exception) as e:
                 st.error(f"Import failed: {e}")
@@ -667,51 +928,32 @@ def _render_group_set_management():
     # Create new
     with st.expander("Create New Group Set", expanded=False):
         new_name = st.text_input("Name", key="gs_new_name")
-
-        mode_options = [
-            (MODE_RUNTIME,
-             "Cross-product — pick event(s) at search time"),
-            (MODE_PER_CANDIDATE,
-             "Per-candidate — choose an event for each row"),
-        ]
-        mode_idx = st.radio(
-            "Logic",
-            options=range(len(mode_options)),
-            format_func=lambda i: mode_options[i][1],
-            key="gs_new_mode_idx",
-            horizontal=False,
-        )
-        new_mode = mode_options[mode_idx][0]
-
-        # If user toggles mode, drop previously-built candidates so the editor
-        # rebuilds with the right shape (event field present or absent).
-        last_mode_key = "_gs_new_last_mode"
-        if st.session_state.get(last_mode_key) != new_mode:
-            st.session_state.pop("gs_new_candidates", None)
-            st.session_state[last_mode_key] = new_mode
-
-        new_candidates = _render_candidate_editor([], "gs_new", mode=new_mode)
-        new_ranges = _render_indicator_ranges_editor(new_candidates, {}, "gs_new")
+        generator, errors, gen_cands = _render_generator_form(
+            None, _GEN_NEW_PREFIX, ema_periods)
+        new_ranges = _render_indicator_ranges_editor(gen_cands, {}, _GEN_NEW_PREFIX)
         if st.button("Save New Set", key="gs_new_save", type="primary"):
             if not new_name.strip():
                 st.error("Please provide a name.")
-            elif not new_candidates:
-                st.error("Add at least one candidate.")
+            elif errors:
+                st.error("Fix the problems above before saving.")
             else:
                 new_gs = {
                     "name": new_name.strip(),
-                    "mode": new_mode,
-                    "candidates": _strip_uids(new_candidates),
+                    "mode": MODE_RUNTIME,
+                    "generator": generator,
                     "indicator_ranges": new_ranges,
                 }
-                dupes = save_group_set(new_gs)
-                st.session_state.pop("gs_new_candidates", None)
-                st.session_state.pop(last_mode_key, None)
-                msg = f"Created **{new_name}** with {len(new_gs['candidates'])} candidates."
-                if dupes:
-                    msg += f" ({dupes} duplicate(s) removed.)"
-                st.success(msg)
-                st.rerun()
+                try:
+                    save_group_set(new_gs, ema_count)
+                except ValueError as e:
+                    st.error(str(e))
+                else:
+                    _clear_prefixed_keys(_GEN_NEW_PREFIX)
+                    st.session_state.pop("gs_new_name", None)
+                    st.session_state[_GS_MGMT_MSG_KEY] = (
+                        f"Created **{new_gs['name']}** with "
+                        f"{len(new_gs['candidates'])} candidates.")
+                    st.rerun()
 
 
 # ======================================================================
@@ -840,279 +1082,243 @@ def _render_indicator_ranges_editor(candidates, current_ranges, prefix):
 
 
 # ======================================================================
-# Candidate Editor
+# Group Set generator form
 # ======================================================================
 
-def _clear_candidate_widget_keys_by_uid(prefix, uid):
-    """Clear all widget keys for a candidate identified by unique ID."""
-    suffixes = [
-        "_grp", "_e1", "_ev", "_cmp", "_e2", "_op", "_val",
-        "_stype", "_atr_p", "_atr_m", "_cmp_d", "_cmp_at", "_rm",
-        "_event",
-    ]
-    for sfx in suffixes:
-        st.session_state.pop(f"{prefix}_{uid}{sfx}", None)
+def _fmt_ema_element(name, ema_periods):
+    """Display "EMA 1 (10)" while the stored value stays "EMA 1"."""
+    if isinstance(name, str) and name.startswith("EMA "):
+        try:
+            idx = int(name.split(" ")[1]) - 1
+        except (IndexError, ValueError):
+            return name
+        if 0 <= idx < len(ema_periods):
+            return f"{name} ({ema_periods[idx]})"
+    return name
 
 
-# Union of all events any search component might use — used by the
-# per-candidate Event picker (the candidate doesn't know yet which
-# component slot it'll be assigned to at search time).
-_ALL_EVENT_CHOICES = list(dict.fromkeys(
-    list(EVENT_TYPES) + list(STOP_EVENT_TYPES) + list(CONDITION_OPERATORS)
-))
+def _render_range_inputs(label, prefix, saved, defaults, with_period=False):
+    """One "Apply + [period] + min / max / step" row. Returns the spec dict
+    ({min, max, step[, period]}) when applied, else None."""
+    apply_key = f"{prefix}_apply"
+    keys = {f: f"{prefix}_{f}" for f in ("min", "max", "step")}
+    if apply_key not in st.session_state:
+        st.session_state[apply_key] = bool(saved)
+    for f, dflt in zip(("min", "max", "step"), defaults):
+        if keys[f] not in st.session_state:
+            st.session_state[keys[f]] = float((saved or {}).get(f, dflt))
+    period_key = f"{prefix}_period"
+    if with_period and period_key not in st.session_state:
+        st.session_state[period_key] = int((saved or {}).get("period", 14))
 
-
-_candidate_uid_counter_key = "_gs_candidate_uid_counter"
-
-
-def _strip_uids(candidates):
-    """Return a deep copy of candidates with internal _uid fields removed."""
-    cleaned = copy.deepcopy(candidates)
-    for c in cleaned:
-        c.pop('_uid', None)
-    return cleaned
-
-
-def _next_candidate_uid():
-    """Generate a unique ID for a candidate (monotonically increasing integer)."""
-    uid = st.session_state.get(_candidate_uid_counter_key, 0)
-    st.session_state[_candidate_uid_counter_key] = uid + 1
-    return uid
-
-
-def _ensure_candidate_uids(candidates):
-    """Ensure every candidate dict has a '_uid' field."""
-    for cand in candidates:
-        if '_uid' not in cand:
-            cand['_uid'] = _next_candidate_uid()
-
-
-CANDIDATE_PAGE_SIZE = 20
-
-
-def _render_candidate_editor(initial_candidates, prefix, mode=MODE_RUNTIME):
-    """Render an editable list of candidates with pagination. Returns list of candidate dicts.
-
-    `mode` controls whether each row also shows an Event picker (MODE_PER_CANDIDATE).
-    """
-    # Use session state to track candidates for this editor
-    state_key = f"{prefix}_candidates"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = list(initial_candidates) if initial_candidates else []
-
-    candidates = st.session_state[state_key]
-    _ensure_candidate_uids(candidates)
-    ema_count = len(st.session_state.get("gs_ema_periods", []))
-
-    total = len(candidates)
-    page_key = f"{prefix}_page"
-    total_pages = max(1, math.ceil(total / CANDIDATE_PAGE_SIZE))
-
-    # Clamp page to valid range
-    current_page = st.session_state.get(page_key, 0)
-    if current_page >= total_pages:
-        current_page = max(0, total_pages - 1)
-        st.session_state[page_key] = current_page
-
-    start_idx = current_page * CANDIDATE_PAGE_SIZE
-    end_idx = min(start_idx + CANDIDATE_PAGE_SIZE, total)
-
-    # Pagination controls (top)
-    if total > CANDIDATE_PAGE_SIZE:
-        st.caption(f"Showing candidates {start_idx + 1}–{end_idx} of {total}")
-        p1, p2, p3 = st.columns([1, 1, 1])
-        with p1:
-            if st.button("◀ Previous", key=f"{prefix}_prev", disabled=current_page == 0):
-                st.session_state[page_key] = current_page - 1
-                st.rerun()
-        with p2:
-            st.markdown(f"Page **{current_page + 1}** / {total_pages}")
-        with p3:
-            if st.button("Next ▶", key=f"{prefix}_next", disabled=current_page >= total_pages - 1):
-                st.session_state[page_key] = current_page + 1
-                st.rerun()
-
-    # Render only the current page of candidates
-    to_remove = []
-    for i in range(start_idx, end_idx):
-        cand = candidates[i]
-        uid = cand['_uid']
-        st.markdown(f"**Candidate {i+1}**")
-        updated = _render_single_candidate(cand, f"{prefix}_{uid}", ema_count, mode=mode)
-        # Preserve UID
-        updated['_uid'] = uid
-        candidates[i] = updated
-
-        if st.button("Remove", key=f"{prefix}_{uid}_rm"):
-            to_remove.append(i)
-
-    if to_remove:
-        for idx in sorted(to_remove, reverse=True):
-            removed = candidates.pop(idx)
-            _clear_candidate_widget_keys_by_uid(prefix, removed['_uid'])
-        st.session_state[state_key] = candidates
-        # If we deleted all items on the last page, go back one page
-        new_total_pages = max(1, math.ceil(len(candidates) / CANDIDATE_PAGE_SIZE))
-        if st.session_state.get(page_key, 0) >= new_total_pages:
-            st.session_state[page_key] = max(0, new_total_pages - 1)
-        st.rerun()
-
-    if st.button("+ Add Candidate", key=f"{prefix}_add"):
-        new_cand = _default_candidate(mode=mode)
-        new_cand['_uid'] = _next_candidate_uid()
-        candidates.append(new_cand)
-        st.session_state[state_key] = candidates
-        # Jump to the last page where the new candidate was added
-        st.session_state[page_key] = math.ceil(len(candidates) / CANDIDATE_PAGE_SIZE) - 1
-        st.rerun()
-
-    return candidates
-
-
-def _default_candidate(mode=MODE_RUNTIME):
-    """Return a default universal candidate dict."""
-    cand = {
-        "group": "Price & Indicators",
-        "element1": "Price",
-        "compare_type": "Indicator",
-        "element2": "Tenkan",
-        "value": None,
-    }
-    if mode == MODE_PER_CANDIDATE:
-        cand["event"] = "Cross Above"
-    return cand
-
-
-def _render_single_candidate(cand, prefix, ema_count, mode=MODE_RUNTIME):
-    """Render widgets for a single universal candidate and return updated dict.
-
-    In MODE_RUNTIME the row defines only (group, element1, element2/value);
-    the event is chosen at search time. In MODE_PER_CANDIDATE the row also
-    has its own event picker.
-    """
-    # Check if this is an ATR stop candidate
-    is_atr_stop = cand.get("stop_type") == "ATR"
-
-    # ATR Stop toggle
-    atr_stop_checked = st.checkbox("ATR Stop", value=is_atr_stop, key=f"{prefix}_atr_stop")
-
-    if atr_stop_checked:
-        if mode == MODE_PER_CANDIDATE:
-            evt_default = cand.get("event", "Cross Below")
-            if evt_default not in _ALL_EVENT_CHOICES:
-                evt_default = _ALL_EVENT_CHOICES[0]
-            ev_col, ac1_col, ac2_col = st.columns([1.5, 1, 1])
-            with ev_col:
-                event = st.selectbox("Event", _ALL_EVENT_CHOICES,
-                                     index=_ALL_EVENT_CHOICES.index(evt_default),
-                                     key=f"{prefix}_event")
-        else:
-            event = None
-            ac1_col, ac2_col = st.columns(2)
-        with ac1_col:
-            atr_period = st.number_input("ATR Period", 1, 200,
-                                         value=int(cand.get("atr_period", 14)),
-                                         step=1, key=f"{prefix}_atr_p")
-        with ac2_col:
-            atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
-                                        value=float(cand.get("atr_multiplier", 2.0)),
-                                        step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-        result = {
-            "stop_type": "ATR",
-            "atr_period": atr_period,
-            "atr_multiplier": atr_mult,
-        }
-        if mode == MODE_PER_CANDIDATE:
-            result["event"] = event
-        return result
-
-    # Standard candidate: (optional Event in MODE_PER_CANDIDATE), Group, Element 1, Compare, Element 2/Value
-    if mode == MODE_PER_CANDIDATE:
-        evt_default = cand.get("event", "Cross Above")
-        if evt_default not in _ALL_EVENT_CHOICES:
-            evt_default = _ALL_EVENT_CHOICES[0]
-        c_ev, c_grp, c_e1, c_cmp, c_e2 = st.columns([1.5, 2, 2, 1.5, 2])
-        with c_ev:
-            event = st.selectbox("Event", _ALL_EVENT_CHOICES,
-                                 index=_ALL_EVENT_CHOICES.index(evt_default),
-                                 key=f"{prefix}_event")
+    if with_period:
+        c_lbl, c_apply, c_p, c_lo, c_hi, c_st = st.columns([2, 1, 1, 1.2, 1.2, 1.2])
     else:
-        event = None
-        c_grp, c_e1, c_cmp, c_e2 = st.columns([2, 2, 1.5, 2])
+        c_lbl, c_apply, c_lo, c_hi, c_st = st.columns([2, 1, 1.2, 1.2, 1.2])
+    with c_lbl:
+        st.markdown(f"**{label}**")
+    with c_apply:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        applied = st.checkbox("Apply", key=apply_key)
+    if with_period:
+        with c_p:
+            period = st.number_input("Period", min_value=1, step=1, key=period_key)
+    with c_lo:
+        lo = st.number_input("Min", key=keys["min"], step=0.1, format="%.2f")
+    with c_hi:
+        hi = st.number_input("Max", key=keys["max"], step=0.1, format="%.2f")
+    with c_st:
+        sp = st.number_input("Step", key=keys["step"], step=0.1, format="%.2f")
+    if not applied:
+        return None
+    spec = {"min": lo, "max": hi, "step": sp}
+    if with_period:
+        spec = {"period": int(period), **spec}
+    return spec
 
-    with c_grp:
-        group_idx = GROUP_NAMES.index(cand.get("group", GROUP_NAMES[0])) if cand.get("group") in GROUP_NAMES else 0
-        group = st.selectbox("Group", GROUP_NAMES, index=group_idx, key=f"{prefix}_grp")
 
-    with c_e1:
-        elements = get_group_elements(group, ema_count)
-        # Include special elements (R Profit/Loss, ATR Target) — universal
-        extra = list(R_PROFIT_LOSS_ELEMENTS) + list(ATR_TARGET_ELEMENTS)
-        all_e1 = elements + extra
-        e1_val = cand.get("element1", all_e1[0])
-        if e1_val not in all_e1:
-            e1_val = all_e1[0]
-        element1 = st.selectbox("Element 1", all_e1, index=all_e1.index(e1_val), key=f"{prefix}_e1")
+def _render_generator_form(generator, prefix, ema_periods):
+    """Render the group set generator (elements, fixed values, exclusions,
+    special candidates) with a live preview.
 
-    is_r = element1 in R_PROFIT_LOSS_ELEMENTS
-    is_atr_target = element1 in ATR_TARGET_ELEMENTS
+    Returns (generator_dict, errors, generated_candidates); candidates are []
+    while the spec has errors."""
+    generator = generator or {}
+    ema_count = len(ema_periods)
 
-    with c_cmp:
-        if is_r:
-            compare = "Fixed Value"
-            st.radio("Compare", ["Fixed Value"], key=f"{prefix}_cmp_d", disabled=True)
-        elif is_atr_target:
-            compare = "Indicator"
-            st.radio("Compare", ["Indicator"], key=f"{prefix}_cmp_at", disabled=True)
+    def fmt(name):
+        return _fmt_ema_element(name, ema_periods)
+
+    st.caption("Events (Cross/Close Above/Below…) are chosen at search time.")
+
+    # ── Elements ─────────────────────────────────────────
+    st.markdown("**Elements**")
+    st.caption(
+        "Every pair of ticked elements **within the same indicator group** is "
+        "generated once (Cross Above / Cross Below at search time cover both "
+        "directions). Pairs with **Price** are generated both ways, because "
+        "Price as Element 1 uses the bar high/low. *These rules are "
+        "assumptions — say if you want them different.*")
+    initial = list(generator.get("elements") or [])
+    elements = []
+    unavailable = []
+    for grp in GROUP_NAMES:
+        opts = get_group_elements(grp, ema_count)
+        key = f"{prefix}_el__{grp}"
+        if key not in st.session_state:
+            st.session_state[key] = [e for e in initial if e in opts]
         else:
-            cmp_val = cand.get("compare_type", "Indicator")
-            cmp_opts = ["Indicator", "Fixed Value"]
-            compare = st.radio("Compare", cmp_opts,
-                               index=cmp_opts.index(cmp_val) if cmp_val in cmp_opts else 0,
-                               key=f"{prefix}_cmp", horizontal=True)
+            st.session_state[key] = [e for e in st.session_state[key] if e in opts]
+        picked = st.multiselect(grp, opts, key=key, format_func=fmt)
+        elements.extend(e for e in opts if e in picked)
+        if grp == "Price & Indicators":
+            # EMA N saved in the generator but beyond the strategy's EMA count:
+            # kept so validation blocks the save instead of silently dropping it.
+            unavailable = [e for e in initial
+                           if isinstance(e, str) and e.startswith("EMA ") and e not in opts]
+            if unavailable:
+                drop = st.checkbox(
+                    f"Drop unavailable elements ({', '.join(unavailable)}) — the "
+                    f"selected strategy has {ema_count} EMA(s)",
+                    key=f"{prefix}_drop_unavailable")
+                if not drop:
+                    elements.extend(unavailable)
 
-    with c_e2:
-        if is_atr_target:
-            atr_period = st.number_input("ATR Period", 1, 200,
-                                         value=int(cand.get("atr_period", 14)),
-                                         step=1, key=f"{prefix}_atr_p")
-            atr_mult = st.number_input("ATR Multiplier", 0.1, 20.0,
-                                        value=float(cand.get("atr_multiplier", 2.0)),
-                                        step=0.1, format="%.1f", key=f"{prefix}_atr_m")
-            atr_target_result = {
-                "element1": element1,
-                "atr_period": atr_period,
-                "atr_multiplier": atr_mult,
-            }
-            if mode == MODE_PER_CANDIDATE:
-                atr_target_result["event"] = event
-            return atr_target_result
+    # ── Fixed values ─────────────────────────────────────
+    saved_fv = generator.get("fixed_values") or {}
+    fixed_values = {}
+    with st.expander("Fixed values (optional)", expanded=bool(saved_fv)):
+        st.caption("Per element: min / max / step → one *Element vs value* "
+                   "candidate per value. Elements with a range still take "
+                   "part in pairing.")
+        if not elements:
+            st.caption("Tick elements above first.")
+        for el in elements:
+            if el in unavailable:
+                if el in saved_fv:
+                    fixed_values[el] = saved_fv[el]
+                continue
+            spec = _render_range_inputs(fmt(el), f"{prefix}_fv__{el}",
+                                        saved_fv.get(el), (20.0, 80.0, 10.0))
+            if spec:
+                fixed_values[el] = spec
 
-        elif compare == "Indicator":
-            all_elements = []
-            for g in GROUP_NAMES:
-                all_elements.extend(get_group_elements(g, ema_count))
-            e2_val = cand.get("element2", all_elements[0] if all_elements else "Price")
-            if e2_val not in all_elements:
-                e2_val = all_elements[0]
-            element2 = st.selectbox("Element 2", all_elements,
-                                    index=all_elements.index(e2_val), key=f"{prefix}_e2")
-            value = None
+    # ── Exclusions ───────────────────────────────────────
+    st.markdown("**Do not run**")
+    same_key = f"{prefix}_same_ind"
+    cross_key = f"{prefix}_cross_group"
+    if same_key not in st.session_state:
+        st.session_state[same_key] = bool(generator.get("exclude_same_indicator", True))
+    if cross_key not in st.session_state:
+        st.session_state[cross_key] = bool(generator.get("allow_cross_group", False))
+    xc1, xc2 = st.columns(2)
+    with xc1:
+        exclude_same = st.checkbox(
+            "Exclude bands of the same indicator", key=same_key,
+            help="Drops BB×BB, KC×KC, DC×DC, Supertrend×Supertrend, PSAR×PSAR, "
+                 "LR×LR and Price Upper×Price Lower pairs. Ichimoku lines are "
+                 "not grouped (Tenkan vs Kijun stays).")
+    with xc2:
+        allow_cross = st.checkbox(
+            "Allow cross-group pairs", key=cross_key,
+            help="Also pair elements from different indicator groups "
+                 "(e.g. RSI vs BB Upper — usually different scales).")
+
+    uids_key = f"{prefix}_excl_uids"
+    next_key = f"{prefix}_excl_next"
+    if uids_key not in st.session_state:
+        uids = []
+        for i, pair in enumerate(generator.get("exclusions") or []):
+            st.session_state[f"{prefix}_excl_a__{i}"] = pair[0]
+            st.session_state[f"{prefix}_excl_b__{i}"] = pair[1]
+            uids.append(i)
+        st.session_state[uids_key] = uids
+        st.session_state[next_key] = len(uids)
+
+    exclusions = []
+    for uid in list(st.session_state[uids_key]):
+        a_key, b_key = f"{prefix}_excl_a__{uid}", f"{prefix}_excl_b__{uid}"
+        c_a, c_b, c_rm = st.columns([3, 3, 1])
+        a_val, b_val = st.session_state.get(a_key), st.session_state.get(b_key)
+        if a_val in elements and b_val in elements:
+            with c_a:
+                a_val = st.selectbox("Element 1", elements, key=a_key,
+                                     format_func=fmt, label_visibility="collapsed")
+            with c_b:
+                b_val = st.selectbox("Element 2", elements, key=b_key,
+                                     format_func=fmt, label_visibility="collapsed")
         else:
-            element2 = None
-            value = st.number_input("Value", value=float(cand.get("value") or 0.0),
-                                    step=0.01, format="%.4f", key=f"{prefix}_val")
+            # An element of this exclusion isn't ticked — keep the row as-is.
+            with c_a:
+                st.text(f"{fmt(a_val)} vs {fmt(b_val)}")
+            with c_b:
+                st.caption("(element not selected — no effect)")
+        with c_rm:
+            if st.button("✕", key=f"{prefix}_excl_rm__{uid}"):
+                st.session_state[uids_key].remove(uid)
+                st.session_state.pop(a_key, None)
+                st.session_state.pop(b_key, None)
+                st.rerun()
+        exclusions.append([a_val, b_val])
+    if st.button("+ Add exclusion", key=f"{prefix}_excl_add",
+                 disabled=len(elements) < 2):
+        uid = st.session_state[next_key]
+        st.session_state[next_key] = uid + 1
+        st.session_state[f"{prefix}_excl_a__{uid}"] = elements[0]
+        st.session_state[f"{prefix}_excl_b__{uid}"] = elements[1]
+        st.session_state[uids_key].append(uid)
+        st.rerun()
 
-    result = {
-        "group": group,
-        "element1": element1,
-        "compare_type": compare,
-        "element2": element2,
-        "value": value,
+    # ── Special candidates ───────────────────────────────
+    has_special = any(generator.get(k) for k in ("r_profit", "r_loss", "atr_target", "atr_stop"))
+    with st.expander("Special candidates (R Profit / R Loss / ATR)", expanded=has_special):
+        r_profit = _render_range_inputs("R Profit", f"{prefix}_rp",
+                                        generator.get("r_profit"), (1.0, 3.0, 0.5))
+        r_loss = _render_range_inputs("R Loss", f"{prefix}_rl",
+                                      generator.get("r_loss"), (0.5, 2.0, 0.5))
+        st.caption("ATR: period, then multiplier min / max / step.")
+        atr_target = _render_range_inputs("ATR Target", f"{prefix}_atrt",
+                                          generator.get("atr_target"), (1.0, 3.0, 0.5),
+                                          with_period=True)
+        atr_stop = _render_range_inputs("ATR Stop", f"{prefix}_atrs",
+                                        generator.get("atr_stop"), (1.0, 5.0, 0.2),
+                                        with_period=True)
+
+    gen = {
+        "elements": elements,
+        "fixed_values": fixed_values,
+        "exclusions": exclusions,
+        "exclude_same_indicator": exclude_same,
+        "allow_cross_group": allow_cross,
+        "r_profit": r_profit,
+        "r_loss": r_loss,
+        "atr_target": atr_target,
+        "atr_stop": atr_stop,
     }
-    if mode == MODE_PER_CANDIDATE:
-        result["event"] = event
-    return result
+
+    # ── Preview ──────────────────────────────────────────
+    errors = validate_generator(gen, ema_count)
+    if errors:
+        if errors == ["The selection generates no candidates."]:
+            st.info("Tick elements (or special candidates) to generate candidates.")
+        else:
+            for e in errors:
+                st.error(e)
+        return gen, errors, []
+
+    candidates = generate_candidates(gen, ema_count)
+    counts = count_candidates(gen, ema_count)
+    st.markdown(f"**Preview:** {counts['pairs']} pairs + {counts['fixed']} fixed + "
+                f"{counts['r']} R + {counts['atr']} ATR = "
+                f"**{counts['total']} candidates**")
+    if counts["total"] > GENERATOR_WARN_CANDIDATES:
+        st.warning(f"{counts['total']} candidates — each one runs for every event "
+                   f"chosen at search time, so this search will be slow.")
+    with st.expander("Generated candidates", expanded=False):
+        st.dataframe(pd.DataFrame({"Candidate": [format_candidate_label(c)
+                                                 for c in candidates]}),
+                     width="stretch", hide_index=True)
+    return gen, errors, candidates
 
 
 # ======================================================================
@@ -1265,8 +1471,18 @@ def _compute_candidate_correlation(combo_results, global_combo_keys, ref_directi
 # ======================================================================
 
 def _render_pattern_selection():
-    """Pattern selection UI identical to Performance tab."""
-    selections = st.session_state.get("gs_selections", [])
+    """User-added pattern rows (same modes as the Performance tab).
+
+    All Patterns / All Bullish / All Bearish / Global are fixed columns of
+    every result, so only the three "Specified…" modes are offered."""
+    st.caption("All Patterns, All Bullish, All Bearish and Global are always shown; "
+               "add rows for the individual patterns you want as extra columns "
+               "(Global aggregates them). Changing rows re-aggregates the last "
+               "run without re-running the search.")
+    # Drop rows whose mode is no longer offered (e.g. a stale "All Patterns" row)
+    selections = [sel for sel in st.session_state.get("gs_selections", [])
+                  if sel.get("mode") in SELECTION_MODES]
+    st.session_state["gs_selections"] = selections
 
     # Generation counter to guarantee fresh widget keys after deletions
     gen = st.session_state.get("_gs_sel_gen", 0)
@@ -1324,7 +1540,7 @@ def _render_pattern_selection():
 
         with c_rm:
             st.markdown("<br>", unsafe_allow_html=True)
-            if len(selections) > 1 and st.button("X", key=f"{kp}_rm"):
+            if st.button("X", key=f"{kp}_rm"):
                 selections.pop(idx)
                 st.session_state["gs_selections"] = selections
                 # Bump generation so all widget keys are fresh on next render
@@ -1332,195 +1548,9 @@ def _render_pattern_selection():
                 st.rerun()
 
     if st.button("+ Add Selection", key="gs_add_sel"):
-        selections.append({
-            "mode": "All Patterns",
-            "pattern_type": "Bullish",
-            "primary": None,
-            "secondary": None,
-        })
+        selections.append(_new_user_selection())
         st.session_state["gs_selections"] = selections
         st.rerun()
-
-
-# ======================================================================
-# Indicator settings UI (gs_ prefixed)
-# ======================================================================
-
-def _render_indicator_settings():
-    """Render indicator parameter widgets with gs_ prefix."""
-    pfx = "gs_"
-
-    with st.expander("RSI", expanded=False):
-        st.session_state[f'{pfx}rsi_window'] = st.number_input(
-            "RSI Period", 5, 50,
-            value=int(st.session_state.get(f'{pfx}rsi_window', 14)),
-            step=1, key=f"{pfx}rsi_w")
-
-    with st.expander("Bollinger Bands", expanded=False):
-        st.caption("**Upper Band**")
-        st.session_state[f'{pfx}bb_upper_period'] = st.number_input(
-            "Upper Period", 5, 100, value=int(st.session_state.get(f'{pfx}bb_upper_period', 20)),
-            step=1, key=f"{pfx}bb_up_p")
-        st.session_state[f'{pfx}bb_upper_stdev'] = st.number_input(
-            "Upper StdDev", 0.5, 5.0, value=float(st.session_state.get(f'{pfx}bb_upper_stdev', 2.0)),
-            step=0.01, format="%.2f", key=f"{pfx}bb_up_s")
-        st.caption("**Middle Band**")
-        st.session_state[f'{pfx}bb_mid_period'] = st.number_input(
-            "Middle Period", 5, 100, value=int(st.session_state.get(f'{pfx}bb_mid_period', 20)),
-            step=1, key=f"{pfx}bb_mid_p")
-        st.caption("**Lower Band**")
-        st.session_state[f'{pfx}bb_lower_period'] = st.number_input(
-            "Lower Period", 5, 100, value=int(st.session_state.get(f'{pfx}bb_lower_period', 20)),
-            step=1, key=f"{pfx}bb_lo_p")
-        st.session_state[f'{pfx}bb_lower_stdev'] = st.number_input(
-            "Lower StdDev", 0.5, 5.0, value=float(st.session_state.get(f'{pfx}bb_lower_stdev', 2.0)),
-            step=0.01, format="%.2f", key=f"{pfx}bb_lo_s")
-
-    with st.expander("Keltner Channel", expanded=False):
-        st.session_state[f'{pfx}kc_atr_period'] = st.number_input(
-            "ATR Period", 5, 100, value=int(st.session_state.get(f'{pfx}kc_atr_period', 10)),
-            step=1, key=f"{pfx}kc_atr")
-        st.caption("**Upper Band**")
-        st.session_state[f'{pfx}kc_upper_ema'] = st.number_input(
-            "Upper EMA Period", 5, 100, value=int(st.session_state.get(f'{pfx}kc_upper_ema', 20)),
-            step=1, key=f"{pfx}kc_up_ema")
-        st.session_state[f'{pfx}kc_upper_mult'] = st.number_input(
-            "Upper ATR Mult", 0.5, 5.0, value=float(st.session_state.get(f'{pfx}kc_upper_mult', 2.0)),
-            step=0.01, format="%.2f", key=f"{pfx}kc_up_m")
-        st.caption("**Middle Band**")
-        st.session_state[f'{pfx}kc_mid_ema'] = st.number_input(
-            "Middle EMA Period", 5, 100, value=int(st.session_state.get(f'{pfx}kc_mid_ema', 20)),
-            step=1, key=f"{pfx}kc_mid_e")
-        st.caption("**Lower Band**")
-        st.session_state[f'{pfx}kc_lower_ema'] = st.number_input(
-            "Lower EMA Period", 5, 100, value=int(st.session_state.get(f'{pfx}kc_lower_ema', 20)),
-            step=1, key=f"{pfx}kc_lo_ema")
-        st.session_state[f'{pfx}kc_lower_mult'] = st.number_input(
-            "Lower ATR Mult", 0.5, 5.0, value=float(st.session_state.get(f'{pfx}kc_lower_mult', 2.0)),
-            step=0.01, format="%.2f", key=f"{pfx}kc_lo_m")
-
-    with st.expander("Stochastic", expanded=False):
-        st.session_state[f'{pfx}stoch_k_period'] = st.number_input(
-            "%K Period", 1, 100, value=int(st.session_state.get(f'{pfx}stoch_k_period', 14)),
-            step=1, key=f"{pfx}stoch_kp")
-        st.session_state[f'{pfx}stoch_k_smooth'] = st.number_input(
-            "%K Smoothing", 1, 50, value=int(st.session_state.get(f'{pfx}stoch_k_smooth', 3)),
-            step=1, key=f"{pfx}stoch_ks")
-        st.session_state[f'{pfx}stoch_d_smooth'] = st.number_input(
-            "%D Smoothing", 1, 50, value=int(st.session_state.get(f'{pfx}stoch_d_smooth', 3)),
-            step=1, key=f"{pfx}stoch_ds")
-
-    with st.expander("ADX", expanded=False):
-        st.session_state[f'{pfx}adx_period'] = st.number_input(
-            "ADX Period", 5, 100, value=int(st.session_state.get(f'{pfx}adx_period', 14)),
-            step=1, key=f"{pfx}adx_p")
-
-    with st.expander("ATR", expanded=False):
-        st.session_state[f'{pfx}atr_period'] = st.number_input(
-            "ATR Period", 5, 100, value=int(st.session_state.get(f'{pfx}atr_period', 14)),
-            step=1, key=f"{pfx}atr_p")
-
-    with st.expander("MACD", expanded=False):
-        st.session_state[f'{pfx}macd_fast'] = st.number_input(
-            "Fast Period", 2, 100, value=int(st.session_state.get(f'{pfx}macd_fast', 12)),
-            step=1, key=f"{pfx}macd_f")
-        st.session_state[f'{pfx}macd_slow'] = st.number_input(
-            "Slow Period", 2, 200, value=int(st.session_state.get(f'{pfx}macd_slow', 26)),
-            step=1, key=f"{pfx}macd_sl")
-        st.session_state[f'{pfx}macd_signal'] = st.number_input(
-            "Signal Period", 2, 100, value=int(st.session_state.get(f'{pfx}macd_signal', 9)),
-            step=1, key=f"{pfx}macd_sg")
-
-    with st.expander("Supertrend", expanded=False):
-        st.session_state[f'{pfx}supertrend_period'] = st.number_input(
-            "Period", 1, 100, value=int(st.session_state.get(f'{pfx}supertrend_period', 10)),
-            step=1, key=f"{pfx}st_p")
-        st.session_state[f'{pfx}supertrend_multiplier'] = st.number_input(
-            "Multiplier", 0.5, 10.0, value=float(st.session_state.get(f'{pfx}supertrend_multiplier', 3.0)),
-            step=0.01, format="%.2f", key=f"{pfx}st_m")
-
-    with st.expander("EMA Overlay", expanded=False):
-        ema_key = f'{pfx}ema_periods'
-        if ema_key not in st.session_state:
-            from config.constants import DEFAULT_EMA_PERIODS
-            st.session_state[ema_key] = list(DEFAULT_EMA_PERIODS)
-        gs_ema_gen_key = f"_gs_ema_gen_{pfx}"
-        gs_ema_gen = st.session_state.get(gs_ema_gen_key, 0)
-
-        emas_to_remove = []
-        for idx, ema_val in enumerate(st.session_state[ema_key]):
-            lc, rc = st.columns([3, 1])
-            with lc:
-                new_val = st.number_input(f"EMA {idx+1} Period", 2, 500, int(ema_val),
-                                          step=1, key=f"{pfx}ema_p_g{gs_ema_gen}_{idx}")
-                st.session_state[ema_key][idx] = new_val
-            with rc:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("X", key=f"{pfx}ema_rm_g{gs_ema_gen}_{idx}"):
-                    emas_to_remove.append(idx)
-        if emas_to_remove:
-            for i in sorted(emas_to_remove, reverse=True):
-                st.session_state[ema_key].pop(i)
-            st.session_state[gs_ema_gen_key] = gs_ema_gen + 1
-            st.rerun()
-        if st.button("+ Add EMA", key=f"{pfx}ema_add"):
-            st.session_state[ema_key].append(20)
-            st.rerun()
-
-    with st.expander("Donchian Channel", expanded=False):
-        st.caption("**Upper Band**")
-        st.session_state[f'{pfx}dc_upper_period'] = st.number_input(
-            "Upper Period", 5, 200, value=int(st.session_state.get(f'{pfx}dc_upper_period', 20)),
-            step=1, key=f"{pfx}dc_up_p")
-        st.caption("**Middle Band**")
-        st.session_state[f'{pfx}dc_mid_period'] = st.number_input(
-            "Middle Period", 5, 200, value=int(st.session_state.get(f'{pfx}dc_mid_period', 20)),
-            step=1, key=f"{pfx}dc_mid_p")
-        st.caption("**Lower Band**")
-        st.session_state[f'{pfx}dc_lower_period'] = st.number_input(
-            "Lower Period", 5, 200, value=int(st.session_state.get(f'{pfx}dc_lower_period', 20)),
-            step=1, key=f"{pfx}dc_lo_p")
-        st.divider()
-        st.session_state[f'{pfx}dc_offset'] = st.number_input(
-            "Offset / Shift", -50, 50, value=int(st.session_state.get(f'{pfx}dc_offset', 0)),
-            step=1, key=f"{pfx}dc_off")
-
-    with st.expander("Parabolic SAR", expanded=False):
-        st.session_state[f'{pfx}psar_af_start'] = st.number_input(
-            "AF Start", 0.001, 0.5, value=float(st.session_state.get(f'{pfx}psar_af_start', 0.02)),
-            step=0.01, format="%.3f", key=f"{pfx}psar_afs")
-        st.session_state[f'{pfx}psar_af_increment'] = st.number_input(
-            "AF Increment", 0.001, 0.5, value=float(st.session_state.get(f'{pfx}psar_af_increment', 0.02)),
-            step=0.01, format="%.3f", key=f"{pfx}psar_afi")
-        st.session_state[f'{pfx}psar_af_max'] = st.number_input(
-            "AF Max", 0.01, 1.0, value=float(st.session_state.get(f'{pfx}psar_af_max', 0.20)),
-            step=0.01, format="%.2f", key=f"{pfx}psar_afm")
-
-    with st.expander("Williams %R", expanded=False):
-        st.session_state[f'{pfx}willr_period'] = st.number_input(
-            "Period", 1, 100, value=int(st.session_state.get(f'{pfx}willr_period', 14)),
-            step=1, key=f"{pfx}willr_p")
-
-    with st.expander("ROC", expanded=False):
-        st.session_state[f'{pfx}roc_period'] = st.number_input(
-            "ROC Period", 1, 100, value=int(st.session_state.get(f'{pfx}roc_period', 12)),
-            step=1, key=f"{pfx}roc_p")
-        st.session_state[f'{pfx}roc_signal_period'] = st.number_input(
-            "Signal Period (EMA)", 1, 100, value=int(st.session_state.get(f'{pfx}roc_signal_period', 9)),
-            step=1, key=f"{pfx}roc_sig")
-
-    with st.expander("CCI", expanded=False):
-        st.session_state[f'{pfx}cci_period'] = st.number_input(
-            "CCI Period", 1, 200, value=int(st.session_state.get(f'{pfx}cci_period', 20)),
-            step=1, key=f"{pfx}cci_p")
-
-    with st.expander("Linear Regression Channel", expanded=False):
-        st.session_state[f'{pfx}lr_period'] = st.number_input(
-            "Period", 2, 500, value=int(st.session_state.get(f'{pfx}lr_period', 50)),
-            step=1, key=f"{pfx}lr_p")
-        st.session_state[f'{pfx}lr_multiplier'] = st.number_input(
-            "Channel Multiplier", 0.1, 10.0, value=float(st.session_state.get(f'{pfx}lr_multiplier', 2.0)),
-            step=0.1, format="%.1f", key=f"{pfx}lr_m")
 
 
 # ======================================================================
@@ -1532,6 +1562,7 @@ def _aggregate_stats_dicts(all_stats_dicts):
     import numpy as np
 
     all_trade_pnls = []
+    all_r_dists = []
     all_holding_periods = []
     total_win_pnl = 0.0
     total_lose_pnl = 0.0
@@ -1548,6 +1579,9 @@ def _aggregate_stats_dicts(all_stats_dicts):
         total_target_alloc += sd['total_target_alloc']
         total_eod_alloc += sd.get('total_eod_alloc', 0.0)
         all_trade_pnls.extend(sd['trade_pnls_r'])
+        # Pad to keep r_dists aligned with pnls (0.0 = unusable for MC sizing)
+        n_sd = len(sd['trade_pnls_r'])
+        all_r_dists.extend((list(sd.get('trade_r_distances', [])) + [0.0] * n_sd)[:n_sd])
         all_holding_periods.extend(sd.get('trade_holding_periods', []))
 
     total_trades = len(all_trade_pnls)
@@ -1606,6 +1640,8 @@ def _aggregate_stats_dicts(all_stats_dicts):
         'max_drawdown': max_drawdown,
         'sqn': sqn,
         'avg_holding_period': avg_holding_period,
+        'trade_pnls_r': [float(p) for p in all_trade_pnls],
+        'trade_r_distances': [float(r) for r in all_r_dists],
     }
 
 
@@ -1613,17 +1649,26 @@ def _aggregate_stats_dicts(all_stats_dicts):
 # MC enrichment — parallel version
 # ======================================================================
 
-def _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0):
-    """Enrich Grid Search results (list of (label, global_agg, sel_results))
-    with `mc_avg_profit` for every agg dict (global + each per-selection).
+def _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0,
+                        point_value=None, margin=None, trades_per_sim=None):
+    """Enrich Grid Search results (list of (label, all_patterns_agg, columns, strategy))
+    with `mc_avg_profit` / `mc_margin_capped` for every agg dict (All
+    Patterns + every other column).
 
-    Thin wrapper around `enrich_aggs_with_mc` that flattens the nested shape.
+    Thin wrapper around `enrich_aggs_with_mc` that flattens the nested shape
+    (each distinct agg object is enriched once — columns["All Patterns"] is
+    normally the same object as all_patterns_agg).
     """
     flat_aggs = []
-    for _label, global_agg, sel_results in results:
-        flat_aggs.append(global_agg)
-        flat_aggs.extend(sel_results.values())
-    enrich_aggs_with_mc(flat_aggs, balance, n_sims, target_dd=target_dd)
+    seen = set()
+    for _label, all_patterns_agg, columns, _strategy in results:
+        for agg in [all_patterns_agg, *columns.values()]:
+            if id(agg) not in seen:
+                seen.add(id(agg))
+                flat_aggs.append(agg)
+    enrich_aggs_with_mc(flat_aggs, balance, n_sims, target_dd=target_dd,
+                        point_value=point_value, margin=margin,
+                        trades_per_sim=trades_per_sim)
 
 
 # ======================================================================
@@ -1633,10 +1678,19 @@ def _enrich_mc_parallel(results, balance, n_sims, target_dd=5.0):
 def _run_grid_search(selected_strategy, search_group, search_set, selected_events,
                      condition_candidates, condition_event, sidebar_config,
                      effective_candidates=None, use_original_engine=False):
-    """Run backtests for all candidate runs.
+    """Run backtests for all candidate runs on every pattern combo.
 
-    Returns list of (label, global_agg, selection_results) where
-    selection_results is an OrderedDict {selection_label: agg_dict}.
+    Returns (results, combo_results_list):
+      results            — list of (label, all_patterns_agg, columns, strategy)
+                           where columns is the build_pattern_columns OrderedDict
+                           (All Patterns, All Bullish, All Bearish, Global,
+                           one per user row; columns["All Patterns"] is
+                           all_patterns_agg, which also carries correlation)
+                           and strategy is the candidate's full strategy dict
+                           (deep copy, variant indicator offsets applied).
+      combo_results_list — per candidate {combo_key: [stats dicts]} (aligned
+                           with results) so the pattern columns can be
+                           re-aggregated when the user rows change.
     """
 
     # Build base indicator params: start from defaults, overlay the selected
@@ -1658,58 +1712,40 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
 
     if df_full.empty:
         st.warning("No data available for the selected date range.")
-        return []
+        return [], []
 
-    # Expand pattern selections per selection group
-    selections = st.session_state.get("gs_selections", [])
+    # Every candidate runs on every pattern combo (all 86); the fixed
+    # columns and the user rows are aggregated from the per-combo results.
+    user_selections = st.session_state.get("gs_selections", [])
     drm_bullish = st.session_state.get("drm_bullish")
     drm_bearish = st.session_state.get("drm_bearish")
 
-    # Build period slices per unique combo, and track which combos belong to each selection
-    from collections import OrderedDict
+    # Build period slices per combo
     combo_slices = OrderedDict()  # combo_key -> [(df_slice, ps, pe), ...]
-    selection_combo_map = OrderedDict()  # sel_label -> [combo_key, ...]
-    global_combo_keys = []  # all unique combo keys (deduplicated, ordered)
+    global_combo_keys = all_combos()
 
-    for sel in selections:
-        label = selection_label(sel)
-        # Ensure unique labels
-        if label in selection_combo_map:
-            n = 2
-            while f"{label} ({n})" in selection_combo_map:
-                n += 1
-            label = f"{label} ({n})"
-
-        combos = expand_selection(sel)
-        sel_combo_keys = []
-        for pattern_type, primary, secondary in combos:
-            combo_key = (pattern_type, primary, secondary)
-            sel_combo_keys.append(combo_key)
-
-            if combo_key not in combo_slices:
-                # First time seeing this combo — compute its period slices
-                drm_df = drm_bullish if pattern_type == "Bullish" else drm_bearish
-                slices = []
-                if drm_df is not None:
-                    periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
-                    for start_dt, end_dt in periods:
-                        df_slice, ps, pe = slice_for_graph(
-                            df=df_full, start_date=start_dt, end_date=end_dt,
-                            show_ichimoku=False,
-                            show_bb=False,
-                            show_kc=False,
-                            show_donchian=False,
-                            show_psar=False)
-                        if not df_slice.empty:
-                            slices.append((df_slice, ps, pe))
-                combo_slices[combo_key] = slices
-                global_combo_keys.append(combo_key)
-
-        selection_combo_map[label] = sel_combo_keys
+    for combo_key in global_combo_keys:
+        pattern_type, primary, secondary = combo_key
+        drm_df = drm_bullish if pattern_type == "Bullish" else drm_bearish
+        slices = []
+        if drm_df is not None:
+            periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
+            for start_dt, end_dt in periods:
+                df_slice, ps, pe = slice_for_graph(
+                    df=df_full, start_date=start_dt, end_date=end_dt,
+                    show_ichimoku=False,
+                    show_bb=False,
+                    show_kc=False,
+                    show_donchian=False,
+                    show_pc=False,
+                    show_psar=False)
+                if not df_slice.empty:
+                    slices.append((df_slice, ps, pe))
+        combo_slices[combo_key] = slices
 
     if not any(combo_slices[ck] for ck in global_combo_keys):
-        st.warning("No valid DRM periods found for selected patterns.")
-        return []
+        st.warning("No valid DRM periods found for any pattern.")
+        return [], []
 
     # Generate all run configs
     base = copy.deepcopy(selected_strategy)
@@ -1730,7 +1766,7 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
 
     if not run_configs:
         st.warning("No run configurations generated.")
-        return []
+        return [], []
 
     # Compute the per-variant DataFrames + slice them per pattern combo.
     # Always include the default variant (None) so non-ranged candidates work.
@@ -1745,22 +1781,28 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
         ref_directions = _compute_reference_directions(
             ref_indices, combo_slices, global_combo_keys)
 
+    # Candidate strategies kept with each result (Shortlist / Save as strategy)
+    result_strategies = [result_strategy_for_variant(strategy, vid, variant_groups)
+                         for _label, strategy, vid in run_configs]
+
     if use_original_engine:
-        results = _run_grid_search_original_engine(
-            run_configs, variant_combo_slices, global_combo_keys,
-            selection_combo_map, ref_directions)
+        raw = _run_grid_search_original_engine(
+            run_configs, variant_combo_slices, global_combo_keys, result_strategies)
     else:
-        results = _run_grid_search_multiprocessing(
-            run_configs, variant_combo_slices, global_combo_keys,
-            selection_combo_map, ref_directions)
+        raw = _run_grid_search_multiprocessing(
+            run_configs, variant_combo_slices, global_combo_keys, result_strategies)
+
+    results, combo_results_list = _assemble_results(
+        raw, user_selections, global_combo_keys, ref_directions)
 
     # Enrich every agg dict with MC Avg Profit @ 5% avg max DD
-    # Binary-searches for the risk % that yields exactly 5% avg max DD.
-    # trades/sim = each candidate's own num_trades (not a fixed constant),
-    # so low-trade-count candidates are simulated with matching path length.
-    # Parallelised across workers — enrichment used to dominate runtime.
-    balance = st.session_state.get('mc_starting_balance', 10000.0)
-    _enrich_mc_parallel(results, balance, GS_MC_N_SIMULATIONS, target_dd=5.0)
+    # Bootstraps each candidate's own trades (pnl_r + stop distance) in
+    # dollars, contracts sized per trade and capped by margin; binary-searches
+    # the risk % that yields 5% avg max DD. Parallelised across workers.
+    mc_cfg = mc_settings()
+    _enrich_mc_parallel(results, mc_cfg['balance'], GS_MC_N_SIMULATIONS, target_dd=5.0,
+                        point_value=mc_cfg['point_value'], margin=mc_cfg['margin'],
+                        trades_per_sim=mc_cfg['trades_per_sim'])
 
     # Diagnostic: if all candidates produced zero trades, tell the user
     if results and all(r[1].get('num_trades', 0) == 0 for r in results):
@@ -1769,7 +1811,76 @@ def _run_grid_search(selected_strategy, search_group, search_set, selected_event
             f"Check entry/exit conditions, DRM periods, or date range."
         )
 
-    return results
+    return results, combo_results_list
+
+
+# ----------------------------------------------------------------------
+# Pattern-column assembly (pure; shared by the run path and the
+# re-aggregation path taken when the user rows change)
+# ----------------------------------------------------------------------
+
+def _selections_json(selections):
+    """Stable JSON of the user pattern rows (cache comparison key)."""
+    import json
+    return json.dumps(selections or [], sort_keys=True, default=str)
+
+
+def build_candidate_columns(combo_results, user_selections):
+    """Fixed + user pattern columns for one candidate from its per-combo
+    stats dicts ({combo_key: [stats dicts]})."""
+    return build_pattern_columns(user_selections, [], combo_results,
+                                 _aggregate_stats_dicts, _empty_agg)
+
+
+def _assemble_results(raw, user_selections, global_combo_keys, ref_directions=None):
+    """Turn engine output [(label, combo_results, strategy)] into
+    (results, combo_results_list):
+    results = [(label, all_patterns_agg, columns, strategy)].
+    Correlation is computed over global_combo_keys and written onto
+    all_patterns_agg (== columns["All Patterns"])."""
+    results = []
+    combo_results_list = []
+    for label, combo_results, strategy in raw:
+        columns = build_candidate_columns(combo_results, user_selections)
+        all_patterns_agg = columns["All Patterns"]
+
+        # Correlation with reference strategies
+        if ref_directions is not None:
+            corr_value = _compute_candidate_correlation(
+                combo_results, global_combo_keys, ref_directions)
+            all_patterns_agg['correlation'] = corr_value
+            all_patterns_agg['abs_correlation'] = abs(corr_value) if corr_value is not None else None
+        else:
+            all_patterns_agg['correlation'] = None
+            all_patterns_agg['abs_correlation'] = None
+
+        results.append((label, all_patterns_agg, columns, strategy))
+        combo_results_list.append(combo_results)
+    return results, combo_results_list
+
+
+def reaggregate_results(results, combo_results_list, user_selections):
+    """Rebuild every candidate's pattern columns from its cached per-combo
+    stats after the user rows changed — without re-running the search.
+
+    The three fixed "All …" aggs do not depend on the user rows, so the
+    cached objects are kept (they already carry correlation + MC values).
+    Global and the user columns are rebuilt. Returns (new_results,
+    changed_aggs) where changed_aggs are the freshly built aggs that still
+    need MC enrichment."""
+    new_results = []
+    changed_aggs = []
+    for (label, all_patterns_agg, old_columns, strategy), combo_results in zip(results, combo_results_list):
+        columns = build_candidate_columns(combo_results, user_selections)
+        for fixed_label in FIXED_SELECTIONS:
+            if fixed_label in old_columns:
+                columns[fixed_label] = old_columns[fixed_label]
+        all_patterns_agg = columns["All Patterns"]
+        for col_label, agg in columns.items():
+            if col_label not in FIXED_SELECTIONS:
+                changed_aggs.append(agg)
+        new_results.append((label, all_patterns_agg, columns, strategy))
+    return new_results, changed_aggs
 
 
 def _build_variant_combo_slices(df_full, base_indicator_params, run_configs,
@@ -1831,9 +1942,11 @@ def _build_variant_combo_slices(df_full, base_indicator_params, run_configs,
 
 
 def _run_grid_search_original_engine(run_configs, variant_combo_slices, global_combo_keys,
-                                      selection_combo_map, ref_directions=None):
+                                     result_strategies=None):
     """Run grid search using the ORIGINAL (non-numpy) engine, single-process.
     Used for debugging to compare results with the numpy engine.
+    Returns [(label, combo_results, strategy)] — see _assemble_results;
+    strategy is result_strategies[idx] (default: a deep copy of the run config's).
     """
     from strategies.first_strategy import execute_custom_strategy
 
@@ -1843,6 +1956,7 @@ def _run_grid_search_original_engine(run_configs, variant_combo_slices, global_c
             'lose_pnl': float(stats_df.loc['Losing trades P&L (R)', 'value']),
             'trade_pnls_r': list(stats_df.attrs.get('trade_pnls_r', [])),
             'trade_holding_periods': list(stats_df.attrs.get('trade_holding_periods', [])),
+            'trade_r_distances': list(stats_df.attrs.get('trade_r_distances', [])),
             'total_static_alloc': float(stats_df.attrs.get('total_static_alloc', 0.0)),
             'total_dynamic_alloc': float(stats_df.attrs.get('total_dynamic_alloc', 0.0)),
             'total_target_alloc': float(stats_df.attrs.get('total_target_alloc', 0.0)),
@@ -1868,31 +1982,9 @@ def _run_grid_search_original_engine(run_configs, variant_combo_slices, global_c
                     pass
             combo_results[combo_key] = stats_list
 
-        # Global stats
-        global_stats_dicts = []
-        for ck in global_combo_keys:
-            global_stats_dicts.extend(combo_results.get(ck, []))
-        global_agg = _aggregate_stats_dicts(global_stats_dicts) if global_stats_dicts else _empty_agg()
-
-        # Correlation with reference strategies
-        if ref_directions is not None:
-            corr_value = _compute_candidate_correlation(
-                combo_results, global_combo_keys, ref_directions)
-            global_agg['correlation'] = corr_value
-            global_agg['abs_correlation'] = abs(corr_value) if corr_value is not None else None
-        else:
-            global_agg['correlation'] = None
-            global_agg['abs_correlation'] = None
-
-        # Per-selection stats
-        sel_results = OrderedDict()
-        for sel_label, sel_combo_keys in selection_combo_map.items():
-            sel_stats_dicts = []
-            for ck in sel_combo_keys:
-                sel_stats_dicts.extend(combo_results.get(ck, []))
-            sel_results[sel_label] = _aggregate_stats_dicts(sel_stats_dicts) if sel_stats_dicts else _empty_agg()
-
-        results.append((label, global_agg, sel_results))
+        results.append((label, combo_results,
+                        result_strategies[idx] if result_strategies is not None
+                        else copy.deepcopy(strategy)))
         progress.progress((idx + 1) / n_candidates,
                           text=f"Completed {idx + 1}/{n_candidates} candidates")
 
@@ -1901,9 +1993,11 @@ def _run_grid_search_original_engine(run_configs, variant_combo_slices, global_c
 
 
 def _run_grid_search_multiprocessing(run_configs, variant_combo_slices, global_combo_keys,
-                                      selection_combo_map, ref_directions=None):
+                                     result_strategies=None):
     """Run grid search using multiprocessing Pool.
     Each worker process handles one candidate across all combo/period slices.
+    Returns [(label, combo_results, strategy)] — see _assemble_results;
+    strategy is result_strategies[idx] (default: a deep copy of the run config's).
     """
     from strategies.grid_search_worker import init_worker, run_candidate
 
@@ -1968,32 +2062,9 @@ def _run_grid_search_multiprocessing(run_configs, variant_combo_slices, global_c
         if idx not in candidate_results:
             continue
         label, combo_results = candidate_results[idx]
-
-        # Global stats: all unique combos
-        global_stats_dicts = []
-        for ck in global_combo_keys:
-            global_stats_dicts.extend(combo_results.get(ck, []))
-        global_agg = _aggregate_stats_dicts(global_stats_dicts) if global_stats_dicts else _empty_agg()
-
-        # Correlation with reference strategies
-        if ref_directions is not None:
-            corr_value = _compute_candidate_correlation(
-                combo_results, global_combo_keys, ref_directions)
-            global_agg['correlation'] = corr_value
-            global_agg['abs_correlation'] = abs(corr_value) if corr_value is not None else None
-        else:
-            global_agg['correlation'] = None
-            global_agg['abs_correlation'] = None
-
-        # Per-selection stats
-        sel_results = OrderedDict()
-        for sel_label, sel_combo_keys in selection_combo_map.items():
-            sel_stats_dicts = []
-            for ck in sel_combo_keys:
-                sel_stats_dicts.extend(combo_results.get(ck, []))
-            sel_results[sel_label] = _aggregate_stats_dicts(sel_stats_dicts) if sel_stats_dicts else _empty_agg()
-
-        results.append((label, global_agg, sel_results))
+        strategy = (result_strategies[idx] if result_strategies is not None
+                    else copy.deepcopy(run_configs[idx][1]))
+        results.append((label, combo_results, strategy))
 
     progress.empty()
     return results
@@ -2003,13 +2074,25 @@ def _run_grid_search_multiprocessing(run_configs, variant_combo_slices, global_c
 # Results display with filtering, sorting, pagination
 # ======================================================================
 
-def _display_results(results, strategy_name, thresholds, sort_key, sort_descending):
-    """Display filtered, sorted, paginated results with Global + per-selection breakdown."""
+def _display_results(results, strategy_name, thresholds, sort_key, sort_descending,
+                     scope="All Patterns", search_group="", group_set=""):
+    """Display filtered, sorted, paginated results with the fixed pattern
+    columns (All Patterns | All Bullish | All Bearish | Global) plus one per
+    user row.
 
-    # Filter based on Global metrics — all thresholds applied dynamically
-    filtered = [(label, global_agg, sel_results)
-                for label, global_agg, sel_results in results
-                if passes_thresholds(global_agg, thresholds)]
+    `scope` picks whose metrics drive filtering, sorting and the results table:
+    one of FIXED_COLUMNS or a user-row label.
+    """
+
+    if scope != "All Patterns" and not any(scope in (columns or {})
+                                           for _, _, columns, _ in results):
+        st.info(f"'{scope}' is not in the last calculated results — showing All Patterns. "
+                "Click Calculate to refresh.")
+        scope = "All Patterns"
+
+    # Filter + sort on the scoped metrics (None sort values go to bottom)
+    filtered = filter_and_sort_results(results, thresholds, sort_key,
+                                       sort_descending, scope)
 
     st.subheader(f"Results — {strategy_name}")
     st.caption(f"{len(filtered)} of {len(results)} candidates pass filters")
@@ -2018,47 +2101,37 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
         st.warning("No candidates pass the threshold filters.")
         return
 
-    # Sort based on Global metrics
-    # Sort — None values go to bottom regardless of direction
-    def _sort_val(x):
-        v = x[1].get(sort_key)
-        if v is None:
-            return float('inf') if not sort_descending else float('-inf')
-        return v
-    filtered.sort(key=_sort_val, reverse=sort_descending)
-
-    # Build Global results table (rows = candidates, columns = metrics)
+    # Build scoped results table (rows = candidates, columns = metrics)
     rows = []
-    for label, global_agg, sel_results in filtered:
+    for label, metric_agg, _all_patterns_agg, _columns, _strategy in filtered:
         rows.append({
             "Candidate": label,
-            "Trades": global_agg["num_trades"],
-            "Win%": f"{global_agg['win_pct']:.0f}%",
-            "Lose%": f"{global_agg['lose_pct']:.0f}%",
-            "Avg Profit": f"{global_agg['avg_win_pnl']:.2f}R",
-            "Avg Loss": f"{global_agg['avg_lose_pnl']:.2f}R",
-            "Total P&L": f"{global_agg['total_pnl']:.2f}R",
-            "EV": f"{global_agg['expected_value']:.2f}R",
-            "Target%": f"{global_agg['target_exit_pct']:.0f}%",
-            "Static%": f"{global_agg['static_exit_pct']:.0f}%",
-            "Dynamic%": f"{global_agg['dynamic_exit_pct']:.0f}%",
-            "RR": f"{global_agg.get('rr_ratio', 0):.2f}",
-            "MC": f"${global_agg.get('mc_avg_profit', 0):,.0f}",
-            "Corr": f"{global_agg['correlation']:.0f}%" if global_agg.get('correlation') is not None else "\u2014",
-            "Hold": f"{global_agg.get('avg_holding_period', 0):.1f}",
+            "Trades": metric_agg["num_trades"],
+            "Win%": f"{metric_agg['win_pct']:.0f}%",
+            "Lose%": f"{metric_agg['lose_pct']:.0f}%",
+            "Avg Profit": f"{metric_agg['avg_win_pnl']:.2f}R",
+            "Avg Loss": f"{metric_agg['avg_lose_pnl']:.2f}R",
+            "Total P&L": f"{metric_agg['total_pnl']:.2f}R",
+            "EV": f"{metric_agg['expected_value']:.2f}R",
+            "Target%": f"{metric_agg['target_exit_pct']:.0f}%",
+            "Static%": f"{metric_agg['static_exit_pct']:.0f}%",
+            "Dynamic%": f"{metric_agg['dynamic_exit_pct']:.0f}%",
+            "RR": f"{metric_agg.get('rr_ratio', 0):.2f}",
+            "MC": format_mc_value(metric_agg),
+            "Corr": f"{metric_agg['correlation']:.0f}%" if metric_agg.get('correlation') is not None else "\u2014",
+            "Hold": f"{metric_agg.get('avg_holding_period', 0):.1f}",
         })
 
     df_results = pd.DataFrame(rows)
 
     # MC context caption
-    _mc_bal = st.session_state.get('mc_starting_balance', 10000.0)
-    st.caption(f"MC Avg Profit @ 5% DD based on ${_mc_bal:,.0f} starting balance, each candidate's own trade count as trades/sim, {GS_MC_N_SIMULATIONS:,} simulations (risk % auto-adjusted to 5% avg max DD)")
+    st.caption(mc_caption())
 
     # Copy to clipboard (all filtered results, TSV)
     tsv_data = df_results.to_csv(sep='\t', index=False, header=False)
     _copy_to_clipboard(tsv_data, key="gs_copy_results")
 
-    st.caption(f"{len(filtered)} results (Global Performance)")
+    st.caption(f"{len(filtered)} results ({scope} Performance)")
     st.dataframe(df_results, use_container_width=True, hide_index=True)
 
     # Expandable detail view for each candidate (paginated)
@@ -2089,18 +2162,109 @@ def _display_results(results, strategy_name, thresholds, sort_key, sort_descendi
                 st.session_state["_gs_detail_page"] = detail_page + 1
                 st.rerun()
 
+    shortlist = st.session_state.setdefault("gs_shortlist", [])
     for idx in range(detail_start, detail_end):
-        label, global_agg, sel_results = filtered[idx]
+        label, _metric_agg, all_patterns_agg, columns, strategy = filtered[idx]
         with st.expander(f"**{label}**", expanded=False):
-            # Build table: Global on the left + per-selection columns (if multiple)
-            table_data = {"Global": global_agg}
-            if len(sel_results) > 1:
-                table_data.update(sel_results)
-            table = _build_metrics_table(table_data)
+            identity = {"label": label, "base_strategy": strategy_name,
+                        "search_group": search_group, "group_set": group_set}
+            if shortlist_has(shortlist, identity):
+                st.caption("Already in Shortlist")
+            elif st.button("➕ Shortlist", key=f"gs_short_add_{idx}"):
+                entry = make_shortlist_entry(
+                    label, all_patterns_agg, columns, strategy,
+                    base_strategy=strategy_name, search_group=search_group,
+                    group_set=group_set, scope=scope, mc_settings=mc_settings())
+                st.session_state["gs_shortlist"] = shortlist_add(shortlist, entry)
+                st.rerun()
+            table = _build_metrics_table(detail_table_columns(columns, scope))
             st.table(table)
+            st.caption(PATTERN_COLUMNS_CAPTION)
             _copy_to_clipboard(
                 table.to_csv(sep='\t', header=False, index=False),
                 key=f"gs_sel_detail_{idx}")
+
+
+def _render_shortlist():
+    """Shortlist section: candidates kept from any Detailed Performance run
+    (snapshots; survive new searches and cache clears until the browser
+    session ends)."""
+    from strategies.strategy_manager import save_strategies_to_file
+
+    shortlist = st.session_state.setdefault("gs_shortlist", [])
+    component_labels = dict(SEARCH_COMPONENTS)
+
+    st.markdown("---")
+    st.subheader(f"Shortlist ({len(shortlist)})")
+    st.caption("Kept until the browser session ends. Entries keep the numbers they had when added.")
+
+    if not shortlist:
+        st.caption("Use ➕ Shortlist on a Detailed Performance candidate to add it here.")
+        return
+
+    for entry in shortlist:
+        eid = entry["id"]
+        component = component_labels.get(entry["search_group"], entry["search_group"])
+        title = f"**{entry['label']}** — {entry['base_strategy']} · {component} · {entry['group_set']}"
+        with st.expander(title, expanded=False):
+            mc = entry.get("mc_settings") or {}
+            st.caption(
+                f"Added {entry['added_at'].replace('T', ' ')} · Scope: {entry['scope']} · "
+                f"{mc.get('instrument', '?')} / ${mc.get('balance', 0):,.0f} / "
+                f"{mc.get('trades_per_sim', '?')} trades per sim")
+            # Same column order as Detailed Performance showed under the entry's scope
+            table = _build_metrics_table(detail_table_columns(entry["columns"], entry["scope"]))
+            st.table(table)
+
+            name = st.text_input(
+                "Strategy name", value=f"{entry['base_strategy']} — {entry['label']}",
+                key=f"gs_short_name_{eid}")
+            b1, b2, b3 = st.columns(3)
+            with b1:
+                if st.button("➖ Remove", key=f"gs_short_rm_{eid}"):
+                    st.session_state["gs_shortlist"] = shortlist_remove(shortlist, eid)
+                    st.rerun()
+            with b2:
+                _copy_to_clipboard(table.to_csv(sep='\t', header=False, index=False),
+                                   key=f"gs_short_copy_{eid}")
+            with b3:
+                save_clicked = st.button("💾 Save as strategy", key=f"gs_short_save_{eid}")
+            if save_clicked:
+                saved = st.session_state.setdefault("saved_strategies", [])
+                existing = [s.get("strategy_name") for s in saved]
+                strategy, errors = shortlist_strategy_for_save(entry, name, existing)
+                if strategy is None:
+                    st.error("Cannot save strategy:\n\n" + "\n".join(f"- {e}" for e in errors))
+                else:
+                    saved.append(strategy)
+                    save_strategies_to_file()
+                    st.success(f"Saved strategy '{strategy['strategy_name']}'.")
+
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        confirm = st.checkbox("Confirm", key="gs_short_clear_confirm")
+    with c2:
+        if st.button("Clear Shortlist", key="gs_short_clear", disabled=not confirm):
+            st.session_state["gs_shortlist"] = []
+            st.session_state.pop("gs_short_clear_confirm", None)
+            st.rerun()
+
+
+def detail_table_columns(columns, scope="All Patterns"):
+    """Column order for a Detailed Performance table: `▶ scope` first only
+    when scope is not "All Patterns"; then the fixed columns in order
+    (skipping the scoped one), then the user columns in their row order."""
+    table_data = OrderedDict()
+    marked = scope != "All Patterns" and scope in columns
+    if marked:
+        table_data[f"▶ {scope}"] = columns[scope]
+    for col_label in FIXED_COLUMNS:
+        if col_label in columns and not (marked and col_label == scope):
+            table_data[col_label] = columns[col_label]
+    for col_label, agg in columns.items():
+        if col_label not in FIXED_COLUMNS and not (marked and col_label == scope):
+            table_data[col_label] = agg
+    return table_data
 
 
 # ======================================================================

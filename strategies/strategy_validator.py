@@ -13,24 +13,27 @@ from config.constants import (
     R_PROFIT_LOSS_ELEMENTS,
     ATR_TARGET_ELEMENTS,
     ATR_TRAILING_ELEMENTS,
-    MIN_LOOKBACK,
-    MAX_LOOKBACK,
+    MIN_WITHIN_LAST,
+    MAX_WITHIN_LAST,
     get_indicator_map,
 )
 
 
-def _validate_lookback(d, path, errors):
-    """A lookback field is optional; if present it must be a positive int."""
-    lb = d.get("lookback")
-    if lb is None:
+def _validate_within_last(d, path, errors):
+    """A within_last field is optional; if present it must be an int in
+    [MIN_WITHIN_LAST, MAX_WITHIN_LAST] (0 = current bar only). The old 1-based
+    `lookback` key is rejected so un-migrated data is loud."""
+    if "lookback" in d:
+        errors.append(f"{path}.lookback is obsolete — use within_last (run migration)")
+    wl = d.get("within_last")
+    if wl is None:
         return
-    if not isinstance(lb, (int, float)) or isinstance(lb, bool):
-        errors.append(f"{path}.lookback must be an integer, got: {lb!r}")
+    if not isinstance(wl, int) or isinstance(wl, bool):
+        errors.append(f"{path}.within_last must be an integer, got: {wl!r}")
         return
-    lb_int = int(lb)
-    if lb_int != lb or lb_int < MIN_LOOKBACK or lb_int > MAX_LOOKBACK:
+    if wl < MIN_WITHIN_LAST or wl > MAX_WITHIN_LAST:
         errors.append(
-            f"{path}.lookback must be an integer in [{MIN_LOOKBACK}, {MAX_LOOKBACK}], got: {lb!r}"
+            f"{path}.within_last must be an integer in [{MIN_WITHIN_LAST}, {MAX_WITHIN_LAST}], got: {wl!r}"
         )
 
 # All valid indicator element names (without EMA, those are dynamic)
@@ -144,7 +147,7 @@ def validate_strategy(strategy, ema_count=0):
             if not isinstance(atr_mult, (int, float)) or atr_mult <= 0:
                 errors.append(f"initial_stop.atr_multiplier must be > 0, got: {atr_mult!r}")
 
-        _validate_lookback(initial_stop, "initial_stop", errors)
+        _validate_within_last(initial_stop, "initial_stop", errors)
 
     # ------------------------------------------------------------------
     # Exit groups
@@ -279,7 +282,7 @@ def _validate_trigger(trigger, path, errors, ema_count,
     else:
         errors.append(f"{path}.compare_type must be 'Indicator' or 'Fixed Value', got: {compare_type!r}")
 
-    _validate_lookback(trigger, path, errors)
+    _validate_within_last(trigger, path, errors)
 
 
 def _validate_condition(condition, path, errors, ema_count):
@@ -305,7 +308,7 @@ def _validate_condition(condition, path, errors, ema_count):
     else:
         errors.append(f"{path}.compare_type must be 'Indicator' or 'Fixed Value', got: {compare_type!r}")
 
-    _validate_lookback(condition, path, errors)
+    _validate_within_last(condition, path, errors)
 
 
 def _validate_indicator_settings(settings, errors):
@@ -341,6 +344,14 @@ def _validate_indicator_settings(settings, errors):
         val = settings.get(key)
         if val is None or not isinstance(val, (int, float)) or val <= 0:
             errors.append(f"indicator_settings.{key} must be > 0, got: {val!r}")
+
+    # Price Channel periods are optional (strategies saved before the indicator
+    # existed must still load); if present they must be an int >= 1.
+    for key in ("pc_upper_period", "pc_lower_period"):
+        if key in settings:
+            val = settings[key]
+            if isinstance(val, bool) or not isinstance(val, int) or val < 1:
+                errors.append(f"indicator_settings.{key} must be an integer >= 1, got: {val!r}")
 
     # dc_offset can be negative, zero, or positive
     dc_offset = settings.get("dc_offset")

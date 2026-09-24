@@ -14,6 +14,7 @@ from indicators.accumulation_distribution import accumulation_distribution
 from indicators.supertrend import supertrend
 from indicators.ema_overlay import ema_overlay
 from indicators.donchian import donchian_channel
+from indicators.price_channel import price_channel
 from indicators.parabolic_sar import parabolic_sar
 from indicators.williams_r import williams_r
 from indicators.cci import cci
@@ -38,6 +39,7 @@ PARAM_TO_GROUP = {
     'ema_periods': 'ema',
     'dc_upper_period': 'donchian', 'dc_mid_period': 'donchian',
     'dc_lower_period': 'donchian', 'dc_offset': 'donchian',
+    'pc_upper_period': 'pc', 'pc_lower_period': 'pc',
     'psar_af_start': 'psar', 'psar_af_increment': 'psar', 'psar_af_max': 'psar',
     'willr_period': 'willr',
     'cci_period': 'cci',
@@ -141,6 +143,13 @@ def recalculate_groups(df, groups, **params):
             offset=params.get('dc_offset', 0),
         )
 
+    if 'pc' in groups:
+        df["pc_upper"], df["pc_lower"] = price_channel(
+            df["high"], df["low"],
+            upper_period=params.get('pc_upper_period', 1),
+            lower_period=params.get('pc_lower_period', 1),
+        )
+
     if 'psar' in groups:
         df["psar"], df["psar_dir"], psar_up, psar_lo = parabolic_sar(
             df["high"], df["low"], df["latest"],
@@ -231,6 +240,8 @@ def migrate_indicator_settings(settings):
     s.setdefault('roc_signal_period', 9)
     s.setdefault('lr_period', 50)
     s.setdefault('lr_multiplier', 2.0)
+    s.setdefault('pc_upper_period', 1)
+    s.setdefault('pc_lower_period', 1)
 
     return s
 
@@ -264,6 +275,8 @@ def calculate_indicators(
     dc_mid_period: int = 20,
     dc_lower_period: int = 20,
     dc_offset: int = 0,
+    pc_upper_period: int = 1,
+    pc_lower_period: int = 1,
     psar_af_start: float = 0.02,
     psar_af_increment: float = 0.02,
     psar_af_max: float = 0.20,
@@ -433,6 +446,15 @@ def calculate_indicators(
     )
 
     # -------------------------------------------------
+    # Price Channel (Price Upper / Price Lower)
+    # -------------------------------------------------
+    df["pc_upper"], df["pc_lower"] = price_channel(
+        df["high"], df["low"],
+        upper_period=pc_upper_period,
+        lower_period=pc_lower_period,
+    )
+
+    # -------------------------------------------------
     # Parabolic SAR
     # -------------------------------------------------
     (
@@ -477,6 +499,7 @@ _ICHIMOKU_ELEMENTS = {"Tenkan", "Kijun", "Senkou A", "Senkou B", "Chikou"}
 _BB_ELEMENTS = {"BB Upper Band", "BB Middle Band", "BB Lower Band"}
 _KC_ELEMENTS = {"KC Upper Band", "KC Middle Band", "KC Lower Band"}
 _DC_ELEMENTS = {"DC Upper Band", "DC Middle Band", "DC Lower Band"}
+_PC_ELEMENTS = {"Price Upper", "Price Lower"}
 _PSAR_ELEMENTS = {"PSAR", "PSAR Upper", "PSAR Lower"}
 _LR_ELEMENTS = {"LR Upper", "LR Middle", "LR Lower"}
 
@@ -484,13 +507,14 @@ _LR_ELEMENTS = {"LR Upper", "LR Middle", "LR Lower"}
 def strategy_indicator_flags(strategy):
     """Inspect a strategy dict and return which overlay indicators it references.
 
-    Returns a dict with keys: show_ichimoku, show_bb, show_kc, show_donchian, show_psar, show_lr.
+    Returns a dict with keys: show_ichimoku, show_bb, show_kc, show_donchian, show_pc, show_psar, show_lr.
     """
     flags = {
         "show_ichimoku": False,
         "show_bb": False,
         "show_kc": False,
         "show_donchian": False,
+        "show_pc": False,
         "show_psar": False,
         "show_lr": False,
     }
@@ -504,6 +528,8 @@ def strategy_indicator_flags(strategy):
             flags["show_kc"] = True
         elif name in _DC_ELEMENTS:
             flags["show_donchian"] = True
+        elif name in _PC_ELEMENTS:
+            flags["show_pc"] = True
         elif name in _PSAR_ELEMENTS:
             flags["show_psar"] = True
         elif name in _LR_ELEMENTS:
@@ -548,6 +574,7 @@ def slice_for_graph(
         show_donchian: bool = False,
         show_psar: bool = False,
         show_lr: bool = False,
+        show_pc: bool = False,
         context_bars: int = 50,
 ) -> pd.DataFrame:
     # -------------------------------------------------
@@ -596,6 +623,8 @@ def slice_for_graph(
         required_cols += ["kc_mid", "kc_upper", "kc_lower"]
     if show_donchian:
         required_cols += ["dc_upper", "dc_mid", "dc_lower"]
+    if show_pc:
+        required_cols += ["pc_upper", "pc_lower"]
     if show_psar:
         required_cols += ["psar"]
     if show_lr:

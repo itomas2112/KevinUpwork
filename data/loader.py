@@ -1,17 +1,56 @@
 # data/loader.py
+"""Historical-data loading: OHLCV bars from Kibot (headerless .txt) or the
+legacy Barchart export (header .csv), plus DRM Excel files and resampling."""
+import re
 import pandas as pd
 from datetime import datetime
 
+# Kibot exports have no header row and exactly these seven fields.
+KIBOT_COLUMNS = ["date", "time", "open", "high", "low", "latest", "volume"]
+_KIBOT_FIRST_FIELD = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
+
+
+def _peek_first_line(file):
+    """Return the first line of ``file`` as text without consuming it."""
+    pos = file.tell()
+    raw = file.readline()
+    file.seek(pos)
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    return raw.lstrip("\ufeff").strip()
+
+
+def is_kibot_format(first_line):
+    """True when the line starts with a MM/DD/YYYY date, i.e. a headerless Kibot row."""
+    return bool(_KIBOT_FIRST_FIELD.match(first_line.split(",")[0].strip()))
+
+
 def load_ohlc(file):
-    if not file.name.lower().endswith(".csv"):
-        raise ValueError("Invalid file format. Please upload a CSV file.")
+    """Load a 15m OHLCV file from either vendor into the app's canonical frame.
 
-    df = pd.read_csv(file)
+    Supports two layouts, detected by content rather than extension:
+      * Kibot: headerless ``MM/DD/YYYY,HH:MM,Open,High,Low,Close,Volume`` (.txt)
+      * Barchart (legacy): header row ``time,open,high,low,latest,volume`` (.csv)
 
-    df.columns = [c.lower().strip() for c in df.columns]
-    df["time"] = pd.to_datetime(df["time"])
-    df = df.dropna(subset=['high'])
+    Returns a DataFrame indexed by a tz-naive datetime ``time`` index, sorted
+    ascending, with columns ``open, high, low, latest, volume``.
+    """
+    name = file.name.lower()
+    if not name.endswith((".csv", ".txt")):
+        raise ValueError("Invalid file format. Please upload a CSV or TXT file.")
 
+    if is_kibot_format(_peek_first_line(file)):
+        df = pd.read_csv(file, header=None, names=KIBOT_COLUMNS)
+        df["time"] = pd.to_datetime(df.pop("date") + " " + df["time"],
+                                    format="%m/%d/%Y %H:%M")
+    else:
+        df = pd.read_csv(file)
+        df.columns = [c.lower().strip() for c in df.columns]
+        if "latest" not in df.columns and "close" in df.columns:
+            df = df.rename(columns={"close": "latest"})
+        df["time"] = pd.to_datetime(df["time"])
+
+    df = df.dropna(subset=["high"])
     return df.set_index("time").sort_index()
 
 

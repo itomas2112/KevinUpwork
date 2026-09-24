@@ -7,21 +7,22 @@ import copy
 import warnings
 import pandas as pd
 import numpy as np
-from config.constants import get_indicator_map, DEFAULT_LOOKBACK
+from config.constants import get_indicator_map, DEFAULT_WITHIN_LAST
 from indicators.atr_indicator import atr_indicator
 from strategies.strategy_validator import validate_strategy
 from strategies.first_strategy import _prepare_ichimoku_columns
 from strategies.risk_validation import validate_risk_distance as _validate_risk
 
 
-def _coerce_lookback(config):
-    """Read and clamp the lookback field from a trigger/condition/stop dict.
-    Missing or invalid -> DEFAULT_LOOKBACK (1) for backward compatibility."""
-    lb = config.get('lookback') if isinstance(config, dict) else None
-    if not isinstance(lb, (int, float)) or isinstance(lb, bool):
-        return DEFAULT_LOOKBACK
-    lb_i = int(lb)
-    return lb_i if lb_i >= 1 else DEFAULT_LOOKBACK
+def _coerce_within_last(config):
+    """Read the 0-based `within_last` field from a trigger/condition/stop dict
+    (0 = current bar only) and return the lookback WINDOW size (within_last + 1).
+    Missing, invalid or negative -> 0 (window 1)."""
+    wl = config.get('within_last') if isinstance(config, dict) else None
+    if not isinstance(wl, (int, float)) or isinstance(wl, bool):
+        return DEFAULT_WITHIN_LAST + 1
+    wl_i = int(wl)
+    return (wl_i if wl_i >= 0 else DEFAULT_WITHIN_LAST) + 1
 
 
 def _apply_lookback_mask(mask, lookback):
@@ -135,11 +136,11 @@ def _vec_trigger(config, _arrays, indicator_map, _high, _low, _close, _n):
     elif event == "At Level":
         mask[:] = np.abs(arr1 - arr2) < 0.01
 
-    # Apply lookback ("event fired within last N bars"). Bars added by the
+    # Apply lookback ("event fired within last N bars", window = N + 1). Bars added by the
     # lookback window (where the event itself didn't fire on bar i) get the
     # current bar's close as fill price — we're entering now because the
     # event happened recently, not back-filling at the original cross price.
-    lookback = _coerce_lookback(config)
+    lookback = _coerce_within_last(config)
     if lookback > 1:
         new_mask = _apply_lookback_mask(mask, lookback)
         added = new_mask & ~mask
@@ -180,7 +181,7 @@ def _vec_condition(config, _arrays, indicator_map, _n):
     else:
         return np.zeros(_n, dtype=bool)
 
-    return _apply_lookback_mask(mask, _coerce_lookback(config))
+    return _apply_lookback_mask(mask, _coerce_within_last(config))
 
 
 def _vec_stop_violated(config, _arrays, indicator_map, strategy_direction, _n):
@@ -224,7 +225,7 @@ def _vec_stop_violated(config, _arrays, indicator_map, strategy_direction, _n):
     else:
         return np.zeros(_n, dtype=bool)
 
-    return _apply_lookback_mask(mask, _coerce_lookback(config))
+    return _apply_lookback_mask(mask, _coerce_within_last(config))
 
 
 # ======================================================================
@@ -895,6 +896,8 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
                 'eod_alloc': 0.0,
                 'entry_bar_idx': trade.get('entry_bar_idx', 0),
                 'exit_bar_idx': trade.get('exit_bar_idx', trade.get('entry_bar_idx', 0)),
+                # Stop distance locked at entry (same for every exit-group leg)
+                'r_distance': float(trade.get('r_distance', 0.0)),
             }
         entry = entry_trades[tid]
         entry['pnl_r'] += trade['pnl_r']
@@ -915,6 +918,7 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
     trade_pnls_r = [t['pnl_r'] for t in entry_trades.values()]
     trade_holding_periods = [max(0, t['exit_bar_idx'] - t['entry_bar_idx']) for t in entry_trades.values()]
+    trade_r_distances = [t['r_distance'] for t in entry_trades.values()]
     num_trades = len(entry_trades)
 
     if num_trades > 0:
@@ -973,6 +977,7 @@ def execute_custom_strategy_numpy(df: pd.DataFrame, strategy_config: dict,
 
     stats_df.attrs['trade_pnls_r'] = list(trade_pnls_r)
     stats_df.attrs['trade_holding_periods'] = list(trade_holding_periods)
+    stats_df.attrs['trade_r_distances'] = list(trade_r_distances)
     stats_df.attrs['total_static_alloc'] = sum(t['static_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_dynamic_alloc'] = sum(t['dynamic_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_target_alloc'] = sum(t['target_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0

@@ -1,6 +1,8 @@
 """
 Performance tab (Tab 3) - Aggregated backtest metrics across multiple Elliott Wave patterns.
-Independent pattern selection UI with 6 modes, "+ Add Selection" rows, and global metrics.
+Every run backtests all 86 pattern combos and shows the fixed columns
+All Patterns | All Bullish | All Bearish | Global, followed by one column per
+user-added selection ("+ Add Selection" rows; Global = their aggregate).
 Fully self-contained: own strategy selector, date range, and calculate button.
 """
 import json
@@ -8,19 +10,25 @@ import streamlit as st
 import pandas as pd
 
 from data.loader import parse_drm_periods
-from data.helpers import PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES, expand_selection, selection_label
+from data.helpers import (PRIMARY_SECONDARY_MAP, PRIMARY_LIST, ALL_UNIQUE_SECONDARIES,
+                          USER_SELECTION_MODES, all_combos, build_pattern_columns)
 from indicators.calculate_indicators import calculate_indicators, slice_for_graph, migrate_indicator_settings, strategy_indicator_flags
 from strategies.first_strategy import execute_custom_strategy
 from ui.charting_tab import _aggregate_stats, _get_or_calculate
 
-SELECTION_MODES = [
-    "All Patterns",
-    "All Bullish",
-    "All Bearish",
-    "Specified Primary",
-    "Specified Secondary",
-    "Secondary Across Primaries",
-]
+# User-addable modes only: All Patterns / All Bullish / All Bearish are fixed
+# columns now (also imported by the Grid Search tab).
+SELECTION_MODES = USER_SELECTION_MODES
+
+
+def _new_user_selection():
+    """Default row appended by '+ Add Selection'."""
+    return {
+        "mode": "Specified Primary",
+        "pattern_type": "Bullish",
+        "primary": PRIMARY_LIST[0],
+        "secondary": None,
+    }
 
 # Default indicator params (matching calculate_indicators defaults)
 _DEFAULT_INDICATOR_PARAMS = {
@@ -35,6 +43,7 @@ _DEFAULT_INDICATOR_PARAMS = {
     'supertrend_period': 10, 'supertrend_multiplier': 3.0,
     'ema_periods': [10, 20, 50, 200],
     'dc_upper_period': 20, 'dc_mid_period': 20, 'dc_lower_period': 20, 'dc_offset': 0,
+    'pc_upper_period': 1, 'pc_lower_period': 1,
     'psar_af_start': 0.02, 'psar_af_increment': 0.02, 'psar_af_max': 0.20,
     'willr_period': 14,
     'cci_period': 20,
@@ -95,8 +104,14 @@ def render_performance_tab(sidebar_config):
     # Selection UI — dynamic rows with add/remove
     # --------------------------------------------------
     st.subheader("Pattern Selections")
+    st.caption("All Patterns, All Bullish, All Bearish and Global are always shown; "
+               "add rows for the individual patterns you want as extra columns "
+               "(Global aggregates them).")
 
-    selections = st.session_state['perf_selections']
+    # Drop rows whose mode is no longer offered (e.g. a stale "All Patterns" row)
+    selections = [sel for sel in st.session_state.get('perf_selections', [])
+                  if sel.get("mode") in SELECTION_MODES]
+    st.session_state['perf_selections'] = selections
 
     # Column headers
     h_mode, h_ptype, h_primary, h_secondary, h_del = st.columns([2, 2, 2, 2, 0.5])
@@ -117,7 +132,7 @@ def render_performance_tab(sidebar_config):
         kp = f"perf_sel_g{gen}_{idx}"
 
         with c_mode:
-            current_mode = sel.get("mode", "All Patterns")
+            current_mode = sel.get("mode", SELECTION_MODES[0])
             mode = st.selectbox(
                 "Mode",
                 SELECTION_MODES,
@@ -186,26 +201,14 @@ def render_performance_tab(sidebar_config):
     if rows_to_remove:
         for idx in sorted(rows_to_remove, reverse=True):
             st.session_state['perf_selections'].pop(idx)
-        # Ensure at least one selection remains
-        if not st.session_state['perf_selections']:
-            st.session_state['perf_selections'] = [{
-                "mode": "All Patterns",
-                "pattern_type": "Bullish",
-                "primary": None,
-                "secondary": None,
-            }]
+        # An empty list is fine: the fixed columns are always shown
         # Bump generation so all widget keys are fresh on next render
         st.session_state["_perf_sel_gen"] = gen + 1
         st.rerun()
 
     # Add selection button
     if st.button("+ Add Selection", key="perf_add_selection"):
-        st.session_state['perf_selections'].append({
-            "mode": "All Patterns",
-            "pattern_type": "Bullish",
-            "primary": None,
-            "secondary": None,
-        })
+        st.session_state['perf_selections'].append(_new_user_selection())
         st.rerun()
 
     st.markdown("---")
@@ -218,16 +221,15 @@ def render_performance_tab(sidebar_config):
     # Invalidate cached results if strategy changed
     cached_results = st.session_state.get('_perf_cached_results')
     strategy_fingerprint = json.dumps(selected_strategy, sort_keys=True, default=str)
-    if cached_results and cached_results.get('_strategy_fingerprint') != strategy_fingerprint:
+    if cached_results and (cached_results.get('_strategy_fingerprint') != strategy_fingerprint
+                           or 'columns' not in cached_results):
         st.session_state.pop('_perf_cached_results', None)
         cached_results = None
 
     # Show cached results if available and no new calculation requested
     if not calculate_clicked:
         if cached_results:
-            _display_results(cached_results['strategy_name'],
-                             cached_results['global_agg'],
-                             cached_results['results'])
+            _display_results(cached_results['strategy_name'], cached_results['columns'])
         else:
             st.info("Set date range, select patterns, and click **Calculate** to run the backtest.")
         return
@@ -249,134 +251,77 @@ def render_performance_tab(sidebar_config):
         return
 
     # --------------------------------------------------
-    # Run backtest for each selection
+    # Run backtest on every pattern combo (all 86); the fixed columns and
+    # the user rows are all aggregated from this per-combo cache.
     # --------------------------------------------------
-    results = {}  # selection_label -> aggregated dict
-    global_stats = []  # deduplicated stats for global metrics
-    global_seen_combos = set()  # track (pattern_type, primary, secondary) already counted globally
-
     # Detect which overlay indicators the strategy uses for NaN-drop
     ind_flags = strategy_indicator_flags(selected_strategy)
 
-    # Cache backtest results per combo to avoid re-running identical combos
-    combo_cache = {}  # (pattern_type, primary, secondary) -> list of stats
-
-    # Count total combos for progress bar
-    total_combos = 0
-    expanded_per_selection = []
-    for sel in selections:
-        combos = expand_selection(sel)
-        expanded_per_selection.append(combos)
-        total_combos += len(combos)
+    run_combos = all_combos()
+    stats_by_combo = {}  # (pattern_type, primary, secondary) -> list of stats
 
     progress_bar = st.progress(0)
-    combo_counter = 0
+    total_combos = len(run_combos)
 
-    for sel, combos in zip(selections, expanded_per_selection):
-        label = selection_label(sel)
-        # Ensure unique column labels when duplicate selections exist
-        if label in results:
-            n = 2
-            while f"{label} ({n})" in results:
-                n += 1
-            label = f"{label} ({n})"
-
-        if not combos:
-            results[label] = _empty_agg()
+    for combo_counter, combo_key in enumerate(run_combos, start=1):
+        pattern_type, primary, secondary = combo_key
+        drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
+        if drm_df is None:
+            stats_by_combo[combo_key] = []
+            progress_bar.progress(combo_counter / total_combos)
             continue
 
-        selection_stats = []
-        for pattern_type, primary, secondary in combos:
-            combo_key = (pattern_type, primary, secondary)
+        periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
 
-            # Use cached results if this combo was already computed
-            if combo_key in combo_cache:
-                selection_stats.extend(combo_cache[combo_key])
-                if combo_key not in global_seen_combos:
-                    global_seen_combos.add(combo_key)
-                    global_stats.extend(combo_cache[combo_key])
-                combo_counter += 1
-                if total_combos > 0:
-                    progress_bar.progress(combo_counter / total_combos)
+        combo_stats = []
+        for start_dt, end_dt in periods:
+            df_slice, period_start, period_end = slice_for_graph(
+                df=df_full, start_date=start_dt, end_date=end_dt,
+                **ind_flags,
+            )
+            if df_slice.empty:
                 continue
 
-            drm_df = drm_bullish if pattern_type == 'Bullish' else drm_bearish
-            if drm_df is None:
-                combo_cache[combo_key] = []
-                combo_counter += 1
-                if total_combos > 0:
-                    progress_bar.progress(combo_counter / total_combos)
-                continue
+            _, stats = execute_custom_strategy(df_slice, selected_strategy, period_start, period_end)
+            combo_stats.append(stats)
 
-            periods = parse_drm_periods(drm_df, pattern_type, primary, secondary)
-
-            combo_stats = []
-            for start_dt, end_dt in periods:
-                df_slice, period_start, period_end = slice_for_graph(
-                    df=df_full, start_date=start_dt, end_date=end_dt,
-                    **ind_flags,
-                )
-                if df_slice.empty:
-                    continue
-
-                _, stats = execute_custom_strategy(df_slice, selected_strategy, period_start, period_end)
-                combo_stats.append(stats)
-
-            combo_cache[combo_key] = combo_stats
-            selection_stats.extend(combo_stats)
-
-            # Only add to global stats once per unique combo
-            if combo_key not in global_seen_combos:
-                global_seen_combos.add(combo_key)
-                global_stats.extend(combo_stats)
-
-            combo_counter += 1
-            if total_combos > 0:
-                progress_bar.progress(combo_counter / total_combos)
-
-        if selection_stats:
-            results[label] = _aggregate_stats(selection_stats)
-        else:
-            results[label] = _empty_agg()
+        stats_by_combo[combo_key] = combo_stats
+        progress_bar.progress(combo_counter / total_combos)
 
     progress_bar.empty()
 
     # --------------------------------------------------
-    # Cache and display results
+    # Aggregate into the fixed + user columns, cache and display
     # --------------------------------------------------
     strategy_name = selected_strategy.get('strategy_name', 'Custom')
-    if global_stats:
-        global_agg = _aggregate_stats(global_stats)
-    else:
-        global_agg = _empty_agg()
+    columns = build_pattern_columns(selections, [], stats_by_combo,
+                                    _aggregate_stats, _empty_agg)
 
     # Cache results in session state so they persist across reruns
     st.session_state['_perf_cached_results'] = {
         'strategy_name': strategy_name,
         '_strategy_fingerprint': json.dumps(selected_strategy, sort_keys=True, default=str),
-        'global_agg': global_agg,
-        'results': results,
+        'columns': columns,
     }
 
-    _display_results(strategy_name, global_agg, results)
+    _display_results(strategy_name, columns)
 
 
-def _display_results(strategy_name, global_agg, results):
-    """Display the performance results tables."""
-    # Global Performance Metrics
-    st.subheader("Global Performance Metrics")
+PATTERN_COLUMNS_CAPTION = ("Fixed columns: All Patterns / All Bullish / All Bearish. "
+                           "Global = the patterns you added (columns to its right).")
+
+
+def _display_results(strategy_name, columns):
+    """Display the performance table: fixed columns + one per user selection."""
+    st.subheader("Performance")
     st.caption(f"Strategy: **{strategy_name}**")
 
-    global_table = _build_metrics_table({"Global": global_agg})
-    st.table(global_table)
-    _copy_to_clipboard(global_table.to_csv(sep='\t', header=False, index=False), key="perf_copy_global")
-
-    # Per-selection results table
-    if results:
-        st.subheader("Performance by Selection")
-        perf_table = _build_metrics_table(results)
-        st.table(perf_table)
-        _copy_to_clipboard(perf_table.to_csv(sep='\t', header=False, index=False), key="perf_copy_selection")
+    perf_table = _build_metrics_table(columns)
+    st.table(perf_table)
+    st.caption(PATTERN_COLUMNS_CAPTION)
+    from ui.grid_search_tab import mc_caption_short
+    st.caption(mc_caption_short())
+    _copy_to_clipboard(perf_table.to_csv(sep='\t', header=False, index=False), key="perf_copy_selection")
 
 
 # ------------------------------------------------------------------
@@ -400,32 +345,36 @@ def _copy_to_clipboard(text: str, key: str = "copy_btn"):
     """, height=50)
 
 def _mc_avg_profit_str(agg):
-    """Compute MC Avg Profit at 5% DD from agg dict.
+    """MC Avg Profit at 5% avg max DD for an agg dict, formatted
+    '$12,345[ (cap)][ (skip x%)]'.
 
-    Uses the same parameters as Grid Search: 1,000 simulations,
-    each candidate's own trade count as trades/sim, 5% target DD.
+    Same method as Grid Search: bootstraps the agg's own trades
+    (`trade_pnls_r` + `trade_r_distances`) in dollars with the sidebar
+    instrument's point value / margin, 1,000 simulations, phased risk
+    (1% for trades 1–30, re-assessed every 200 trades thereafter to target
+    5% avg max DD).
     If mc_avg_profit is pre-computed (e.g., by Grid Search enrichment),
-    that value is used directly.
+    that value is used directly. "N/A" when the agg carries no trades.
     """
-    import streamlit as st
-    from ui.monte_carlo_tab import compute_mc_avg_profit_at_target_dd
-    from ui.grid_search_tab import GS_MC_N_SIMULATIONS
+    from strategies.monte_carlo_core import mc_phased_profit
+    from ui.grid_search_tab import GS_MC_N_SIMULATIONS, mc_settings, format_mc_value
     # Use pre-computed value if present (set by Grid Search enrichment)
     pre = agg.get('mc_avg_profit')
     if isinstance(pre, (int, float)):
-        return f"${pre:,.0f}"
-    win_pct = agg.get('win_pct', 0)
-    rr = agg.get('rr_ratio', 0)
-    num_trades = agg.get('num_trades', 0)
-    if win_pct <= 0 or rr <= 0 or num_trades <= 0:
+        return format_mc_value(agg)
+    pnls = list(agg.get('trade_pnls_r') or [])
+    if not pnls:
         return "N/A"
-    balance = st.session_state.get('mc_starting_balance', 10000.0)
-    result = compute_mc_avg_profit_at_target_dd(
-        win_pct, rr, balance, target_dd=5.0,
-        trades_per_sim=num_trades, n_sims=GS_MC_N_SIMULATIONS)
-    if result <= 0:
+    cfg = mc_settings()
+    res = mc_phased_profit(
+        pnls, list(agg.get('trade_r_distances') or []), cfg['balance'],
+        cfg['point_value'], cfg['margin'],
+        trades_per_sim=cfg['trades_per_sim'], n_sims=GS_MC_N_SIMULATIONS)
+    if res['avg_profit'] <= 0:
         return "N/A"
-    return f"${result:,.0f}"
+    return format_mc_value({'mc_avg_profit': res['avg_profit'],
+                            'mc_margin_capped': res['margin_capped'],
+                            'mc_initial_skipped': res['initial_skipped_fraction']})
 
 
 def _build_metrics_table(results_dict):
@@ -490,4 +439,6 @@ def _empty_agg():
         'sqn': 0.0,
         'correlation': None,
         'avg_holding_period': 0.0,
+        'trade_pnls_r': [],
+        'trade_r_distances': [],
     }

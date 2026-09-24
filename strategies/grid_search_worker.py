@@ -64,6 +64,7 @@ def _extract_stats(stats_df):
         'lose_pnl': float(stats_df.loc['Losing trades P&L (R)', 'value']),
         'trade_pnls_r': list(stats_df.attrs.get('trade_pnls_r', [])),
         'trade_holding_periods': list(stats_df.attrs.get('trade_holding_periods', [])),
+        'trade_r_distances': list(stats_df.attrs.get('trade_r_distances', [])),
         'total_static_alloc': float(stats_df.attrs.get('total_static_alloc', 0.0)),
         'total_dynamic_alloc': float(stats_df.attrs.get('total_dynamic_alloc', 0.0)),
         'total_target_alloc': float(stats_df.attrs.get('total_target_alloc', 0.0)),

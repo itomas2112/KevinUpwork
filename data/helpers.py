@@ -172,3 +172,103 @@ def selection_label(selection):
         return f"{secondary} (All Primaries) {ptype}"
 
     return mode
+
+# ----------------------------------------------------------------------
+# Fixed pattern columns (Performance / Grid Search / Test Set)
+# ----------------------------------------------------------------------
+# Every performance table shows four fixed columns — All Patterns, All
+# Bullish, All Bearish, Global — followed by one column per user-added
+# selection. "Global" is the aggregate of the user-added selections (the
+# columns to its right); the three "All …" columns are always present, so
+# they are no longer offered as add-a-selection modes in those tabs.
+
+from collections import OrderedDict
+
+FIXED_SELECTIONS = OrderedDict([
+    ("All Patterns", {"mode": "All Patterns"}),
+    ("All Bullish", {"mode": "All Bullish"}),
+    ("All Bearish", {"mode": "All Bearish"}),
+])
+
+FIXED_COLUMNS = ["All Patterns", "All Bullish", "All Bearish", "Global"]
+
+USER_SELECTION_MODES = [
+    "Specified Primary",
+    "Specified Secondary",
+    "Secondary Across Primaries",
+]
+
+
+def all_combos():
+    """Every (pattern_type, primary, secondary) tuple in the DRM universe
+    (86: 43 Bullish + 43 Bearish), in PRIMARY_SECONDARY_MAP order."""
+    return expand_selection(FIXED_SELECTIONS["All Patterns"])
+
+
+def fixed_combo_map():
+    """{"All Patterns": [...86], "All Bullish": [...43], "All Bearish": [...43]}."""
+    return OrderedDict((label, expand_selection(sel))
+                       for label, sel in FIXED_SELECTIONS.items())
+
+
+def filter_combos_by_strategy(combos, strategy_patterns):
+    """Keep only combos whose "primary → secondary" is in the strategy's
+    pattern list. An empty / missing strategy_patterns passes every combo."""
+    if not strategy_patterns:
+        return list(combos)
+    allowed = set(strategy_patterns)
+    return [(ptype, primary, secondary)
+            for ptype, primary, secondary in combos
+            if f"{primary} → {secondary}" in allowed]
+
+
+def unique_label(label, taken):
+    """De-duplicate `label` against `taken` as "X", "X (2)", "X (3)", ..."""
+    if label not in taken:
+        return label
+    n = 2
+    while f"{label} ({n})" in taken:
+        n += 1
+    return f"{label} ({n})"
+
+
+def build_pattern_columns(user_selections, strategy_patterns, stats_by_combo,
+                          aggregate_fn, empty_fn):
+    """Return OrderedDict label -> agg in the fixed order:
+    All Patterns, All Bullish, All Bearish, Global, then one entry per user
+    selection (labels de-duplicated "X", "X (2)", ...).
+
+    Global = union of the user selections' combos, each unique combo counted
+    once; empty_fn() when there are no user selections (or none of their
+    combos carry stats).
+
+    strategy_patterns filtering (the strategy's own pattern list) applies to
+    every column — including the three fixed ones. stats_by_combo maps
+    (pattern_type, primary, secondary) -> [stats, ...]; combos absent from
+    it contribute nothing. A column with no stats gets empty_fn()."""
+    def _agg(combos):
+        stats = []
+        for combo in combos:
+            stats.extend(stats_by_combo.get(combo, []))
+        return aggregate_fn(stats) if stats else empty_fn()
+
+    columns = OrderedDict()
+    for label, combos in fixed_combo_map().items():
+        columns[label] = _agg(filter_combos_by_strategy(combos, strategy_patterns))
+
+    # User selections: per-selection aggs plus the de-duplicated union for Global
+    user_columns = OrderedDict()
+    global_combos = []
+    global_seen = set()
+    for sel in user_selections or []:
+        label = unique_label(selection_label(sel), set(columns) | set(user_columns) | {"Global"})
+        combos = filter_combos_by_strategy(expand_selection(sel), strategy_patterns)
+        for combo in combos:
+            if combo not in global_seen:
+                global_seen.add(combo)
+                global_combos.append(combo)
+        user_columns[label] = _agg(combos)
+
+    columns["Global"] = _agg(global_combos) if global_combos else empty_fn()
+    columns.update(user_columns)
+    return columns

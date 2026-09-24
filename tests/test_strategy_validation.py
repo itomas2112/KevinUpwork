@@ -90,6 +90,15 @@ class TestValidStrategiesPass:
         is_valid, errors = validate_strategy(loaded)
         assert is_valid, f"After JSON roundtrip: {errors}"
 
+    def test_donchian_period_one_valid(self):
+        settings = copy.deepcopy(DEFAULT_INDICATOR_SETTINGS)
+        settings["dc_upper_period"] = 1
+        settings["dc_mid_period"] = 1
+        settings["dc_lower_period"] = 1
+        strategy = make_strategy(indicator_settings=settings)
+        is_valid, errors = validate_strategy(strategy)
+        assert is_valid, f"Donchian period 1 invalid: {errors}"
+
 
 # =====================================================================
 # Null/missing top-level fields
@@ -684,3 +693,79 @@ class TestMultipleErrors:
         is_valid, errors = validate_strategy(strategy)
         assert not is_valid
         assert len(errors) >= 5, f"Expected multiple errors, got {len(errors)}: {errors}"
+
+
+# =====================================================================
+# Price Channel settings / elements
+# =====================================================================
+
+class TestPriceChannelValidation:
+
+    def test_price_upper_as_element2_valid(self):
+        strategy = make_strategy(entry_element1="Price", entry_compare_type="Indicator",
+                                 entry_element2="Price Upper")
+        assert strategy["entry"]["trigger"]["element2"] == "Price Upper"
+        is_valid, errors = validate_strategy(strategy)
+        assert is_valid, errors
+
+    def test_pc_periods_absent_valid(self):
+        settings = copy.deepcopy(DEFAULT_INDICATOR_SETTINGS)
+        settings.pop("pc_upper_period", None)
+        settings.pop("pc_lower_period", None)
+        is_valid, errors = validate_strategy(make_strategy(indicator_settings=settings))
+        assert is_valid, errors
+
+    @pytest.mark.parametrize("key", ["pc_upper_period", "pc_lower_period"])
+    @pytest.mark.parametrize("bad", [0, 1.5, True])
+    def test_pc_period_invalid(self, key, bad):
+        settings = copy.deepcopy(DEFAULT_INDICATOR_SETTINGS)
+        settings[key] = bad
+        is_valid, errors = validate_strategy(make_strategy(indicator_settings=settings))
+        assert not is_valid
+        assert any(key in e for e in errors)
+
+
+# =====================================================================
+# within_last (0-based "Within last (periods)")
+# =====================================================================
+
+def _each_within_last_target(strategy):
+    """Every trigger / condition / stop dict that can carry within_last."""
+    return [
+        ("entry.trigger", strategy["entry"]["trigger"]),
+        ("initial_stop", strategy["initial_stop"]),
+        ("entry.conditions[0]", strategy["entry"]["conditions"][0]),
+    ]
+
+
+class TestWithinLast:
+
+    def _strategy(self):
+        return make_strategy(entry_conditions=[{"operator": "Above", "value": 50.0}])
+
+    @pytest.mark.parametrize("value", [0, 99])
+    def test_bounds_valid(self, value):
+        strategy = self._strategy()
+        for _, d in _each_within_last_target(strategy):
+            d["within_last"] = value
+        is_valid, errors = validate_strategy(strategy)
+        assert is_valid, errors
+
+    @pytest.mark.parametrize("value", [-1, 100, 1.5, True])
+    def test_invalid_rejected(self, value):
+        for idx in range(3):
+            strategy = self._strategy()
+            path, d = _each_within_last_target(strategy)[idx]
+            d["within_last"] = value
+            is_valid, errors = validate_strategy(strategy)
+            assert not is_valid
+            assert any(e.startswith(f"{path}.within_last") for e in errors), errors
+
+    def test_obsolete_lookback_rejected(self):
+        for idx in range(3):
+            strategy = self._strategy()
+            path, d = _each_within_last_target(strategy)[idx]
+            d["lookback"] = 1
+            is_valid, errors = validate_strategy(strategy)
+            assert not is_valid
+            assert f"{path}.lookback is obsolete — use within_last (run migration)" in errors

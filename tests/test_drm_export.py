@@ -871,7 +871,7 @@ def test_the_export_key_moves_when_a_pivot_moves():
 
 @pytest.mark.parametrize("dataset_key,stem", [
     ("GC 2015-2025 15m Barcharts.csv", "GC 2015-2025 15m Barcharts"),
-    ("GC.XLSX", "GC"), ("plain", "plain"), ("", "waves"), (None, "waves"),
+    ("GC.XLSX", "GC"), ("ES.txt", "ES"), ("plain", "plain"), ("", "waves"), (None, "waves"),
 ])
 def test_download_names_come_from_the_dataset(dataset_key, stem):
     assert wave_analysis_tab.export_stem(dataset_key) == stem

@@ -124,24 +124,32 @@ def test_end_to_end_grid_search_with_ema_produces_results():
         print(f"  {r['label']:50s} trades={r['n_trades']:3d}  total_r={r['total_r']:.3f}")
 
 
+def _trade_pool(num_trades, win_pct, rr_ratio, r_dist=10.0):
+    """Deterministic trade list with the given win rate / RR (pnl_r, r_dist)."""
+    n_wins = round(num_trades * win_pct / 100)
+    pnls = [rr_ratio] * n_wins + [-1.0] * (num_trades - n_wins)
+    return pnls, [r_dist] * num_trades
+
+
 def test_mc_enrichment_parallel_end_to_end():
     """Exercise _enrich_mc_parallel end-to-end: build realistic `results`
     structure (mirroring what _run_grid_search_multiprocessing produces),
     feed it through the parallel MC enricher, and verify every agg ends up
-    with a populated mc_avg_profit field.
+    with populated mc_avg_profit / mc_margin_capped fields.
     """
     from ui.grid_search_tab import _enrich_mc_parallel
 
     # Build 12 candidates, each with a global agg + 2 per-selection aggs.
     # Vary win_pct and rr_ratio so binary-search inside MC has real work.
     def _agg(num_trades, win_pct, rr_ratio):
+        pnls, dists = _trade_pool(num_trades, win_pct, rr_ratio)
         return {
             'num_trades': num_trades,
             'win_pct': win_pct,
             'lose_pct': 100 - win_pct,
             'avg_win_pnl': rr_ratio,
             'avg_lose_pnl': -1.0,
-            'total_pnl': num_trades * ((win_pct / 100) * rr_ratio - (1 - win_pct / 100)),
+            'total_pnl': sum(pnls),
             'expected_value': 0.0,
             'target_exit_pct': 50.0,
             'static_exit_pct': 30.0,
@@ -152,6 +160,8 @@ def test_mc_enrichment_parallel_end_to_end():
             'sqn': 1.5,
             'correlation': None,
             'abs_correlation': None,
+            'trade_pnls_r': pnls,
+            'trade_r_distances': dists,
         }
 
     results = []
@@ -163,102 +173,80 @@ def test_mc_enrichment_parallel_end_to_end():
             ("Selection A", _agg(num_trades=50, win_pct=wr - 2, rr_ratio=rr)),
             ("Selection B", _agg(num_trades=50, win_pct=wr + 2, rr_ratio=rr)),
         ])
-        results.append((f"candidate_{i}", global_agg, sel_results))
+        results.append((f"candidate_{i}", global_agg, sel_results, {}))
 
     # Include a zero-trade candidate (fast-path: should get 0.0, skip compute)
     zero_global = _agg(num_trades=0, win_pct=0, rr_ratio=0)
     zero_sel = OrderedDict([("Selection A", _agg(num_trades=0, win_pct=0, rr_ratio=0))])
-    results.append(("zero_candidate", zero_global, zero_sel))
+    results.append(("zero_candidate", zero_global, zero_sel, {}))
 
-    # Count expected aggs: 12 candidates × (1 global + 2 sel) + 1 zero × (1 + 1) = 38
     expected_aggs = 12 * 3 + 1 * 2
-    total_aggs = sum(1 + len(sr) for _, _, sr in results)
+    total_aggs = sum(1 + len(sr) for _, _, sr, _ in results)
     assert total_aggs == expected_aggs, f"Setup error: {total_aggs} != {expected_aggs}"
 
-    # Record original state — nothing should have mc_avg_profit yet
-    for _, g, sr in results:
+    for _, g, sr, _ in results:
         assert 'mc_avg_profit' not in g
         for s in sr.values():
             assert 'mc_avg_profit' not in s
 
-    # Run the parallel enricher with MC-tab-default-like params (small n_sims
-    # to keep the test fast; behavior is identical at higher values).
-    # Note: trades_per_sim is NOT passed — each agg uses its own num_trades.
+    balance = 100_000.0
     t0 = time.time()
-    _enrich_mc_parallel(results, balance=10000.0, n_sims=1000, target_dd=5.0)
+    _enrich_mc_parallel(results, balance=balance, n_sims=500, target_dd=5.0,
+                        point_value=50.0, margin=28000.0, trades_per_sim=100)
     dt = time.time() - t0
 
-    # Every agg must now have mc_avg_profit set
-    for label, g, sr in results:
-        assert 'mc_avg_profit' in g, f"Missing mc_avg_profit on {label} global"
+    for label, g, sr, _ in results:
         assert isinstance(g['mc_avg_profit'], float), \
-            f"{label} global mc_avg_profit is {type(g['mc_avg_profit'])}"
+            f"{label} global mc_avg_profit is {type(g.get('mc_avg_profit'))}"
+        assert isinstance(g['mc_margin_capped'], bool)
         for sel_name, s in sr.items():
-            assert 'mc_avg_profit' in s, f"Missing mc_avg_profit on {label}/{sel_name}"
-            assert isinstance(s['mc_avg_profit'], float)
+            assert isinstance(s['mc_avg_profit'], float), f"{label}/{sel_name}"
+            assert isinstance(s['mc_margin_capped'], bool)
 
-    # Zero-trade candidates must short-circuit to exactly 0.0
-    _, zg, zsr = results[-1]
-    assert zg['mc_avg_profit'] == 0.0
+    # Zero-trade candidates must short-circuit to exactly 0.0 / not capped
+    _, zg, zsr, _ = results[-1]
+    assert zg['mc_avg_profit'] == 0.0 and zg['mc_margin_capped'] is False
     assert list(zsr.values())[0]['mc_avg_profit'] == 0.0
 
-    # Non-zero candidates with positive edge (win_pct > 50 and rr_ratio > 1)
-    # should produce mc_avg_profit > starting balance (10000)
+    # Positive-edge candidates end above the starting balance
     positive_edge_found = False
-    for label, g, _ in results[:-1]:  # skip zero
+    for label, g, _, _ in results[:-1]:
         if g['win_pct'] > 50 and g['rr_ratio'] > 1:
-            assert g['mc_avg_profit'] > 10000, (
+            assert g['mc_avg_profit'] > balance, (
                 f"{label} has edge (wr={g['win_pct']}, rr={g['rr_ratio']}) "
-                f"but mc_avg_profit={g['mc_avg_profit']:.2f} <= 10000"
-            )
+                f"but mc_avg_profit={g['mc_avg_profit']:.2f} <= {balance}")
             positive_edge_found = True
-    assert positive_edge_found, "Test setup should include at least one positive-edge candidate"
+    assert positive_edge_found
 
     print(f"\n=== MC enrichment parallel pipeline ===")
     print(f"  Enriched {expected_aggs} aggs in {dt:.2f}s")
-    print(f"  Sample candidate results (first 5):")
-    for label, g, sr in results[:5]:
+    for label, g, sr, _ in results[:5]:
         print(f"    {label}: wr={g['win_pct']:.0f}%, rr={g['rr_ratio']:.1f}, "
-              f"mc_avg_profit=${g['mc_avg_profit']:,.0f}")
+              f"mc_avg_profit=${g['mc_avg_profit']:,.0f} cap={g['mc_margin_capped']}")
 
 
-def test_mc_uses_each_candidates_trade_count():
-    """Regression test: per-candidate trade count must be used as trades_per_sim.
-
-    Two candidates with identical win_pct/rr_ratio but very different trade
-    counts should produce different mc_avg_profit values — specifically, more
-    trades with a positive edge compounds to a larger final balance.
-    """
+def test_mc_uses_fixed_trades_per_sim_not_trade_count():
+    """The MC horizon is the configured trades_per_sim, not the candidate's
+    trade count: two candidates with the same trade distribution but 11 vs
+    296 trades bootstrap to similar values, while a longer horizon compounds
+    to more."""
     from ui.grid_search_tab import _enrich_mc_parallel
 
-    # Both candidates: same win rate (60%), same RR (2.0). Only num_trades differs.
-    # With a +EV edge, more trades → more compounding → higher avg profit.
-    short_agg = {'num_trades': 11, 'win_pct': 60.0, 'rr_ratio': 2.0}
-    long_agg = {'num_trades': 296, 'win_pct': 60.0, 'rr_ratio': 2.0}
+    def _agg(n):
+        pnls, dists = _trade_pool(n, 60.0, 2.0)
+        return {'num_trades': n, 'trade_pnls_r': pnls, 'trade_r_distances': dists}
 
-    results = [
-        ('short_candidate', short_agg, OrderedDict()),
-        ('long_candidate', long_agg, OrderedDict()),
-    ]
+    # 10 / 250 trades so both pools are exactly 60% winners
+    short_agg, long_agg = _agg(10), _agg(250)
+    results = [('short', short_agg, OrderedDict(), {}), ('long', long_agg, OrderedDict(), {})]
+    _enrich_mc_parallel(results, balance=100_000.0, n_sims=2000, target_dd=5.0,
+                        point_value=50.0, margin=28000.0, trades_per_sim=100)
+    short_profit, long_profit = short_agg['mc_avg_profit'], long_agg['mc_avg_profit']
+    assert short_profit > 100_000 and long_profit > 100_000
+    assert abs(long_profit - short_profit) / short_profit < 0.15, (short_profit, long_profit)
 
-    _enrich_mc_parallel(results, balance=10000.0, n_sims=2000, target_dd=5.0)
-
-    short_profit = short_agg['mc_avg_profit']
-    long_profit = long_agg['mc_avg_profit']
-
-    # Both should be positive (above $10k starting balance)
-    assert short_profit > 10000, f"Short candidate should have edge, got ${short_profit:.0f}"
-    assert long_profit > 10000, f"Long candidate should have edge, got ${long_profit:.0f}"
-
-    # The 296-trade path must compound to substantially more than the 11-trade path
-    # (If the bug regressed and both used trades_per_sim=100, they'd be similar.)
-    assert long_profit > short_profit * 3, (
-        f"Per-candidate trade count not being used: "
-        f"11-trade=${short_profit:,.0f} vs 296-trade=${long_profit:,.0f}. "
-        f"With same WR/RR but 27x more trades, compounding should produce a much larger gap."
-    )
-
-    print(f"\n=== Per-candidate trade count ===")
-    print(f"  11-trade candidate  (WR=60%, RR=2.0): ${short_profit:>12,.0f}")
-    print(f"  296-trade candidate (WR=60%, RR=2.0): ${long_profit:>12,.0f}")
-    print(f"  Ratio: {long_profit / short_profit:.1f}x (would be ~1.0 if bug regressed)")
+    longer = _agg(250)
+    _enrich_mc_parallel([('longer', longer, OrderedDict(), {})], balance=100_000.0,
+                        n_sims=2000, target_dd=5.0, point_value=50.0,
+                        margin=28000.0, trades_per_sim=300)
+    assert longer['mc_avg_profit'] > long_profit

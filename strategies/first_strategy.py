@@ -3,20 +3,21 @@
 import copy
 import pandas as pd
 import numpy as np
-from config.constants import get_indicator_map, DEFAULT_LOOKBACK
+from config.constants import get_indicator_map, DEFAULT_WITHIN_LAST
 from indicators.atr_indicator import atr_indicator
 from strategies.strategy_validator import validate_strategy
 from strategies.risk_validation import validate_risk_distance as _validate_risk
 
 
-def _coerce_lookback(config):
-    """Read and clamp the lookback field from a trigger/condition/stop dict.
-    Missing or invalid -> DEFAULT_LOOKBACK (1) for backward compatibility."""
-    lb = config.get('lookback') if isinstance(config, dict) else None
-    if not isinstance(lb, (int, float)) or isinstance(lb, bool):
-        return DEFAULT_LOOKBACK
-    lb_i = int(lb)
-    return lb_i if lb_i >= 1 else DEFAULT_LOOKBACK
+def _coerce_within_last(config):
+    """Read the 0-based `within_last` field from a trigger/condition/stop dict
+    (0 = current bar only) and return the lookback WINDOW size (within_last + 1).
+    Missing, invalid or negative -> 0 (window 1)."""
+    wl = config.get('within_last') if isinstance(config, dict) else None
+    if not isinstance(wl, (int, float)) or isinstance(wl, bool):
+        return DEFAULT_WITHIN_LAST + 1
+    wl_i = int(wl)
+    return (wl_i if wl_i >= 0 else DEFAULT_WITHIN_LAST) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -32,8 +33,10 @@ def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
     and remapping element names in the strategy config (already deep-copied).
 
     Rules:
-      1. Chikou vs X  →  latest.shift(26) vs X_col.shift(26)
-         (compare price 26 bars ago with indicator 26 bars ago)
+      1. Chikou vs X  →  `_chikou_close` (= close) vs `X.shift(26)`; cross
+         events therefore compare close[t-1] vs X[t-27] then close[t] vs
+         X[t-26]. Chikou never uses the Price high/low exception.
+         (Chikou vs Senkou A/B shifts the un-displaced `senkou_*_current`.)
       2. Senkou A/B vs non-Senkou indicator  →  no change (compare at time t)
       3. Senkou A vs Senkou B  →  use senkou_a_current vs senkou_b_current
          (raw / unshifted values = cloud 26 bars ahead)
@@ -49,6 +52,15 @@ def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
             indicator_map[new_col] = new_col
         return new_col
 
+    def _ensure_chikou_close():
+        """Create the close-based Chikou column once; return its name."""
+        new_col = '_chikou_close'
+        if new_col not in created and 'latest' in df.columns:
+            df[new_col] = df['latest']
+            created.add(new_col)
+            indicator_map[new_col] = new_col
+        return new_col
+
     def _remap_pair(config, key1='element1', key2='element2'):
         """Remap element names for a single trigger / condition dict."""
         e1 = config.get(key1)
@@ -58,9 +70,9 @@ def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
         if not e1:
             return
 
-        # Chikou with Fixed Value — Chikou becomes current price, fixed value stays
+        # Chikou with Fixed Value — Chikou becomes current close, fixed value stays
         if e1 == 'Chikou' and compare_type == 'Fixed Value':
-            config[key1] = 'Price'
+            config[key1] = _ensure_chikou_close()
             return
 
         if not e2 or compare_type == 'Fixed Value':
@@ -70,13 +82,18 @@ def _prepare_ichimoku_columns(df, indicator_map, strategy_config):
         senkou_vs_senkou = (e1 in _SENKOU_ELEMENTS and e2 in _SENKOU_ELEMENTS)
 
         if chikou_involved:
-            # Rule 1: Price[t] vs Indicator[t-26]
-            # Chikou → current price (latest), other → shifted back by 26
+            # Rule 1: close[t] vs Indicator[t-26]
+            # Chikou → its own close column (no Price high/low exception),
+            # other → shifted back by 26 (Senkou via its t+0 _current column)
+            _senkou_current = {
+                'Senkou A': 'senkou_a_current',
+                'Senkou B': 'senkou_b_current',
+            }
             for key, elem in [(key1, e1), (key2, e2)]:
                 if elem == 'Chikou':
-                    config[key] = 'Price'
+                    config[key] = _ensure_chikou_close()
                 else:
-                    orig_col = indicator_map.get(elem)
+                    orig_col = _senkou_current.get(elem) or indicator_map.get(elem)
                     if orig_col and orig_col in df.columns:
                         config[key] = _ensure_shifted(orig_col, _ICHIMOKU_DISPLACEMENT)
 
@@ -268,6 +285,8 @@ def _empty_stats_df():
         ],
     )
     stats_df.attrs['trade_pnls_r'] = []
+    stats_df.attrs['trade_holding_periods'] = []
+    stats_df.attrs['trade_r_distances'] = []
     stats_df.attrs['total_static_alloc'] = 0.0
     stats_df.attrs['total_dynamic_alloc'] = 0.0
     stats_df.attrs['total_target_alloc'] = 0.0
@@ -335,7 +354,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     def check_condition(condition_config, current_idx):
         """Check if a condition is met at current_idx, optionally OR'd over the
-        last `lookback` bars (default 1 = current bar only)."""
+        previous `within_last` bars (default 0 = current bar only)."""
         element1_name = condition_config.get('element1')
         operator = condition_config.get('operator')
         compare_type = condition_config.get('compare_type', 'Indicator')
@@ -366,7 +385,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 return v1 < v2
             return False
 
-        lookback = _coerce_lookback(condition_config)
+        lookback = _coerce_within_last(condition_config)
         max_back = min(lookback, current_idx + 1)
         for k in range(max_back):
             if _at(current_idx - k):
@@ -650,10 +669,10 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # -------------------------------------------------
     def check_trigger(trigger_config, current_idx, locked_value=None):
         """
-        Check if a trigger event occurred at given index, OR'd over the last
-        `lookback` bars (default 1 = current bar only).
+        Check if a trigger event occurred at given index, OR'd over the
+        previous `within_last` bars (default 0 = current bar only).
         """
-        lookback = _coerce_lookback(trigger_config)
+        lookback = _coerce_within_last(trigger_config)
         max_back = min(lookback, current_idx + 1)
         for k in range(max_back):
             if _check_trigger_at(trigger_config, current_idx - k, locked_value):
@@ -1390,6 +1409,8 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
                 'eod_alloc': 0.0,
                 'entry_bar_idx': trade.get('entry_bar_idx', 0),
                 'exit_bar_idx': trade.get('exit_bar_idx', trade.get('entry_bar_idx', 0)),
+                # Stop distance locked at entry (same for every exit-group leg)
+                'r_distance': float(trade.get('r_distance', 0.0)),
             }
         entry = entry_trades[tid]
         entry['pnl_r'] += trade['pnl_r']
@@ -1415,6 +1436,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     trade_pnls_r = [t['pnl_r'] for t in entry_trades.values()]
     consolidated_exit_types = [t['exit_type'] for t in entry_trades.values()]
     trade_holding_periods = [max(0, t['exit_bar_idx'] - t['entry_bar_idx']) for t in entry_trades.values()]
+    trade_r_distances = [t['r_distance'] for t in entry_trades.values()]
 
     num_trades = len(entry_trades)
 
@@ -1511,6 +1533,7 @@ def execute_custom_strategy(df: pd.DataFrame, strategy_config: dict, period_star
     # Store individual trade R P&Ls and allocation totals for aggregation across periods
     stats_df.attrs['trade_pnls_r'] = list(trade_pnls_r)
     stats_df.attrs['trade_holding_periods'] = list(trade_holding_periods)
+    stats_df.attrs['trade_r_distances'] = list(trade_r_distances)
     stats_df.attrs['total_static_alloc'] = sum(t['static_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_dynamic_alloc'] = sum(t['dynamic_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0
     stats_df.attrs['total_target_alloc'] = sum(t['target_alloc'] for t in entry_trades.values()) if num_trades > 0 else 0.0

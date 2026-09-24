@@ -233,6 +233,7 @@ _INT_PARAMS = {
     "dc_upper_period", "dc_mid_period", "dc_lower_period", "dc_offset",
     "willr_period", "roc_period", "roc_signal_period", "cci_period",
     "lr_period",
+    "pc_upper_period", "pc_lower_period",
 }
 
 
@@ -454,6 +455,258 @@ def collect_unique_variants(candidates, variant_groups):
 
 
 # ---------------------------------------------------------------------------
+# Generator — build a set's candidates from a selection of elements
+# ---------------------------------------------------------------------------
+#
+# A group set may carry a "generator" block:
+#   {"elements": [...], "fixed_values": {el: {min, max, step}},
+#    "exclusions": [[a, b], ...], "exclude_same_indicator": bool,
+#    "allow_cross_group": bool,
+#    "r_profit" / "r_loss": {min, max, step} | None,
+#    "atr_target" / "atr_stop": {period, min, max, step} | None}
+# When present, `candidates` is regenerated from it on save / update / import;
+# the stored candidates list stays the cache the search reads.
+
+# Bands / lines of one indicator — "exclude_same_indicator" drops pairs inside
+# one family. Ichimoku lines are deliberately not a family (Tenkan vs Kijun is
+# a legitimate pair).
+INDICATOR_FAMILIES = {
+    "bb": {"BB Upper Band", "BB Middle Band", "BB Lower Band"},
+    "kc": {"KC Upper Band", "KC Middle Band", "KC Lower Band"},
+    "dc": {"DC Upper Band", "DC Middle Band", "DC Lower Band"},
+    "supertrend": {"Supertrend", "Supertrend Upper", "Supertrend Lower"},
+    "psar": {"PSAR", "PSAR Upper", "PSAR Lower"},
+    "lr": {"LR Upper", "LR Middle", "LR Lower"},
+    "pc": {"Price Upper", "Price Lower"},
+}
+
+# Price as Element 1 uses the bar high/low rule, so pairs with Price are
+# generated in both directions.
+_BOTH_WAYS_ELEMENTS = {"Price"}
+
+_R_GROUP = "Price & Indicators"
+
+
+def generator_element_group(element, ema_count=None):
+    """GROUP_MAP group of a generator element, or None if unknown.
+    `EMA N` belongs to Price & Indicators; with `ema_count` given, N must be
+    within 1..ema_count."""
+    g = _element_to_group().get(element)
+    if g:
+        return g
+    if isinstance(element, str) and element.startswith("EMA "):
+        try:
+            n = int(element.split(" ", 1)[1])
+        except ValueError:
+            return None
+        if n < 1 or (ema_count is not None and n > ema_count):
+            return None
+        return "Price & Indicators"
+    return None
+
+
+def _same_family(a, b):
+    return any(a in fam and b in fam for fam in INDICATOR_FAMILIES.values())
+
+
+def _unique(seq):
+    return list(dict.fromkeys(seq))
+
+
+def _range_values(spec):
+    """Values of a {min, max, step} spec via enumerate_variant_values,
+    rounded to kill float drift (1.0 + 3*0.2 -> 1.6)."""
+    return [round(float(v), 10)
+            for v in enumerate_variant_values(spec.get("min"), spec.get("max"),
+                                              spec.get("step"))]
+
+
+def _generate_parts(generator):
+    """Return (pairs, fixed, r, atr) candidate lists for a generator spec."""
+    generator = generator or {}
+    elements = _unique(generator.get("elements") or [])
+    exclusions = {frozenset(p) for p in (generator.get("exclusions") or [])
+                  if isinstance(p, (list, tuple)) and len(p) == 2}
+    same_ind = generator.get("exclude_same_indicator", True)
+    cross = generator.get("allow_cross_group", False)
+
+    def pair(a, b):
+        return {"group": generator_element_group(a), "element1": a,
+                "compare_type": "Indicator", "element2": b, "value": None}
+
+    pairs = []
+    for i, a in enumerate(elements):
+        for b in elements[i + 1:]:
+            if a == b:
+                continue
+            if not cross and generator_element_group(a) != generator_element_group(b):
+                continue
+            if frozenset((a, b)) in exclusions:
+                continue
+            if same_ind and _same_family(a, b):
+                continue
+            pairs.append(pair(a, b))
+            if b in _BOTH_WAYS_ELEMENTS or a in _BOTH_WAYS_ELEMENTS:
+                pairs.append(pair(b, a))
+
+    fixed = []
+    fixed_values = generator.get("fixed_values") or {}
+    for el in elements:
+        spec = fixed_values.get(el)
+        if not spec:
+            continue
+        for v in _range_values(spec):
+            fixed.append({"group": generator_element_group(el), "element1": el,
+                          "compare_type": "Fixed Value", "element2": None,
+                          "value": v})
+
+    r = []
+    for key, el in (("r_profit", "R Profit"), ("r_loss", "R Loss")):
+        spec = generator.get(key)
+        if spec:
+            for v in _range_values(spec):
+                r.append({"group": _R_GROUP, "element1": el,
+                          "compare_type": "Fixed Value", "element2": None,
+                          "value": v})
+
+    atr = []
+    spec = generator.get("atr_target")
+    if spec:
+        for v in _range_values(spec):
+            atr.append({"element1": "ATR Target",
+                        "atr_period": int(spec.get("period", 14)),
+                        "atr_multiplier": v})
+    spec = generator.get("atr_stop")
+    if spec:
+        for v in _range_values(spec):
+            atr.append({"stop_type": "ATR",
+                        "atr_period": int(spec.get("period", 14)),
+                        "atr_multiplier": v})
+
+    return pairs, fixed, r, atr
+
+
+def _dedupe_list(candidates):
+    gs = {"candidates": candidates}
+    _deduplicate_candidates(gs)
+    return gs["candidates"]
+
+
+def generate_candidates(generator, ema_count=0):
+    """Deterministic, ordered, de-duplicated candidate list from a generator spec.
+    Order: pairs in element-list order (a before b), Price both ways, then fixed values
+    per element in element order, then R Profit, R Loss, ATR Target, ATR Stop.
+
+    `ema_count` is accepted for symmetry with validate_generator; generation
+    itself doesn't depend on it (run validate_generator first)."""
+    pairs, fixed, r, atr = _generate_parts(generator)
+    return _dedupe_list(pairs + fixed + r + atr)
+
+
+def count_candidates(generator, ema_count=0):
+    """{"pairs": n, "fixed": n, "r": n, "atr": n, "total": n} for a generator spec."""
+    pairs, fixed, r, atr = _generate_parts(generator)
+    return {"pairs": len(_dedupe_list(pairs)), "fixed": len(_dedupe_list(fixed)),
+            "r": len(_dedupe_list(r)), "atr": len(_dedupe_list(atr)),
+            "total": len(generate_candidates(generator, ema_count))}
+
+
+def _range_errors(label, spec, need_period=False):
+    if not isinstance(spec, dict):
+        return [f"{label}: expected an object with min / max / step."]
+    errs = []
+    try:
+        lo, hi, step = float(spec["min"]), float(spec["max"]), float(spec["step"])
+    except (KeyError, TypeError, ValueError):
+        return [f"{label}: min / max / step must be numbers."]
+    if lo > hi:
+        errs.append(f"{label}: min ({lo:g}) is greater than max ({hi:g}).")
+    if step <= 0:
+        errs.append(f"{label}: step must be greater than 0.")
+    if need_period:
+        try:
+            period = float(spec.get("period", 14))
+            if period < 1 or period != int(period):
+                errs.append(f"{label}: period must be a whole number ≥ 1.")
+        except (TypeError, ValueError):
+            errs.append(f"{label}: period must be a whole number ≥ 1.")
+    return errs
+
+
+def validate_generator(generator, ema_count=0):
+    """Return a list of human-readable problems with a generator spec
+    ([] = valid). `ema_count=None` skips the EMA-count limit."""
+    if not isinstance(generator, dict):
+        return ["Generator must be an object."]
+    errs = []
+    elements = generator.get("elements") or []
+    if not isinstance(elements, list):
+        return ["Generator 'elements' must be a list."]
+
+    def check_element(el, where):
+        if generator_element_group(el, ema_count) is not None:
+            return True
+        if (isinstance(el, str) and el.startswith("EMA ")
+                and generator_element_group(el) is not None):
+            errs.append(f"{where}: {el} is not available — the selected strategy "
+                        f"has {ema_count} EMA(s).")
+        else:
+            errs.append(f"{where}: unknown element {el!r}.")
+        return False
+
+    for el in elements:
+        check_element(el, "Elements")
+
+    fixed_values = generator.get("fixed_values") or {}
+    if not isinstance(fixed_values, dict):
+        errs.append("Fixed values must be an object keyed by element.")
+        fixed_values = {}
+    for el, spec in fixed_values.items():
+        if el not in elements:
+            errs.append(f"Fixed values: {el!r} is not one of the selected elements.")
+            continue
+        errs.extend(_range_errors(f"Fixed values for {el}", spec))
+
+    exclusions = generator.get("exclusions") or []
+    if not isinstance(exclusions, list):
+        errs.append("Exclusions must be a list of pairs.")
+        exclusions = []
+    for i, p in enumerate(exclusions, 1):
+        if not isinstance(p, (list, tuple)) or len(p) != 2:
+            errs.append(f"Exclusion #{i}: expected a pair of two elements.")
+            continue
+        ok = all([check_element(el, f"Exclusion #{i}") for el in p])
+        if ok and p[0] == p[1]:
+            errs.append(f"Exclusion #{i}: {p[0]} vs itself is never generated.")
+
+    for key, label in (("r_profit", "R Profit"), ("r_loss", "R Loss")):
+        if generator.get(key):
+            errs.extend(_range_errors(label, generator[key]))
+    for key, label in (("atr_target", "ATR Target"), ("atr_stop", "ATR Stop")):
+        if generator.get(key):
+            errs.extend(_range_errors(label, generator[key], need_period=True))
+
+    if not errs and not generate_candidates(generator, ema_count):
+        errs.append("The selection generates no candidates.")
+    return errs
+
+
+def _apply_generator(group_set, ema_count=None):
+    """If `group_set` has a generator block, validate it and regenerate its
+    candidates in place. Returns the number of candidates generated, or None
+    for sets without a generator. Raises ValueError on an invalid spec."""
+    generator = group_set.get("generator")
+    if generator is None:
+        return None
+    errors = validate_generator(generator, ema_count)
+    if errors:
+        raise ValueError("Invalid generator: " + " ".join(errors))
+    group_set["mode"] = MODE_RUNTIME
+    group_set["candidates"] = generate_candidates(generator, ema_count)
+    return len(group_set["candidates"])
+
+
+# ---------------------------------------------------------------------------
 
 
 def _deduplicate_candidates(group_set):
@@ -507,8 +760,13 @@ def save_group_sets_to_file():
         json.dump(st.session_state.get("saved_group_sets", []), f, indent=4)
 
 
-def save_group_set(group_set):
-    """Append a group set (after deduplication) and persist. Returns number of duplicates removed."""
+def save_group_set(group_set, ema_count=None):
+    """Append a group set (after deduplication) and persist. Returns number of duplicates removed.
+
+    Sets with a generator block get their candidates regenerated first
+    (`ema_count` from the selected strategy; None skips the EMA limit check).
+    Raises ValueError if the generator is invalid."""
+    _apply_generator(group_set, ema_count)
     group_set.setdefault("mode", MODE_RUNTIME)
     removed = _deduplicate_candidates(group_set)
     st.session_state.setdefault("saved_group_sets", []).append(group_set)
@@ -516,8 +774,12 @@ def save_group_set(group_set):
     return removed
 
 
-def update_group_set(idx, group_set):
-    """Replace a group set at index (after deduplication) and persist. Returns number of duplicates removed."""
+def update_group_set(idx, group_set, ema_count=None):
+    """Replace a group set at index (after deduplication) and persist. Returns number of duplicates removed.
+
+    Sets with a generator block get their candidates regenerated first (see
+    save_group_set). Raises ValueError if the generator is invalid."""
+    _apply_generator(group_set, ema_count)
     group_set.setdefault("mode", MODE_RUNTIME)
     removed = _deduplicate_candidates(group_set)
     sets = st.session_state.get("saved_group_sets", [])
@@ -540,17 +802,26 @@ def export_group_set(group_set):
     return json.dumps(group_set, indent=2)
 
 
-def import_group_set(json_str):
+def import_group_set(json_str, ema_count=None):
     """Parse and validate a group set from JSON string. Returns dict or raises ValueError.
 
     Accepts both legacy format (no mode field) and the two current modes.
     Legacy fields are stripped automatically.
+
+    Files with a generator block are validated (`ema_count` from the selected
+    strategy; None skips the EMA limit) and their candidates regenerated —
+    any `candidates` in the file are ignored. The count is reported back as
+    `_regenerated` on the returned dict.
     """
     data = json.loads(json_str)
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object.")
     if "name" not in data:
         raise ValueError("Missing required field: 'name'")
+    if data.get("generator") is not None:
+        data.pop("_duplicates_removed", None)
+        data["_regenerated"] = _apply_generator(data, ema_count)
+        return data
     if "candidates" not in data:
         raise ValueError("Missing required field: 'candidates'")
     if not isinstance(data["candidates"], list):
